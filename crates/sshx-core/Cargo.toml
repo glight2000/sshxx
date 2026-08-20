@@ -1,19 +1,22 @@
 [package]
-name = "sshx-core"
+name = "sshxx-core"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 description.workspace = true
 repository.workspace = true
-documentation.workspace = true
 keywords.workspace = true
 edition = "2021"
+
+[lib]
+name = "sshx_core"
 
 [dependencies]
 prost.workspace = true
 rand.workspace = true
 serde.workspace = true
 tonic.workspace = true
+tonic-prost.workspace = true
 
 [build-dependencies]
-tonic-build.workspace = true
+tonic-prost-build.workspace = true

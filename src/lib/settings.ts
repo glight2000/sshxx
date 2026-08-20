@@ -6,6 +6,7 @@ export type Settings = {
   name: string;
   theme: ThemeName;
   scrollback: number;
+  snapToGrid: boolean;
 };
 
 const storedSettings = persisted<Partial<Settings>>("sshx-settings-store", {});
@@ -27,10 +28,13 @@ export const settings: Readable<Settings> = derived(
       scrollback = 5000;
     }
 
+    const snapToGrid = $storedSettings.snapToGrid === true;
+
     return {
       name,
       theme,
       scrollback,
+      snapToGrid,
     };
   },
 );

@@ -1,14 +1,7 @@
 <script lang="ts">
-  import {
-    Dialog,
-    DialogDescription,
-    DialogOverlay,
-    DialogTitle,
-    Transition,
-    TransitionChild,
-  } from "@rgossiaux/svelte-headlessui";
   import { XIcon } from "svelte-feather-icons";
   import { createEventDispatcher } from "svelte";
+  import { fade, scale } from "svelte/transition";
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
@@ -17,21 +10,32 @@
   export let showCloseButton = false;
   export let maxWidth: number = 768; // screen-md
   export let open: boolean;
+
+  function close() {
+    dispatch("close");
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (open && event.key === "Escape") close();
+  }
 </script>
 
-<Transition show={open}>
-  <Dialog on:close class="fixed inset-0 z-50 grid place-items-center">
-    <DialogOverlay class="fixed -z-10 inset-0 bg-black/20 backdrop-blur-sm" />
+<svelte:window on:keydown={handleKeydown} />
 
-    <TransitionChild
-      enter="duration-300 ease-out"
-      enterFrom="scale-95 opacity-0"
-      enterTo="scale-100 opacity-100"
-      leave="duration-75 ease-out"
-      leaveFrom="scale-200 opacity-100"
-      leaveTo="scale-95 opacity-0"
+{#if open}
+  <div
+    role="presentation"
+    class="fixed inset-0 z-50 grid place-items-center bg-black/20 backdrop-blur-sm"
+    on:click|self={close}
+    transition:fade={{ duration: 150 }}
+  >
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
       class="w-full sm:w-[calc(100%-32px)]"
       style="max-width: {maxWidth}px"
+      transition:scale={{ duration: 200, start: 0.95 }}
     >
       <div
         class="relative bg-[#111] sm:border border-zinc-800 px-6 py-10 sm:py-6
@@ -41,23 +45,19 @@
           <button
             class="absolute top-4 right-4 p-1 rounded hover:bg-zinc-700 active:bg-indigo-700 transition-colors"
             aria-label="Close {title}"
-            on:click={() => dispatch("close")}
+            on:click={close}
           >
             <XIcon class="h-5 w-5" />
           </button>
         {/if}
 
         <div class="mb-8 text-center">
-          <DialogTitle class="text-xl font-medium mb-2">
-            {title}
-          </DialogTitle>
-          <DialogDescription class="text-zinc-400">
-            {description}
-          </DialogDescription>
+          <h2 class="text-xl font-medium mb-2">{title}</h2>
+          <p class="text-zinc-400">{description}</p>
         </div>
 
         <slot />
       </div>
-    </TransitionChild>
-  </Dialog>
-</Transition>
+    </div>
+  </div>
+{/if}

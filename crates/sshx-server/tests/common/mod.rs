@@ -7,13 +7,13 @@ use anyhow::{ensure, Result};
 use axum::serve::ListenerExt;
 use futures_util::{SinkExt, StreamExt};
 use http::StatusCode;
-use sshx::encrypt::Encrypt;
 use sshx_core::proto::sshx_service_client::SshxServiceClient;
 use sshx_core::{Sid, Uid};
+use sshx_daemon::encrypt::Encrypt;
 use sshx_server::{
     state::ServerState,
-    web::protocol::{WsClient, WsServer, WsUser, WsWinsize},
-    Server,
+    web::protocol::{WsClient, WsNote, WsPage, WsServer, WsUser, WsWinsize},
+    Server, ServerOptions,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
@@ -32,10 +32,15 @@ impl TestServer {
     /// Returns an object with the local address, as well as a custom [`Drop`]
     /// implementation that gracefully shuts down the server.
     pub async fn new() -> Self {
+        Self::new_with_options(ServerOptions::default()).await
+    }
+
+    /// Create a fresh server using custom options.
+    pub async fn new_with_options(options: ServerOptions) -> Self {
         let listener = TcpListener::bind("[::1]:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
 
-        let server = Arc::new(Server::new(Default::default()).unwrap());
+        let server = Arc::new(Server::new(options).unwrap());
         {
             let server = Arc::clone(&server);
             let listener = listener.tap_io(|tcp_stream| {
@@ -88,9 +93,15 @@ pub struct ClientSocket {
     write_encrypt: Option<Encrypt>,
 
     pub user_id: Uid,
+    pub server_version: String,
+    pub daemon_version: String,
     pub users: BTreeMap<Uid, WsUser>,
     pub shells: BTreeMap<Sid, WsWinsize>,
+    pub notes: BTreeMap<Sid, WsNote>,
+    pub pages: Vec<WsPage>,
+    pub note_editors: BTreeMap<Sid, (u32, Uid)>,
     pub data: HashMap<Sid, String>,
+    pub chunk_replays: Vec<(Sid, bool)>,
     pub messages: Vec<(Uid, String, String)>,
     pub errors: Vec<String>,
 }
@@ -106,9 +117,15 @@ impl ClientSocket {
             encrypt: Encrypt::new(key),
             write_encrypt: write_password.map(Encrypt::new),
             user_id: Uid(0),
+            server_version: String::new(),
+            daemon_version: String::new(),
             users: BTreeMap::new(),
             shells: BTreeMap::new(),
+            notes: BTreeMap::new(),
+            pages: Vec::new(),
+            note_editors: BTreeMap::new(),
             data: HashMap::new(),
+            chunk_replays: Vec::new(),
             messages: Vec::new(),
             errors: Vec::new(),
         };
@@ -133,7 +150,9 @@ impl ClientSocket {
     pub async fn send_input(&mut self, id: Sid, data: &[u8]) {
         let offset = 42; // arbitrary, don't reuse the offset in real code though
         let data = self.encrypt.segment(0x200000000, offset, data);
-        self.send(WsClient::Data(id, data.into(), offset)).await;
+        let page_id = self.shells.get(&id).unwrap().page_id;
+        self.send(WsClient::Data(id, page_id, data.into(), offset))
+            .await;
     }
 
     async fn recv(&mut self) -> Option<WsServer> {
@@ -162,7 +181,11 @@ impl ClientSocket {
         let flush_task = async {
             while let Some(msg) = self.recv().await {
                 match msg {
-                    WsServer::Hello(user_id, _) => self.user_id = user_id,
+                    WsServer::Hello(user_id, _, server_version, daemon_version) => {
+                        self.user_id = user_id;
+                        self.server_version = server_version;
+                        self.daemon_version = daemon_version;
+                    }
                     WsServer::InvalidAuth() => panic!("invalid authentication"),
                     WsServer::Users(users) => self.users = BTreeMap::from_iter(users),
                     WsServer::UserDiff(id, maybe_user) => {
@@ -172,7 +195,21 @@ impl ClientSocket {
                         }
                     }
                     WsServer::Shells(shells) => self.shells = BTreeMap::from_iter(shells),
-                    WsServer::Chunks(id, seqnum, chunks) => {
+                    WsServer::Notes(notes) => self.notes = BTreeMap::from_iter(notes),
+                    WsServer::Pages(pages) => self.pages = pages,
+                    WsServer::NoteEditing(id, page_id, editor) => {
+                        self.note_editors.remove(&id);
+                        if let Some(editor) = editor {
+                            self.note_editors.insert(id, (page_id, editor));
+                        }
+                    }
+                    WsServer::NoteText(id, page_id, text) => {
+                        assert_eq!(self.notes.get(&id).unwrap().page_id, page_id);
+                        self.notes.get_mut(&id).unwrap().text = text;
+                    }
+                    WsServer::Chunks(id, page_id, replay, seqnum, chunks) => {
+                        assert_eq!(self.shells.get(&id).unwrap().page_id, page_id);
+                        self.chunk_replays.push((id, replay));
                         let value = self.data.entry(id).or_default();
                         assert_eq!(seqnum, value.len() as u64);
                         for buf in chunks {

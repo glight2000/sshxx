@@ -1,121 +1,143 @@
-# sshx
+# sshxx
 
-A secure web-based, collaborative terminal.
+sshxx is a self-hosted, persistent, collaborative terminal with browser and
+cross-platform app viewers. Terminal processes are owned by a daemon rather than
+by the browser, so closing or refreshing a viewer does not end the shell.
 
-![](https://i.imgur.com/Q3qKAHW.png)
+This project is derived from [sshx](https://github.com/ekzhang/sshx), created by
+[Eric Zhang](https://github.com/ekzhang). Thank you to Eric and every upstream
+contributor for the original architecture and implementation. sshxx keeps that
+foundation while adding features and interaction changes for a different set of
+personal workflows.
 
-**Features:**
+## Upstream relationship
 
-- Run a single command to share your terminal with anyone.
-- Resize, move windows, and freely zoom and pan on an infinite canvas.
-- See other people's cursors moving in real time.
-- Connect to the nearest server in a globally distributed mesh.
-- End-to-end encryption with Argon2 and AES.
-- Automatic reconnection and real-time latency estimates.
-- Predictive echo for faster local editing (à la Mosh).
-
-Visit [sshx.io](https://sshx.io) to learn more.
-
-## Installation
-
-Just run this command to get the `sshx` binary for your platform.
+sshxx is published as an independent repository rather than a GitHub fork, so
+GitHub may not display a “forked from” badge. The repository retains the
+upstream Git history and MIT license. Add the original project as an `upstream`
+remote when suitable upstream changes need to be reviewed or merged:
 
 ```shell
-curl -sSf https://sshx.io/get | sh
+git remote add upstream https://github.com/ekzhang/sshx.git
 ```
 
-Supports Linux and MacOS on x86_64 and ARM64 architectures, as well as embedded
-ARMv6 and ARMv7-A systems. The Linux binaries are statically linked.
+## What changed
 
-For Windows, there are binaries for x86_64, x86, and ARM64, linked to MSVC for
-maximum compatibility.
+- Browser and Tauri-based desktop/mobile viewers share one Svelte frontend.
+- The daemon persists pages, terminal layout, appearance, and notes in the
+  current working directory.
+- Multiple independent canvas pages, global search, editable notes, terminal
+  duplication, appearance controls, and optional grid snapping.
+- Character-level note synchronization and page-aware collaboration events.
+- Updated terminal rendering and frontend/backend dependencies.
+- Product binaries are named `sshxx-daemon`, `sshxx-server`, and `sshxx-client`
+  to distinguish them from upstream sshx.
 
-If you just want to try it out without installing, use:
+## Architecture
 
-```shell
-curl -sSf https://sshx.io/get | sh -s run
-```
+| Component      | Source               | Responsibility                                        |
+| -------------- | -------------------- | ----------------------------------------------------- |
+| `sshxx-daemon` | `crates/sshx-daemon` | Owns shell processes and local workspace persistence. |
+| `sshxx-server` | `crates/sshx-server` | Coordinates sessions and serves the Web client/API.   |
+| `sshxx-client` | `src/`, `src-tauri/` | Displays sessions in a browser or packaged app.       |
 
-Inspect the script for additional options.
-
-You can also install it with [Homebrew](https://brew.sh/) on macOS.
-
-```shell
-brew install sshx
-```
-
-### CI/CD
-
-You can run sshx in continuous integration workflows to help debug tricky
-issues, like in GitHub Actions.
-
-```yaml
-name: CI
-on: push
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      # ... other steps ...
-
-      - run: curl -sSf https://sshx.io/get | sh -s run
-      #      ^
-      #      └ This will open a remote terminal session and print the URL. It
-      #        should take under a second.
-```
-
-We don't have a prepackaged action because it's just a single command. It works
-anywhere: GitLab CI, CircleCI, Buildkite, CI on your Raspberry Pi, etc.
-
-Be careful adding this to a public GitHub repository, as any user can view the
-logs of a CI job while it is running.
+The server coordinates encrypted terminal data but does not own the shell
+process. The daemon continues running terminals when all viewers disconnect.
 
 ## Development
 
-Here's how to work on the project, if you want to contribute.
-
-### Building from source
-
-To build the latest version of the client from source, clone this repository and
-run, with [Rust](https://rust-lang.com/) installed:
+The repository follows its lockfiles and is intended to use the runtimes managed
+by `mise`. Install the declared JavaScript dependencies and start the
+development Redis service:
 
 ```shell
-cargo install --path crates/sshx
-```
-
-This will compile the `sshx` binary and place it in your `~/.cargo/bin` folder.
-
-### Workflow
-
-First, start service containers for development.
-
-```shell
+mise install
+npm ci
 docker compose up -d
 ```
 
-Install [Rust 1.70+](https://www.rust-lang.org/),
-[Node v18](https://nodejs.org/), [NPM v9](https://www.npmjs.com/), and
-[mprocs](https://github.com/pvolok/mprocs). Then, run
+Run the server, daemon, and Web viewer together:
 
 ```shell
-npm install
 mprocs
 ```
 
-This will compile and start the server, an instance of the client, and the web
-frontend in parallel on your machine.
+The default development session is available at:
 
-## Deployment
+```text
+http://localhost:5173/s/dev#localdevkey
+```
 
-I host the application servers on [Fly.io](https://fly.io/) and with
-[Redis Cloud](https://redis.com/).
+The daemon stores workspace metadata in `.sshx-workspace` in its current
+directory. This compatibility filename is intentionally retained from sshx so
+existing workspaces continue to load. Start the daemon from the same directory
+to restore the saved pages, notes, layout, and terminal configuration. Shell
+processes themselves are recreated.
 
-Self-hosted deployments are not supported at the moment. If you want to deploy
-sshx, you'll need to properly implement HTTP/TCP reverse proxies, gRPC
-forwarding, TLS termination, private mesh networking, and graceful shutdown.
+## Build
 
-Please do not run the development commands in a public setting, as this is
-insecure.
+Build the daemon and server:
+
+```shell
+cargo build --release -p sshxx-daemon -p sshxx-server
+```
+
+Build the static Web client:
+
+```shell
+npm run build
+```
+
+Build the packaged client after installing the platform-specific Tauri system
+dependencies:
+
+```shell
+npm run app:build
+```
+
+On Ubuntu, the native dependencies are:
+
+```shell
+sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+```
+
+LAN HTTP/WebSocket endpoints are supported by the packaged app. Use HTTPS and
+WSS on untrusted networks.
+
+## Run separately
+
+Start a local server:
+
+```shell
+./target/release/sshxx-server \
+  --listen :: \
+  --secret replace-this-secret
+```
+
+Start the daemon from the directory in which its workspace should be saved:
+
+```shell
+./target/release/sshxx-daemon --server http://localhost:8051
+```
+
+For production, place the server behind an appropriate reverse proxy, configure
+TLS, use a strong secret, and provide Redis when running multiple server
+instances.
+
+## Validation
+
+```shell
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+npm run lint
+npm run check
+npm run test:runtime
+npm run build
+```
+
+## License
+
+sshxx inherits the upstream [MIT License](LICENSE). The original copyright and
+license notice are retained unchanged. See the upstream
+[sshx repository](https://github.com/ekzhang/sshx) for the original project and
+its history.

@@ -47,6 +47,8 @@
 </div>
 
 <style lang="postcss">
+  @reference "../../app.css";
+
   .toast-box {
     @apply border border-zinc-700 bg-zinc-900/80 backdrop-blur-sm;
     @apply p-4 rounded-md flex items-start pointer-events-auto;

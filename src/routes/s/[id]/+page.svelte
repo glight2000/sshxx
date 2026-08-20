@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { page } from "$app/stores";
+  import { page } from "$app/state";
 
   import Session from "$lib/Session.svelte";
 
-  let title: string = "Remote Terminal | sshx";
+  let title: string = "Remote Terminal | sshxx";
 </script>
 
 <svelte:head>
@@ -17,10 +17,10 @@
 </svelte:head>
 
 <Session
-  id={$page.params.id}
+  id={page.params.id ?? ""}
   on:receiveName={({ detail: sessionName }) => {
     if (sessionName) {
-      title = `${sessionName} | sshx`;
+      title = `${sessionName} | sshxx`;
     }
   }}
 />

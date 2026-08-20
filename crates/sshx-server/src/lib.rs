@@ -1,4 +1,4 @@
-//! The sshx server, which coordinates terminal sharing.
+//! The sshxx server, which coordinates terminal sharing.
 //!
 //! Requests are communicated to the server via gRPC (for command-line sharing
 //! clients) and WebSocket connections (for web listeners). The server is built
@@ -44,9 +44,12 @@ pub struct ServerOptions {
 
     /// Hostname of this server, if running multiple servers.
     pub host: Option<String>,
+
+    /// Fixed session name used instead of a random value, intended for local testing.
+    pub session_name: Option<String>,
 }
 
-/// Stateful object that manages the sshx server, with graceful termination.
+/// Stateful object that manages the sshxx server, with graceful termination.
 pub struct Server {
     state: Arc<ServerState>,
     shutdown: Shutdown,

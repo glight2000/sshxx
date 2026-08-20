@@ -54,11 +54,11 @@
   </p>
 
   <div class="flex justify-between items-center mt-6">
-    <div class="ball filled" />
-    <div class="border-t-2 border-dashed border-zinc-600 w-32" />
-    <div class="ball" class:filled={status !== "no-server"} />
-    <div class="border-t-2 border-dashed border-zinc-600 w-32" />
-    <div class="ball" class:filled={status === "connected"} />
+    <div class="ball filled"></div>
+    <div class="border-t-2 border-dashed border-zinc-600 w-32"></div>
+    <div class="ball" class:filled={status !== "no-server"}></div>
+    <div class="border-t-2 border-dashed border-zinc-600 w-32"></div>
+    <div class="ball" class:filled={status === "connected"}></div>
   </div>
 
   <div class="flex justify-between items-center mt-2.5">
@@ -87,6 +87,8 @@
 </div>
 
 <style lang="postcss">
+  @reference "../../app.css";
+
   .ball {
     @apply rounded-full w-4 h-4;
   }

@@ -8,6 +8,7 @@ use hmac::Mac;
 use sshx_core::proto::{
     client_update::ClientMessage, server_update::ServerMessage, sshx_service_server::SshxService,
     ClientUpdate, CloseRequest, CloseResponse, OpenRequest, OpenResponse, ServerUpdate,
+    TerminalSize,
 };
 use sshx_core::{rand_alphanumeric, Sid};
 use tokio::sync::mpsc;
@@ -25,7 +26,7 @@ pub const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 /// Interval for measuring client latency.
 pub const PING_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Server that handles gRPC requests from the sshx command-line client.
+/// Server that handles gRPC requests from sshxx-daemon.
 #[derive(Clone)]
 pub struct GrpcServer(Arc<ServerState>);
 
@@ -48,7 +49,11 @@ impl SshxService for GrpcServer {
         if origin.is_empty() {
             return Err(Status::invalid_argument("origin is empty"));
         }
-        let name = rand_alphanumeric(10);
+        let name = self
+            .0
+            .session_name()
+            .map(str::to_owned)
+            .unwrap_or_else(|| rand_alphanumeric(10));
         info!(%name, "creating new session");
 
         match self.0.lookup(&name) {
@@ -58,8 +63,23 @@ impl SshxService for GrpcServer {
                     encrypted_zeros: request.encrypted_zeros,
                     name: request.name,
                     write_password_hash: request.write_password_hash,
+                    daemon_version: request.daemon_version,
                 };
-                self.0.insert(&name, Arc::new(Session::new(metadata)));
+                let session = Arc::new(Session::new(metadata));
+                let restored_shells = match request.workspace {
+                    Some(workspace) => session
+                        .restore_workspace(workspace)
+                        .map_err(|err| Status::invalid_argument(err.to_string()))?,
+                    None => Vec::new(),
+                };
+                for shell in restored_shells {
+                    session
+                        .update_tx()
+                        .send(ServerMessage::CreateShell(shell))
+                        .await
+                        .map_err(|err| Status::internal(err.to_string()))?;
+                }
+                self.0.insert(&name, session);
             }
         };
         let token = self.0.mac().chain_update(&name).finalize();
@@ -146,6 +166,8 @@ async fn handle_streaming(
     let mut ping_interval = time::interval(PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    let mut workspace = session.subscribe_workspace();
+
     loop {
         tokio::select! {
             // Send periodic sync messages to the client.
@@ -158,6 +180,12 @@ async fn handle_streaming(
             // Send periodic pings to the client.
             _ = ping_interval.tick() => {
                 send_msg(tx, ServerMessage::Ping(get_time_ms())).await;
+            }
+            // Send the latest persistable workspace after connection and on changes.
+            Some(_) = workspace.next() => {
+                if !send_msg(tx, ServerMessage::Workspace(session.workspace_state())).await {
+                    return Err("failed to send workspace state");
+                }
             }
             // Send buffered server updates to the client.
             Ok(msg) = session.update_rx().recv() => {
@@ -201,8 +229,19 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
         Some(ClientMessage::CreatedShell(new_shell)) => {
             let id = Sid(new_shell.id);
             let center = (new_shell.x, new_shell.y);
-            if let Err(err) = session.add_shell(id, center) {
-                return send_err(tx, format!("add shell: {:?}", err)).await;
+            match session.add_shell(id, center, new_shell.page_id.max(1)) {
+                Ok(Some(winsize)) => {
+                    let resize = TerminalSize {
+                        id: id.0,
+                        rows: winsize.rows.into(),
+                        cols: winsize.cols.into(),
+                    };
+                    if !send_msg(tx, ServerMessage::Resize(resize)).await {
+                        return false;
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => return send_err(tx, format!("add shell: {:?}", err)).await,
             }
         }
         Some(ClientMessage::ClosedShell(id)) => {

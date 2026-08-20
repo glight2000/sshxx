@@ -1,4 +1,4 @@
-//! HTTP and WebSocket handlers for the sshx web interface.
+//! HTTP and WebSocket handlers for the sshxx web interface.
 
 use std::sync::Arc;
 

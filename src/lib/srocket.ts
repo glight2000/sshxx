@@ -1,11 +1,13 @@
 /**
- * @file Internal library for sshx, providing real-time communication.
+ * @file Internal library for sshxx, providing real-time communication.
  *
- * The contents of this file are technically general, not sshx-specific, but it
+ * The contents of this file are technically general, not sshxx-specific, but it
  * is not open-sourced as its own library because it's not ready for that.
  */
 
 import { encode, decode } from "cbor-x";
+
+import { resolveWebSocketUrl } from "$lib/runtime";
 
 /** How long to wait between reconnections (in milliseconds). */
 const RECONNECT_DELAY = 500;
@@ -40,11 +42,7 @@ export class Srocket<T, U> {
   constructor(url: string, options: SrocketOptions<T>) {
     this.#url = url;
     if (this.#url.startsWith("/")) {
-      // Get WebSocket URL relative to the current origin.
-      this.#url =
-        (window.location.protocol === "https:" ? "wss://" : "ws://") +
-        window.location.host +
-        this.#url;
+      this.#url = resolveWebSocketUrl(this.#url);
     }
     this.#options = options;
 
@@ -66,7 +64,7 @@ export class Srocket<T, U> {
     const data = <Uint8Array>(encode(message) as unknown);
 
     if (this.#connected && this.#ws) {
-      this.#ws.send(data);
+      this.#ws.send(new Uint8Array(data));
     } else {
       if (this.#buffer.length < BUFFER_SIZE) {
         this.#buffer.push(data);
@@ -118,7 +116,7 @@ export class Srocket<T, U> {
         }
         // Send any queued messages.
         for (const message of this.#buffer) {
-          this.#ws.send(message);
+          this.#ws.send(new Uint8Array(message));
         }
         this.#buffer = [];
       } else {

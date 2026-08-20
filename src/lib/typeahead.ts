@@ -11,7 +11,7 @@ import type {
   IDisposable,
   ITerminalAddon,
   Terminal,
-} from "sshx-xterm";
+} from "@xterm/xterm";
 
 ///// BEGIN PORTS FROM PACKAGES vs/base/* /////
 
@@ -113,69 +113,6 @@ function escapeRegExpCharacters(value: string): string {
   return value.replace(/[\\\{\}\*\+\?\|\^\$\.\[\]\(\)]/g, "\\$&");
 }
 
-/** Port from `vs/base/common/decorators.ts` */
-function createDecorator(
-  mapFn: (fn: Function, key: string) => Function,
-): Function {
-  return (target: any, key: string, descriptor: any) => {
-    let fnKey: string | null = null;
-    let fn: Function | null = null;
-
-    if (typeof descriptor.value === "function") {
-      fnKey = "value";
-      fn = descriptor.value;
-    } else if (typeof descriptor.get === "function") {
-      fnKey = "get";
-      fn = descriptor.get;
-    }
-
-    if (!fn) {
-      throw new Error("not supported");
-    }
-
-    descriptor[fnKey!] = mapFn(fn, key);
-  };
-}
-
-/** Port from `vs/base/common/decorators.ts` */
-interface IDebounceReducer<T> {
-  (previousValue: T, ...args: any[]): T;
-}
-
-/** Port from `vs/base/common/decorators.ts` */
-function debounce<T>(
-  delay: number,
-  reducer?: IDebounceReducer<T>,
-  initialValueProvider?: () => T,
-): Function {
-  return createDecorator((fn, key) => {
-    const timerKey = `$debounce$${key}`;
-    const resultKey = `$debounce$result$${key}`;
-
-    return function (this: any, ...args: any[]) {
-      if (!this[resultKey]) {
-        this[resultKey] = initialValueProvider
-          ? initialValueProvider()
-          : undefined;
-      }
-
-      clearTimeout(this[timerKey]);
-
-      if (reducer) {
-        this[resultKey] = reducer(this[resultKey], ...args);
-        args = [this[resultKey]];
-      }
-
-      this[timerKey] = setTimeout(() => {
-        fn.apply(this, args);
-        this[resultKey] = initialValueProvider
-          ? initialValueProvider()
-          : undefined;
-      }, delay);
-    };
-  });
-}
-
 ///// END PORTS FROM PACKAGES vs/base/* /////
 
 const enum VT {
@@ -212,7 +149,15 @@ const enum StatsConstants {
  */
 const PREDICTION_OMIT_RE = /^(\x1b\[(\??25[hl]|\??[0-9;]+n))+/;
 
-const core = (terminal: Terminal): any => (terminal as any)._core; // => IXtermCore
+/**
+ * Read xterm's current SGR attributes for local-echo rollback.
+ *
+ * xterm does not expose this state through its public addon API. Keep the
+ * private API dependency isolated here so upgrades have one compatibility
+ * boundary to audit.
+ */
+const currentAttributes = (terminal: Terminal): IBufferCell =>
+  (terminal as any)._core._inputHandler.getAttrData() as IBufferCell;
 const flushOutput = (terminal: Terminal) => {
   // TODO: Flushing output is not possible anymore without async
   void terminal;
@@ -667,7 +612,7 @@ class BackspacePrediction implements IPrediction {
       oldAttributes +
       oldChar +
       cursor.moveTo(pos) +
-      attributesToSeq(core(this._terminal)._inputHandler._curAttrData)
+      attributesToSeq(currentAttributes(this._terminal))
     );
   }
 
@@ -1108,9 +1053,7 @@ export class PredictionTimeline {
           if (rollback.some((r) => r.p.affectsStyle)) {
             // reading the current style should generally be safe, since predictions
             // always restore the style if they modify it.
-            output += attributesToSeq(
-              core(this.terminal)._inputHandler._curAttrData,
-            );
+            output += attributesToSeq(currentAttributes(this.terminal));
           }
           this._clearPredictionState();
           this._failedEmitter.fire(prediction);
@@ -1416,8 +1359,12 @@ class TypeAheadStyle implements IDisposable {
   apply!: string;
   undo!: string;
   private _csiHandler?: IDisposable;
+  private _stopTrackingTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(value: string, private readonly _terminal: Terminal) {
+  constructor(
+    value: string,
+    private readonly _terminal: Terminal,
+  ) {
     this.onUpdate(value);
   }
 
@@ -1434,9 +1381,7 @@ class TypeAheadStyle implements IDisposable {
    */
   startTracking() {
     this._expectedIncomingStyles = 0;
-    this._onDidWriteSGR(
-      attributesToArgs(core(this._terminal)._inputHandler._curAttrData),
-    );
+    this._onDidWriteSGR(attributesToArgs(currentAttributes(this._terminal)));
     this._csiHandler = this._terminal.parser.registerCsiHandler(
       { final: "m" },
       (args) => {
@@ -1449,15 +1394,20 @@ class TypeAheadStyle implements IDisposable {
   /**
    * Stops tracking terminal CSI changes.
    */
-  @debounce(2000)
   debounceStopTracking() {
-    this._stopTracking();
+    clearTimeout(this._stopTrackingTimer);
+    this._stopTrackingTimer = setTimeout(() => {
+      this._stopTrackingTimer = undefined;
+      this._stopTracking();
+    }, 2000);
   }
 
   /**
    * @inheritdoc
    */
   dispose() {
+    clearTimeout(this._stopTrackingTimer);
+    this._stopTrackingTimer = undefined;
     this._stopTracking();
   }
 
@@ -1468,7 +1418,7 @@ class TypeAheadStyle implements IDisposable {
 
   private _onDidWriteSGR(args: (number | number[])[]) {
     const originalUndo = this._undoArgs;
-    for (let i = 0; i < args.length; ) {
+    for (let i = 0; i < args.length;) {
       const px = args[i];
       const p = typeof px === "number" ? px : px[0];
 
@@ -1620,12 +1570,16 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
    * Debounce that clears predictions after a timeout if the PTY doesn't apply them.
    */
   private _clearPredictionDebounce?: IDisposable;
+  private _reevaluatePredictorStateTimer?: ReturnType<typeof setTimeout>;
 
   constructor() {
     // private _processManager: ITerminalProcessManager,
     super();
     this._register(
       toDisposable(() => this._clearPredictionDebounce?.dispose()),
+    );
+    this._register(
+      toDisposable(() => clearTimeout(this._reevaluatePredictorStateTimer)),
     );
   }
 
@@ -1718,12 +1672,15 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
       return;
     }
 
-    this._clearPredictionDebounce = disposableTimeout(() => {
-      this._timeline?.undoAllPredictions();
-      if (this._lastRow?.charState === CharPredictState.HasPendingChar) {
-        this._lastRow.charState = CharPredictState.Unknown;
-      }
-    }, Math.max(500, (this.stats.maxLatency * 3) / 2));
+    this._clearPredictionDebounce = disposableTimeout(
+      () => {
+        this._timeline?.undoAllPredictions();
+        if (this._lastRow?.charState === CharPredictState.HasPendingChar) {
+          this._lastRow.charState = CharPredictState.Unknown;
+        }
+      },
+      Math.max(500, (this.stats.maxLatency * 3) / 2),
+    );
   }
 
   /**
@@ -1733,12 +1690,15 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
    * typing. Otherwise, we could turn this on when the PTY sent data but the
    * terminal cursor is not updated, causes issues.
    */
-  @debounce(100)
   protected _reevaluatePredictorState(
     stats: PredictionStats,
     timeline: PredictionTimeline,
   ) {
-    this._reevaluatePredictorStateNow(stats, timeline);
+    clearTimeout(this._reevaluatePredictorStateTimer);
+    this._reevaluatePredictorStateTimer = setTimeout(() => {
+      this._reevaluatePredictorStateTimer = undefined;
+      this._reevaluatePredictorStateNow(stats, timeline);
+    }, 100);
   }
 
   protected _reevaluatePredictorStateNow(

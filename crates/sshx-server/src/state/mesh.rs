@@ -21,7 +21,7 @@ fn set_opts() -> redis::SetOptions {
         .with_expiration(redis::SetExpiry::PX(STORAGE_EXPIRY.as_millis() as u64))
 }
 
-/// Communication with a distributed mesh of sshx server nodes.
+/// Communication with a distributed mesh of sshxx server nodes.
 ///
 /// This uses a Redis instance to persist data across restarts, as well as a
 /// pub/sub channel to keep be notified of when another node becomes the owner

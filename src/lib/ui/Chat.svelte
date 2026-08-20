@@ -58,7 +58,11 @@
 >
   <div class="flex items-center p-3">
     <CircleButtons>
-      <CircleButton kind="red" on:click={() => dispatch("close")} />
+      <CircleButton
+        kind="red"
+        ariaLabel="Close chat"
+        on:click={() => dispatch("close")}
+      />
     </CircleButtons>
     <div class="ml-3 text-zinc-300 text-sm font-medium">Chat Messages</div>
   </div>
@@ -103,6 +107,8 @@
 </div>
 
 <style lang="postcss">
+  @reference "../../app.css";
+
   .message-group {
     @apply flex flex-col items-start space-y-0.5 max-w-[75%];
   }

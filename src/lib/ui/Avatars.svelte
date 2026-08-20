@@ -31,6 +31,8 @@
 </div>
 
 <style lang="postcss">
+  @reference "../../app.css";
+
   .avatar {
     @apply w-7 h-7 rounded-full text-xs font-medium flex justify-center items-center;
     @apply mr-1 first:mr-0;

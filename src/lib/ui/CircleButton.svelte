@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { MinusIcon, PlusIcon, XIcon } from "svelte-feather-icons";
+  import { CopyIcon, MinusIcon, PlusIcon, XIcon } from "svelte-feather-icons";
 
   export let kind: keyof typeof details;
+  export let disabled = false;
+  export let ariaLabel: string;
 
   const details = {
     red: {
@@ -16,11 +18,19 @@
       cls: "bg-green-500 active:bg-green-700",
       icon: PlusIcon,
     },
+    blue: {
+      cls: "bg-blue-500 active:bg-blue-700",
+      icon: CopyIcon,
+    },
   };
 </script>
 
 <button
-  class="w-3 h-3 p-[1px] rounded-full {details[kind].cls}"
+  class="inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full p-[1px] {details[
+    kind
+  ].cls}"
+  {disabled}
+  aria-label={ariaLabel}
   on:mousedown|stopPropagation
   on:click
 >

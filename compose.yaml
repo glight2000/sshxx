@@ -1,4 +1,4 @@
-# Services used by sshx for development. These listen on ports 126XX, to reduce the chance that they
+# Services used by sshxx for development. These listen on ports 126XX, to reduce the chance that they
 # conflict with other processes.
 #
 # You can start them with `docker compose up -d`.

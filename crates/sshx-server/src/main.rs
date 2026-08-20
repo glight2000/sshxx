@@ -9,7 +9,7 @@ use sshx_server::{Server, ServerOptions};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info};
 
-/// The sshx server CLI interface.
+/// The sshxx server CLI interface.
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
@@ -22,7 +22,7 @@ struct Args {
     listen: IpAddr,
 
     /// Secret used for signing session tokens.
-    #[clap(long, env = "SSHX_SECRET")]
+    #[clap(long, env = "SSHXX_SECRET")]
     secret: Option<String>,
 
     /// Override the origin URL returned by the Open() RPC.
@@ -30,12 +30,16 @@ struct Args {
     override_origin: Option<String>,
 
     /// URL of the Redis server that stores session data.
-    #[clap(long, env = "SSHX_REDIS_URL")]
+    #[clap(long, env = "SSHXX_REDIS_URL")]
     redis_url: Option<String>,
 
     /// Hostname of this server, if running multiple servers.
     #[clap(long)]
     host: Option<String>,
+
+    /// Fixed session name used instead of a random value (unsafe for production).
+    #[clap(long, env = "SSHXX_SESSION_NAME")]
+    session_name: Option<String>,
 }
 
 #[tokio::main]
@@ -50,6 +54,7 @@ async fn start(args: Args) -> Result<()> {
     options.override_origin = args.override_origin;
     options.redis_url = args.redis_url;
     options.host = args.host;
+    options.session_name = args.session_name;
 
     let server = Server::new(options)?;
 

@@ -6,18 +6,22 @@
   import themes, { type ThemeName } from "./themes";
 
   export let open: boolean;
+  export let serverVersion: string;
+  export let daemonVersion: string;
 
   let inputName: string;
   let inputTheme: ThemeName;
   let inputScrollback: number;
+  let inputSnapToGrid: boolean;
 
   let initialized = false;
-  $: open, (initialized = false);
+  $: (open, (initialized = false));
   $: if (!initialized) {
     initialized = true;
     inputName = $settings.name;
     inputTheme = $settings.theme;
     inputScrollback = $settings.scrollback;
+    inputSnapToGrid = $settings.snapToGrid;
   }
 </script>
 
@@ -29,6 +33,24 @@
   on:close
 >
   <div class="flex flex-col gap-4">
+    <div class="item">
+      <div>
+        <p class="item-title">Snap to grid</p>
+        <p class="item-subtitle">
+          Snap moved top-left and resized bottom-right corners to the canvas
+          grid.
+        </p>
+      </div>
+      <label class="flex items-center gap-2 py-2 text-sm cursor-pointer">
+        <input
+          type="checkbox"
+          class="h-4 w-4 accent-indigo-500"
+          bind:checked={inputSnapToGrid}
+          on:change={() => updateSettings({ snapToGrid: inputSnapToGrid })}
+        />
+        Enabled
+      </label>
+    </div>
     <div class="item">
       <div>
         <p class="item-title">Name</p>
@@ -99,14 +121,24 @@
   </div>
 
   <!-- svelte-ignore missing-declaration -->
-  <p class="mt-6 text-sm text-right text-zinc-400">
-    <a target="_blank" rel="noreferrer" href="https://github.com/ekzhang/sshx"
-      >sshx-server v{__APP_VERSION__}</a
+  <div class="mt-6 flex flex-col items-end text-xs leading-5 text-zinc-400">
+    <div class="inline-flex flex-col items-end">
+      <span>sshxx-client v{__APP_VERSION__}</span>
+      <span>sshxx-server v{serverVersion}</span>
+      <span>sshxx-daemon v{daemonVersion}</span>
+    </div>
+    <a
+      class="underline decoration-zinc-600 underline-offset-2 hover:text-zinc-300"
+      target="_blank"
+      rel="noreferrer"
+      href="https://github.com/ekzhang/sshx">Based on sshx</a
     >
-  </p>
+  </div>
 </OverlayMenu>
 
 <style lang="postcss">
+  @reference "../../app.css";
+
   .item {
     @apply bg-zinc-800/25 rounded-lg p-4 flex gap-4 flex-col sm:flex-row items-start;
   }

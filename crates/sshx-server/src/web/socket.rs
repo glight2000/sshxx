@@ -94,7 +94,16 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     let metadata = session.metadata();
     let user_id = session.counter().next_uid();
     session.sync_now();
-    send(socket, WsServer::Hello(user_id, metadata.name.clone())).await?;
+    send(
+        socket,
+        WsServer::Hello(
+            user_id,
+            metadata.name.clone(),
+            env!("CARGO_PKG_VERSION").into(),
+            metadata.daemon_version.clone(),
+        ),
+    )
+    .await?;
 
     let can_write = match recv(socket).await? {
         Some(WsClient::Authenticate(bytes, write_password_bytes)) => {
@@ -132,11 +141,16 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     let update_tx = session.update_tx(); // start listening for updates before any state reads
     let mut broadcast_stream = session.subscribe_broadcast();
     send(socket, WsServer::Users(session.list_users())).await?;
+    for (id, page_id, editor) in session.list_note_editors() {
+        send(socket, WsServer::NoteEditing(id, page_id, Some(editor))).await?;
+    }
 
     let mut subscribed = HashSet::new(); // prevent duplicate subscriptions
-    let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u64, Vec<Bytes>)>(1);
+    let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u32, bool, u64, Vec<Bytes>)>(1);
 
     let mut shells_stream = session.subscribe_shells();
+    let mut notes_stream = session.subscribe_notes();
+    let mut pages_stream = session.subscribe_pages();
     loop {
         let msg = tokio::select! {
             _ = session.terminated() => break,
@@ -149,8 +163,16 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 send(socket, WsServer::Shells(shells)).await?;
                 continue;
             }
-            Some((id, seqnum, chunks)) = chunks_rx.recv() => {
-                send(socket, WsServer::Chunks(id, seqnum, chunks)).await?;
+            Some(notes) = notes_stream.next() => {
+                send(socket, WsServer::Notes(notes)).await?;
+                continue;
+            }
+            Some(pages) = pages_stream.next() => {
+                send(socket, WsServer::Pages(pages)).await?;
+                continue;
+            }
+            Some((id, page_id, replay, seqnum, chunks)) = chunks_rx.recv() => {
+                send(socket, WsServer::Chunks(id, page_id, replay, seqnum, chunks)).await?;
                 continue;
             }
             result = recv(socket) => {
@@ -168,37 +190,111 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     session.update_user(user_id, |user| user.name = name)?;
                 }
             }
-            WsClient::SetCursor(cursor) => {
-                session.update_user(user_id, |user| user.cursor = cursor)?;
+            WsClient::SetCursor(page_id, cursor) => {
+                if !session.page_exists(page_id) {
+                    send(socket, WsServer::Error("Page does not exist.".into())).await?;
+                    continue;
+                }
+                session.update_user(user_id, |user| {
+                    user.cursor = cursor;
+                    user.page_id = page_id;
+                })?;
             }
-            WsClient::SetFocus(id) => {
-                session.update_user(user_id, |user| user.focus = id)?;
+            WsClient::SetFocus(focus) => {
+                if let Some((id, page_id)) = focus {
+                    if let Err(err) = session.check_shell_page(id, page_id) {
+                        send(socket, WsServer::Error(err.to_string())).await?;
+                        continue;
+                    }
+                    session.update_user(user_id, |user| {
+                        user.focus = Some(id);
+                        user.page_id = page_id;
+                    })?;
+                } else {
+                    session.update_user(user_id, |user| user.focus = None)?;
+                }
             }
-            WsClient::Create(x, y) => {
+            WsClient::Create(x, y, page_id) => {
                 if let Err(e) = session.check_write_permission(user_id) {
                     send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id) {
+                    send(socket, WsServer::Error("Page does not exist.".into())).await?;
                     continue;
                 }
                 let id = session.counter().next_sid();
                 session.sync_now();
-                let new_shell = NewShell { id: id.0, x, y };
+                let new_shell = NewShell {
+                    id: id.0,
+                    x,
+                    y,
+                    source_id: None,
+                    page_id,
+                };
                 update_tx
                     .send(ServerMessage::CreateShell(new_shell))
                     .await?;
             }
-            WsClient::Close(id) => {
+            WsClient::Clone(source_id, x, y, page_id) => {
                 if let Err(e) = session.check_write_permission(user_id) {
                     send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id) {
+                    send(socket, WsServer::Error("Page does not exist.".into())).await?;
+                    continue;
+                }
+                if let Err(err) = session.check_shell_page(source_id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                session.sync_now();
+                let new_shell = NewShell {
+                    id: id.0,
+                    x,
+                    y,
+                    source_id: Some(source_id.0),
+                    page_id,
+                };
+                update_tx
+                    .send(ServerMessage::CreateShell(new_shell))
+                    .await?;
+            }
+            WsClient::Close(id, page_id) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
                     continue;
                 }
                 update_tx.send(ServerMessage::CloseShell(id.0)).await?;
             }
-            WsClient::Move(id, winsize) => {
+            WsClient::Move(id, page_id, winsize) => {
                 if let Err(e) = session.check_write_permission(user_id) {
                     send(socket, WsServer::Error(e.to_string())).await?;
                     continue;
                 }
-                if let Err(err) = session.move_shell(id, winsize) {
+                if let Err(err) = session.move_shell(id, page_id, winsize.clone()) {
                     send(socket, WsServer::Error(err.to_string())).await?;
                     continue;
                 }
@@ -211,9 +307,85 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     session.update_tx().send(msg).await?;
                 }
             }
-            WsClient::Data(id, data, offset) => {
+            WsClient::CreateNote(x, y, page_id) => {
                 if let Err(e) = session.check_write_permission(user_id) {
                     send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.note_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 notes.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                if let Err(err) = session.add_note(id, (x, y), page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::CloseNote(id, page_id) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.close_note(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::UpdateNote(id, page_id, note) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.update_note(id, page_id, note) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::SetNoteEditing(id, page_id, editing) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.set_note_editing(id, page_id, user_id, editing) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::UpdateNoteText(id, page_id, text) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.update_note_text(id, page_id, user_id, text) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::CreatePage(name) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.create_page(name) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::RenamePage(id, name) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.rename_page(id, name) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::Data(id, page_id, data, offset) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
                     continue;
                 }
                 let input = TerminalInput {
@@ -223,7 +395,11 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 };
                 update_tx.send(ServerMessage::Input(input)).await?;
             }
-            WsClient::Subscribe(id, chunknum) => {
+            WsClient::Subscribe(id, page_id, chunknum) => {
+                if let Err(err) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
                 if subscribed.contains(&id) {
                     continue;
                 }
@@ -233,8 +409,12 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 tokio::spawn(async move {
                     let stream = session.subscribe_chunks(id, chunknum);
                     tokio::pin!(stream);
-                    while let Some((seqnum, chunks)) = stream.next().await {
-                        if chunks_tx.send((id, seqnum, chunks)).await.is_err() {
+                    while let Some((replay, seqnum, chunks)) = stream.next().await {
+                        if chunks_tx
+                            .send((id, page_id, replay, seqnum, chunks))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }

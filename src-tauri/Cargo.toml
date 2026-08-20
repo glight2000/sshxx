@@ -1,0 +1,19 @@
+[package]
+name = "sshxx-client"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Cross-platform sshxx client application."
+repository.workspace = true
+edition = "2021"
+publish = false
+
+[lib]
+name = "sshxx_client_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.5", features = [] }

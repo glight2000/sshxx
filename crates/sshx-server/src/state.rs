@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use dashmap::DashMap;
-use hmac::{Hmac, Mac as _};
+use hmac::{Hmac, KeyInit};
 use sha2::Sha256;
 use sshx_core::rand_alphanumeric;
 use tokio::time;
@@ -39,11 +39,23 @@ pub struct ServerState {
 
     /// Storage and distributed communication provider, if enabled.
     mesh: Option<StorageMesh>,
+
+    /// Fixed session name used for local testing.
+    session_name: Option<String>,
 }
 
 impl ServerState {
     /// Create an empty server state using the given secret.
     pub fn new(options: ServerOptions) -> Result<Self> {
+        if let Some(name) = &options.session_name {
+            anyhow::ensure!(
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')),
+                "session name must contain only ASCII letters, numbers, '-' or '_'"
+            );
+        }
         let secret = options.secret.unwrap_or_else(|| rand_alphanumeric(22));
         let mesh = match options.redis_url {
             Some(url) => Some(StorageMesh::new(&url, options.host.as_deref())?),
@@ -54,6 +66,7 @@ impl ServerState {
             override_origin: options.override_origin,
             store: DashMap::new(),
             mesh,
+            session_name: options.session_name,
         })
     }
 
@@ -65,6 +78,11 @@ impl ServerState {
     /// Returns the override origin for the Open() RPC.
     pub fn override_origin(&self) -> Option<String> {
         self.override_origin.clone()
+    }
+
+    /// Returns the fixed session name configured for local testing.
+    pub fn session_name(&self) -> Option<&str> {
+        self.session_name.as_deref()
     }
 
     /// Lookup a local session by name.
@@ -106,7 +124,7 @@ impl ServerState {
         Ok(())
     }
 
-    /// Connect to a session by name from the `sshx` client, which provides the
+    /// Connect to a session by name from `sshxx-daemon`, which provides the
     /// actual terminal backend.
     pub async fn backend_connect(&self, name: &str) -> Result<Option<Arc<Session>>> {
         if let Some(session) = self.lookup(name) {

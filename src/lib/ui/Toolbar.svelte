@@ -2,7 +2,9 @@
   import { createEventDispatcher } from "svelte";
   import {
     MessageSquareIcon,
+    FileTextIcon,
     PlusCircleIcon,
+    SearchIcon,
     SettingsIcon,
     WifiIcon,
   } from "svelte-feather-icons";
@@ -15,7 +17,9 @@
 
   const dispatch = createEventDispatcher<{
     create: void;
+    createNote: void;
     chat: void;
+    search: void;
     settings: void;
     networkInfo: void;
   }>();
@@ -24,11 +28,11 @@
 <div class="panel inline-block px-3 py-2">
   <div class="flex items-center select-none">
     <a href="/" class="flex-shrink-0"
-      ><img src={logo} alt="sshx logo" class="h-10" /></a
+      ><img src={logo} alt="sshxx logo" class="h-10" /></a
     >
-    <p class="ml-1.5 mr-2 font-medium">sshx</p>
+    <p class="ml-1.5 mr-2 font-medium">sshxx</p>
 
-    <div class="v-divider" />
+    <div class="v-divider"></div>
 
     <div class="flex space-x-1">
       <button
@@ -38,26 +42,62 @@
         title={!connected
           ? "Not connected"
           : hasWriteAccess === false // Only show the "No write access" title after confirming read-only mode.
-          ? "No write access"
-          : "Create new terminal"}
+            ? "No write access"
+            : "Create new terminal"}
       >
         <PlusCircleIcon strokeWidth={1.5} class="p-0.5" />
       </button>
-      <button class="icon-button" on:click={() => dispatch("chat")}>
+      <button
+        class="icon-button"
+        on:click={() => dispatch("createNote")}
+        disabled={!connected || !hasWriteAccess}
+        title="Create note"
+      >
+        <FileTextIcon strokeWidth={1.5} class="p-0.5" />
+      </button>
+      <button
+        class="icon-button"
+        aria-label="Chat"
+        title="Chat"
+        on:click={() => dispatch("chat")}
+      >
         <MessageSquareIcon strokeWidth={1.5} class="p-0.5" />
         {#if newMessages}
-          <div class="activity" />
+          <div class="activity"></div>
         {/if}
       </button>
-      <button class="icon-button" on:click={() => dispatch("settings")}>
+      <button
+        class="icon-button"
+        aria-label="Find terminal"
+        on:click={() => dispatch("search")}
+        title="Find terminal"
+      >
+        <SearchIcon strokeWidth={1.5} class="p-0.5" />
+      </button>
+    </div>
+
+    <div class="v-divider"></div>
+
+    <div class="flex space-x-1">
+      <button
+        class="icon-button"
+        aria-label="Settings"
+        title="Settings"
+        on:click={() => dispatch("settings")}
+      >
         <SettingsIcon strokeWidth={1.5} class="p-0.5" />
       </button>
     </div>
 
-    <div class="v-divider" />
+    <div class="v-divider"></div>
 
     <div class="flex space-x-1">
-      <button class="icon-button" on:click={() => dispatch("networkInfo")}>
+      <button
+        class="icon-button"
+        aria-label="Network status"
+        title="Network status"
+        on:click={() => dispatch("networkInfo")}
+      >
         <WifiIcon strokeWidth={1.5} class="p-0.5" />
       </button>
     </div>
@@ -65,6 +105,8 @@
 </div>
 
 <style lang="postcss">
+  @reference "../../app.css";
+
   .v-divider {
     @apply h-5 mx-2 border-l-4 border-zinc-800;
   }

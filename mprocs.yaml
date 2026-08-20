@@ -2,14 +2,16 @@
 procs:
   server:
     shell: >-
-      cargo run --bin sshx-server --
+      cargo run --bin sshxx-server --
       --override-origin http://localhost:5173
       --secret dev-secret
+      --session-name dev
       --redis-url redis://localhost:12601
-  client:
+  daemon:
     shell: >-
-      cargo run --bin sshx --
+      cargo run --bin sshxx-daemon --
       --server http://localhost:8051
+      --test-encryption-key localdevkey
   web:
     shell: npm run dev
     stop: SIGKILL  # TODO: Why is this necessary?

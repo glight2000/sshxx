@@ -38,6 +38,7 @@
 </script>
 
 <div
+  role="presentation"
   class="flex items-start"
   on:mouseenter={() => (hovering = true)}
   on:mouseleave={() => (hovering = false)}

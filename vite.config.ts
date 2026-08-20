@@ -4,6 +4,7 @@ import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 
 const commitHash = execSync("git rev-parse --short HEAD").toString().trim();
+const tauriDevHost = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   define: {
@@ -13,6 +14,16 @@ export default defineConfig({
   plugins: [sveltekit()],
 
   server: {
+    host: tauriDevHost || false,
+    port: 5173,
+    strictPort: true,
+    hmr: tauriDevHost
+      ? {
+          protocol: "ws",
+          host: tauriDevHost,
+          port: 5174,
+        }
+      : undefined,
     proxy: {
       "/api": {
         target: "http://[::1]:8051",

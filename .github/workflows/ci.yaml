@@ -50,7 +50,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo test -p sshx
+      - run: cargo test -p sshxx-daemon
 
   web:
     name: Web lint, check, and build
@@ -61,7 +61,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "24"
 
       - run: npm ci
 
@@ -69,22 +69,32 @@ jobs:
 
       - run: npm run check
 
+      - run: npm run test:runtime
+
       - run: npm run build
 
-  deploy:
-    name: Deploy
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [rustfmt, rust, web]
-    concurrency:
-      group: deploy
-      cancel-in-progress: true
+  app:
+    name: App check (Linux)
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: superfly/flyctl-actions/setup-flyctl@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
-      - run: flyctl deploy
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - run: rustup toolchain install stable
+
+      - name: Install Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: cargo check -p sshxx-client

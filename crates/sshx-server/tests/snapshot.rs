@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use sshx::{controller::Controller, runner::Runner};
 use sshx_core::{Sid, Uid};
+use sshx_daemon::{controller::Controller, runner::Runner};
 use sshx_server::{
     session::Session,
-    web::protocol::{WsClient, WsWinsize},
+    web::protocol::{WsClient, WsNote, WsWinsize},
 };
 
 use crate::common::*;
@@ -24,8 +24,13 @@ async fn test_basic_restore() -> Result<()> {
     let mut s = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
     s.flush().await;
     assert_eq!(s.user_id, Uid(1));
+    assert_eq!(s.server_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(s.daemon_version, env!("CARGO_PKG_VERSION"));
 
-    s.send(WsClient::Create(0, 0)).await;
+    s.send(WsClient::CreatePage("Work".into())).await;
+    s.flush().await;
+    let page_id = s.pages.last().unwrap().id;
+    s.send(WsClient::Create(0, 0, page_id)).await;
     s.flush().await;
 
     let new_size = WsWinsize {
@@ -33,11 +38,30 @@ async fn test_basic_restore() -> Result<()> {
         y: 105,
         rows: 200,
         cols: 20,
+        title: "Build logs".into(),
+        background: "#123456".into(),
+        opacity: 72,
+        page_id,
+    };
+    let note = WsNote {
+        x: 120,
+        y: 240,
+        width: 512,
+        height: 320,
+        text: "Remember to deploy".into(),
+        background: "#654321".into(),
+        opacity: 65,
+        page_id,
     };
 
     s.send_input(Sid(1), b"hello there!").await;
     s.send_input(Sid(1), b" - another message").await;
-    s.send(WsClient::Move(Sid(1), Some(new_size))).await;
+    s.send(WsClient::Move(Sid(1), page_id, Some(new_size.clone())))
+        .await;
+    s.send(WsClient::CreateNote(note.x, note.y, page_id)).await;
+    s.flush().await;
+    s.send(WsClient::UpdateNote(Sid(2), page_id, Some(note.clone())))
+        .await;
     s.flush().await;
     assert!(s.shells.contains_key(&Sid(1)));
 
@@ -48,11 +72,14 @@ async fn test_basic_restore() -> Result<()> {
         .insert(&name, Arc::new(Session::restore(&data)?));
 
     let mut s = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
-    s.send(WsClient::Subscribe(Sid(1), 0)).await;
+    s.send(WsClient::Subscribe(Sid(1), page_id, 0)).await;
     s.flush().await;
 
     assert_eq!(s.read(Sid(1)), "hello there! - another message");
     assert_eq!(s.shells.get(&Sid(1)).unwrap(), &new_size);
+    assert_eq!(s.notes.get(&Sid(2)).unwrap(), &note);
+    assert_eq!(s.pages.last().unwrap().name, "Work");
+    assert_eq!(s.daemon_version, env!("CARGO_PKG_VERSION"));
 
     Ok(())
 }

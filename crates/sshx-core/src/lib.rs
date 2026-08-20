@@ -1,4 +1,4 @@
-//! The core crate for shared code used in the sshx application.
+//! The core crate for shared code used in the sshxx application.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -18,14 +18,13 @@ pub mod proto {
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("sshx");
 }
 
+/// Current on-disk format version for daemon workspace persistence.
+pub const WORKSPACE_FORMAT_VERSION: u32 = 1;
+
 /// Generate a cryptographically-secure, random alphanumeric value.
 pub fn rand_alphanumeric(len: usize) -> String {
-    use rand::{distributions::Alphanumeric, thread_rng, Rng};
-    thread_rng()
-        .sample_iter(Alphanumeric)
-        .take(len)
-        .map(char::from)
-        .collect()
+    use rand::distr::{Alphanumeric, SampleString};
+    Alphanumeric.sample_string(&mut rand::rng(), len)
 }
 
 /// Unique identifier for a shell within the session.

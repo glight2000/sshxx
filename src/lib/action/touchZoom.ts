@@ -55,6 +55,7 @@ export const INITIAL_ZOOM = 1.0;
 
 export class TouchZoom {
   #node: HTMLElement;
+  #shouldZoomWheel: () => boolean;
   #scrollingAnchor: HTMLElement | Document;
   #gesture: Gesture;
   #resizeObserver: ResizeObserver;
@@ -80,8 +81,9 @@ export class TouchZoom {
 
   #preventGesture = (event: TouchEvent) => event.preventDefault();
 
-  constructor(node: HTMLElement) {
+  constructor(node: HTMLElement, shouldZoomWheel = () => false) {
     this.#node = node;
+    this.#shouldZoomWheel = shouldZoomWheel;
     this.#scrollingAnchor = getNearestScrollableContainer(node);
     // @ts-ignore
     document.addEventListener("gesturestart", this.#preventGesture);
@@ -178,6 +180,12 @@ export class TouchZoom {
     this.#moved(false);
   }
 
+  setView(pos: number[], zoom: number) {
+    this.center = [...pos];
+    this.zoom = zoom;
+    this.#moved(false);
+  }
+
   #moved(manual = true) {
     for (const callback of this.#callbacks) {
       callback(manual);
@@ -192,8 +200,12 @@ export class TouchZoom {
 
     const [x, y, z] = normalizeWheel(e);
 
-    // alt+scroll or ctrl+scroll = zoom (when not clicking)
-    if ((e.altKey || e.ctrlKey || e.metaKey) && e.buttons === 0) {
+    // Modifier+scroll always zooms. Plain scrolling can also zoom when the
+    // owning canvas has no active interactive item.
+    if (
+      (e.altKey || e.ctrlKey || e.metaKey || this.#shouldZoomWheel()) &&
+      e.buttons === 0
+    ) {
       const point =
         e.clientX && e.clientY
           ? this.#getPoint(e)
@@ -304,21 +316,9 @@ const MAX_ZOOM_STEP = 10;
 // Adapted from https://stackoverflow.com/a/13650579
 function normalizeWheel(event: WheelEvent) {
   const { deltaY, deltaX } = event;
-
-  let deltaZ = 0;
-
-  if (event.ctrlKey || event.metaKey) {
-    const signY = Math.sign(event.deltaY);
-    const absDeltaY = Math.abs(event.deltaY);
-
-    let dy = deltaY;
-
-    if (absDeltaY > MAX_ZOOM_STEP) {
-      dy = MAX_ZOOM_STEP * signY;
-    }
-
-    deltaZ = dy;
-  }
+  const signY = Math.sign(deltaY);
+  const deltaZ =
+    Math.abs(deltaY) > MAX_ZOOM_STEP ? MAX_ZOOM_STEP * signY : deltaY;
 
   return [deltaX, deltaY, deltaZ];
 }

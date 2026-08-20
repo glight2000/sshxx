@@ -1,4 +1,4 @@
-// This file contains the service definition for sshx, used by the client to
+// This file contains the service definition for sshxx, used by the daemon to
 // communicate their terminal state over gRPC.
 
 syntax = "proto3";
@@ -36,15 +36,17 @@ message TerminalSize {
   uint32 cols = 3; // Number of columns for the terminal.
 }
 
-// Request to open an sshx session.
+// Request to open an sshxx session.
 message OpenRequest {
   string origin = 1;                      // Web origin of the server.
   bytes encrypted_zeros = 2;              // Encrypted zero block, for client verification.
   string name = 3;                        // Name of the session (user@hostname).
   optional bytes write_password_hash = 4; // Hashed write password, if read-only mode is enabled.
+  string daemon_version = 5;              // Version of the daemon hosting terminal processes.
+  optional WorkspaceState workspace = 6;  // Locally persisted workspace to restore.
 }
 
-// Details of a newly-created sshx session.
+// Details of a newly-created sshxx session.
 message OpenResponse {
   string name = 1;  // Name of the session.
   string token = 2; // Signed verification token for the client.
@@ -61,10 +63,13 @@ message NewShell {
   uint32 id = 1; // ID of the shell.
   int32 x = 2;   // X position of the shell.
   int32 y = 3;   // Y position of the shell.
+  optional uint32 source_id = 4; // Shell whose working directory should be copied.
+  uint32 page_id = 5; // Canvas page containing the shell.
 }
 
 // Bidirectional streaming update from the client.
 message ClientUpdate {
+  reserved 5;
   oneof client_message {
     string hello = 1;           // First stream message: "name,token".
     TerminalData data = 2;      // Stream data from the terminal.
@@ -83,12 +88,50 @@ message ServerUpdate {
     uint32 close_shell = 3;    // ID of a shell to close.
     SequenceNumbers sync = 4;  // Periodic sequence number sync.
     TerminalSize resize = 5;   // Resize a terminal window.
+    WorkspaceState workspace = 6; // Workspace metadata to persist locally.
     fixed64 ping = 14;         // Request a pong, with the timestamp.
     string error = 15;
   }
 }
 
-// Request to stop a sshx session gracefully.
+// Versioned, locally persistable canvas state owned by sshxx-daemon.
+message WorkspaceState {
+  uint32 format_version = 1;
+  repeated WorkspaceShell shells = 2;
+  repeated WorkspaceNote notes = 3;
+  repeated WorkspacePage pages = 4;
+}
+
+message WorkspaceShell {
+  uint32 id = 1;
+  int32 x = 2;
+  int32 y = 3;
+  uint32 rows = 4;
+  uint32 cols = 5;
+  string title = 6;
+  string background = 7;
+  uint32 opacity = 8;
+  uint32 page_id = 9;
+}
+
+message WorkspaceNote {
+  uint32 id = 1;
+  int32 x = 2;
+  int32 y = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  string text = 6;
+  string background = 7;
+  uint32 opacity = 8;
+  uint32 page_id = 9;
+}
+
+message WorkspacePage {
+  uint32 id = 1;
+  string name = 2;
+}
+
+// Request to stop an sshxx session gracefully.
 message CloseRequest {
   string name = 1;  // Name of the session to terminate.
   string token = 2; // Session verification token.
@@ -105,6 +148,9 @@ message SerializedSession {
   uint32 next_uid = 4;
   string name = 5;
   optional bytes write_password_hash = 6;
+  map<uint32, SerializedNote> notes = 7;
+  string daemon_version = 8;
+  repeated SerializedPage pages = 9;
 }
 
 message SerializedShell {
@@ -117,4 +163,24 @@ message SerializedShell {
   int32 winsize_y = 7;
   uint32 winsize_rows = 8;
   uint32 winsize_cols = 9;
+  string title = 10;
+  string background = 11;
+  uint32 opacity = 12;
+  uint32 page_id = 13;
+}
+
+message SerializedNote {
+  int32 x = 1;
+  int32 y = 2;
+  string text = 3;
+  string background = 4;
+  uint32 opacity = 5;
+  uint32 width = 6;
+  uint32 height = 7;
+  uint32 page_id = 8;
+}
+
+message SerializedPage {
+  uint32 id = 1;
+  string name = 2;
 }
