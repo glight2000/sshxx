@@ -1,5 +1,3 @@
-const ISECT_W = 752;
-const ISECT_H = 515;
 const ISECT_PAD = 16;
 
 type ExistingTerminal = {
@@ -10,7 +8,11 @@ type ExistingTerminal = {
 };
 
 /** Choose a position for a new terminal that does not intersect existing ones. */
-export function arrangeNewTerminal(existing: ExistingTerminal[]) {
+export function arrangeNewCanvasItem(
+  existing: ExistingTerminal[],
+  width: number,
+  height: number,
+) {
   if (existing.length === 0) {
     return { x: 0, y: 0 };
   }
@@ -25,8 +27,8 @@ export function arrangeNewTerminal(existing: ExistingTerminal[]) {
     let ok = true;
     for (const box of existing) {
       if (
-        isect(x, x + ISECT_W, box.x, box.x + box.width) &&
-        isect(y, y + ISECT_H, box.y, box.y + box.height)
+        isect(x, x + width, box.x, box.x + box.width) &&
+        isect(y, y + height, box.y, box.y + box.height)
       ) {
         ok = false;
         break;

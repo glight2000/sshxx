@@ -27,7 +27,7 @@ mod tests {
     #[tokio::test]
     async fn winsize() -> Result<()> {
         let shell = if cfg!(unix) { "/bin/sh" } else { "cmd.exe" };
-        let mut terminal = Terminal::new(shell, None).await?;
+        let mut terminal = Terminal::new(shell, &[], None).await?;
         assert_eq!(terminal.get_winsize()?, (0, 0));
         terminal.set_winsize(120, 72)?;
         assert_eq!(terminal.get_winsize()?, (120, 72));
@@ -37,7 +37,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn reports_current_working_directory() -> Result<()> {
-        let mut terminal = Terminal::new("/bin/sh", Some(std::path::Path::new("/"))).await?;
+        let mut terminal = Terminal::new("/bin/sh", &[], Some(std::path::Path::new("/"))).await?;
         terminal.write_all(b"cd /tmp\n").await?;
         sleep(Duration::from_millis(100)).await;
         assert_eq!(

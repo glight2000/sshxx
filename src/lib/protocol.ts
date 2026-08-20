@@ -7,10 +7,13 @@ export type WsWinsize = {
   y: number;
   rows: number;
   cols: number;
+  width: number;
+  height: number;
   title: string;
   background: string;
   opacity: number;
   pageId: number;
+  theme: string;
 };
 
 /** Shared state for a note on the infinite canvas. */
@@ -31,6 +34,20 @@ export type WsPage = {
   name: string;
 };
 
+export type WsSshAuthMethod = "default" | "agent" | "keyFile" | "password";
+
+/** Reusable SSH connection metadata. Passwords are intentionally not stored. */
+export type WsSshProfile = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: WsSshAuthMethod;
+  keyPath: string;
+  acceptNewHostKey: boolean;
+};
+
 /** Information about a user, see the Rust version */
 export type WsUser = {
   name: string;
@@ -49,6 +66,7 @@ export type WsServer = {
   shells?: [Sid, WsWinsize][];
   notes?: [Sid, WsNote][];
   pages?: WsPage[];
+  sshProfiles?: WsSshProfile[];
   noteEditing?: [Sid, number, Uid | null];
   noteText?: [Sid, number, string];
   chunks?: [Sid, number, boolean, number, Uint8Array[]];
@@ -65,16 +83,57 @@ export type WsClient = {
   setCursor?: [number, [number, number] | null];
   setFocus?: [Sid, number] | null;
   create?: [number, number, number];
+  createSized?: [number, number, number, number, number];
+  createStyled?: [number, number, number, number, number, string];
+  createWindowed?: [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    string,
+  ];
+  createSsh?: [string, number, number, number, number, number];
+  createSshStyled?: [string, number, number, number, number, number, string];
+  createSshWindowed?: [
+    string,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    string,
+  ];
   clone?: [Sid, number, number, number];
+  cloneSized?: [Sid, number, number, number, number, number];
+  cloneStyled?: [Sid, number, number, number, number, number, string];
+  cloneWindowed?: [
+    Sid,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    string,
+  ];
   close?: [Sid, number];
   move?: [Sid, number, WsWinsize | null];
   createNote?: [number, number, number];
+  createNoteSized?: [number, number, number, number, number];
   closeNote?: [Sid, number];
   updateNote?: [Sid, number, WsNote | null];
   setNoteEditing?: [Sid, number, boolean];
   updateNoteText?: [Sid, number, string];
   createPage?: string;
   renamePage?: [number, string];
+  upsertSshProfile?: WsSshProfile;
+  deleteSshProfile?: string;
   data?: [Sid, number, Uint8Array, bigint];
   subscribe?: [Sid, number, number];
   chat?: string;

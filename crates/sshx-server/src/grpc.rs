@@ -66,6 +66,11 @@ impl SshxService for GrpcServer {
                     daemon_version: request.daemon_version,
                 };
                 let session = Arc::new(Session::new(metadata));
+                if let Some(profiles) = request.ssh_profiles {
+                    if let Err(err) = session.restore_ssh_profiles(profiles) {
+                        warn!(?err, "ignoring invalid SSH connection profiles");
+                    }
+                }
                 let restored_shells = match request.workspace {
                     Some(workspace) => session
                         .restore_workspace(workspace)
@@ -229,7 +234,18 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
         Some(ClientMessage::CreatedShell(new_shell)) => {
             let id = Sid(new_shell.id);
             let center = (new_shell.x, new_shell.y);
-            match session.add_shell(id, center, new_shell.page_id.max(1)) {
+            let rows = u16::try_from(new_shell.rows).unwrap_or(0);
+            let cols = u16::try_from(new_shell.cols).unwrap_or(0);
+            let width = u16::try_from(new_shell.width).unwrap_or(0);
+            let height = u16::try_from(new_shell.height).unwrap_or(0);
+            match session.add_shell(
+                id,
+                center,
+                new_shell.page_id.max(1),
+                (rows, cols),
+                (width, height),
+                new_shell.theme,
+            ) {
                 Ok(Some(winsize)) => {
                     let resize = TerminalSize {
                         id: id.0,

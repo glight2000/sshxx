@@ -5,6 +5,7 @@
 
   export let serverLatency: number | null;
   export let shellLatency: number | null;
+  export let detail: string | null = null;
 
   function displayLatency(latency: number) {
     if (latency < 1) {
@@ -36,7 +37,11 @@
 >
   <div class="absolute left-[calc(50%-8px)] top-[-16px] w-4 h-4">
     <svg viewBox="0 0 16 16">
-      <path d="M 0 12 L 8 0 L 16 12 Z" fill="#222" stroke="#333" />
+      <path
+        d="M 0 12 L 8 0 L 16 12 Z"
+        fill="var(--color-zinc-900)"
+        stroke="var(--color-zinc-800)"
+      />
     </svg>
   </div>
 
@@ -49,7 +54,7 @@
         Total latency: {displayLatency(serverLatency + shellLatency)}
       {/if}
     {:else}
-      You are currently disconnected.
+      {detail ?? "You are currently disconnected."}
     {/if}
   </p>
 

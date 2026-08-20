@@ -25,8 +25,20 @@
 {#if open}
   <div
     role="presentation"
-    class="fixed inset-0 z-50 grid place-items-center bg-black/20 backdrop-blur-sm"
-    on:click|self={close}
+    class="pointer-events-auto fixed inset-0 z-50 grid place-items-center bg-black/20 backdrop-blur-sm"
+    on:pointerdown|stopPropagation
+    on:pointerup|stopPropagation
+    on:pointermove|stopPropagation
+    on:mousedown|stopPropagation
+    on:mouseup|stopPropagation
+    on:mousemove|stopPropagation
+    on:touchstart|stopPropagation
+    on:touchmove|stopPropagation
+    on:touchend|stopPropagation
+    on:wheel|stopPropagation
+    on:click|stopPropagation={(event) => {
+      if (event.target === event.currentTarget) close();
+    }}
     transition:fade={{ duration: 150 }}
   >
     <div
@@ -38,8 +50,7 @@
       transition:scale={{ duration: 200, start: 0.95 }}
     >
       <div
-        class="relative bg-[#111] sm:border border-zinc-800 px-6 py-10 sm:py-6
-         h-screen sm:h-auto max-h-screen sm:rounded-lg overflow-y-auto"
+        class="relative h-screen max-h-screen overflow-y-auto overscroll-contain bg-[var(--app-surface-solid)] px-6 py-10 sm:h-auto sm:rounded-lg sm:border sm:border-zinc-800 sm:py-6"
       >
         {#if showCloseButton}
           <button

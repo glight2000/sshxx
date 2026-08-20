@@ -1,12 +1,14 @@
 import { persisted } from "svelte-persisted-store";
 import themes, { type ThemeName, defaultTheme } from "./ui/themes";
 import { derived, type Readable } from "svelte/store";
+import { isColorModePreference, type ColorModePreference } from "./colorMode";
 
 export type Settings = {
   name: string;
   theme: ThemeName;
   scrollback: number;
   snapToGrid: boolean;
+  colorMode: ColorModePreference;
 };
 
 const storedSettings = persisted<Partial<Settings>>("sshx-settings-store", {});
@@ -29,12 +31,16 @@ export const settings: Readable<Settings> = derived(
     }
 
     const snapToGrid = $storedSettings.snapToGrid === true;
+    const colorMode = isColorModePreference($storedSettings.colorMode)
+      ? $storedSettings.colorMode
+      : "system";
 
     return {
       name,
       theme,
       scrollback,
       snapToGrid,
+      colorMode,
     };
   },
 );

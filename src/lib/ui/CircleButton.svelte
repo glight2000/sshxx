@@ -7,36 +7,40 @@
 
   const details = {
     red: {
-      cls: "bg-red-500 active:bg-red-700",
+      cls: "border-rose-300/50 bg-rose-400 text-rose-950 group-hover:bg-rose-300 group-active:bg-rose-500",
       icon: XIcon,
     },
     yellow: {
-      cls: "bg-yellow-500 active:bg-yellow-700",
+      cls: "border-amber-300/50 bg-amber-400 text-amber-950 group-hover:bg-amber-300 group-active:bg-amber-500",
       icon: MinusIcon,
     },
     green: {
-      cls: "bg-green-500 active:bg-green-700",
+      cls: "border-emerald-300/50 bg-emerald-400 text-emerald-950 group-hover:bg-emerald-300 group-active:bg-emerald-500",
       icon: PlusIcon,
     },
     blue: {
-      cls: "bg-blue-500 active:bg-blue-700",
+      cls: "border-sky-300/50 bg-sky-400 text-sky-950 group-hover:bg-sky-300 group-active:bg-sky-500",
       icon: CopyIcon,
     },
   };
 </script>
 
 <button
-  class="inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full p-[1px] {details[
-    kind
-  ].cls}"
+  class="group inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md p-0 disabled:opacity-40"
   {disabled}
   aria-label={ariaLabel}
   on:mousedown|stopPropagation
   on:click
 >
-  <svelte:component
-    this={details[kind].icon}
-    class="w-full h-full"
-    strokeWidth={3}
-  />
+  <span
+    class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border shadow-sm shadow-black/30 transition-colors {details[
+      kind
+    ].cls}"
+  >
+    <svelte:component
+      this={details[kind].icon}
+      class="block h-2.5 w-2.5"
+      strokeWidth={2.5}
+    />
+  </span>
 </button>

@@ -1,8 +1,8 @@
 //! Defines tasks that control the behavior of a single shell in the client.
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use encoding_rs::{CoderResult, UTF_8};
-use sshx_core::proto::{client_update::ClientMessage, TerminalData};
+use sshx_core::proto::{client_update::ClientMessage, SshAuthMethod, SshProfile, TerminalData};
 use sshx_core::Sid;
 use std::path::PathBuf;
 use tokio::{
@@ -27,6 +27,17 @@ pub enum Runner {
     Echo,
 }
 
+#[derive(Debug)]
+pub(crate) struct ShellOptions {
+    pub working_directory: Option<PathBuf>,
+    pub ssh_profile: Option<SshProfile>,
+    pub rows: u16,
+    pub cols: u16,
+    pub theme: String,
+    pub width: u16,
+    pub height: u16,
+}
+
 /// Internal message routed to shell runners.
 pub enum ShellData {
     /// Sequence of input bytes from the server.
@@ -41,17 +52,21 @@ pub enum ShellData {
 
 impl Runner {
     /// Asynchronous task to run a single shell with process I/O.
-    pub async fn run(
+    pub(crate) async fn run(
         &self,
         id: Sid,
         encrypt: Encrypt,
         shell_rx: mpsc::Receiver<ShellData>,
         output_tx: mpsc::Sender<ClientMessage>,
-        working_directory: Option<PathBuf>,
+        options: ShellOptions,
     ) -> Result<()> {
         match self {
             Self::Shell(shell) => {
-                shell_task(id, encrypt, shell, shell_rx, output_tx, working_directory).await
+                let (program, args) = match &options.ssh_profile {
+                    Some(profile) => ssh_command(profile)?,
+                    None => (shell.clone(), Vec::new()),
+                };
+                shell_task(id, encrypt, &program, &args, shell_rx, output_tx, options).await
             }
             Self::Echo => echo_task(id, encrypt, shell_rx, output_tx).await,
         }
@@ -62,13 +77,14 @@ impl Runner {
 async fn shell_task(
     id: Sid,
     encrypt: Encrypt,
-    shell: &str,
+    program: &str,
+    args: &[String],
     mut shell_rx: mpsc::Receiver<ShellData>,
     output_tx: mpsc::Sender<ClientMessage>,
-    working_directory: Option<PathBuf>,
+    options: ShellOptions,
 ) -> Result<()> {
-    let mut term = Terminal::new(shell, working_directory.as_deref()).await?;
-    term.set_winsize(24, 80)?;
+    let mut term = Terminal::new(program, args, options.working_directory.as_deref()).await?;
+    term.set_winsize(options.rows, options.cols)?;
 
     let mut content = String::new(); // content from the terminal
     let mut content_offset = 0; // bytes before the first character of `content`
@@ -149,6 +165,77 @@ async fn shell_task(
     Ok(())
 }
 
+fn ssh_command(profile: &SshProfile) -> Result<(String, Vec<String>)> {
+    let host = profile.host.trim();
+    if host.is_empty()
+        || host.starts_with('-')
+        || host
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        bail!("SSH host is invalid");
+    }
+    let username = profile.username.trim();
+    if username.starts_with('-')
+        || username
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        bail!("SSH username is invalid");
+    }
+    let port: u16 = profile
+        .port
+        .try_into()
+        .context("SSH port is out of range")?;
+    if port == 0 {
+        bail!("SSH port must be positive");
+    }
+
+    let auth = SshAuthMethod::try_from(profile.auth_method)
+        .map_err(|_| anyhow::anyhow!("SSH authentication method is unsupported"))?;
+    let mut args = vec![
+        "-p".into(),
+        port.to_string(),
+        "-o".into(),
+        "ServerAliveInterval=30".into(),
+        "-o".into(),
+        "ServerAliveCountMax=3".into(),
+    ];
+    if !username.is_empty() {
+        args.extend(["-l".into(), username.into()]);
+    }
+    match auth {
+        SshAuthMethod::SshAuthDefault => {}
+        SshAuthMethod::SshAuthAgent => {
+            args.extend(["-o".into(), "PreferredAuthentications=publickey".into()]);
+        }
+        SshAuthMethod::SshAuthKeyFile => {
+            if profile.key_path.trim().is_empty() {
+                bail!("SSH private key path is required");
+            }
+            args.extend([
+                "-i".into(),
+                profile.key_path.clone(),
+                "-o".into(),
+                "IdentitiesOnly=yes".into(),
+            ]);
+        }
+        SshAuthMethod::SshAuthPassword => {
+            args.extend([
+                "-o".into(),
+                "PreferredAuthentications=password,keyboard-interactive".into(),
+                "-o".into(),
+                "PubkeyAuthentication=no".into(),
+            ]);
+        }
+    }
+    if profile.accept_new_host_key {
+        args.extend(["-o".into(), "StrictHostKeyChecking=accept-new".into()]);
+    }
+    args.push(host.into());
+    Ok(("ssh".into(), args))
+}
+
 /// Find the last char boundary before an index in O(1) time.
 fn prev_char_boundary(s: &str, i: usize) -> usize {
     (0..=i)
@@ -186,4 +273,43 @@ async fn echo_task(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use sshx_core::proto::{SshAuthMethod, SshProfile};
+
+    use super::ssh_command;
+
+    #[test]
+    fn builds_open_ssh_arguments_without_a_shell_command() -> anyhow::Result<()> {
+        let profile = SshProfile {
+            id: "prod".into(),
+            name: "Production".into(),
+            host: "server.example.test".into(),
+            port: 2222,
+            username: "deploy".into(),
+            auth_method: SshAuthMethod::SshAuthKeyFile.into(),
+            key_path: "/home/deploy/.ssh/id key".into(),
+            accept_new_host_key: true,
+        };
+        let (program, args) = ssh_command(&profile)?;
+        assert_eq!(program, "ssh");
+        assert_eq!(args.last().map(String::as_str), Some("server.example.test"));
+        assert!(args.windows(2).any(|pair| pair == ["-p", "2222"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-i", "/home/deploy/.ssh/id key"]));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_host_that_can_be_parsed_as_an_option() {
+        let profile = SshProfile {
+            host: "-oProxyCommand=bad".into(),
+            port: 22,
+            ..Default::default()
+        };
+        assert!(ssh_command(&profile).is_err());
+    }
 }

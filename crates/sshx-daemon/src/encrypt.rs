@@ -1,6 +1,9 @@
 //! Encryption of byte streams based on a random key.
 
 use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes128Gcm, Nonce};
+use anyhow::{anyhow, Result};
 
 type Aes128Ctr64BE = ctr::Ctr64BE<aes::Aes128>;
 
@@ -56,6 +59,24 @@ impl Encrypt {
         cipher.apply_keystream(&mut buf);
         buf
     }
+
+    /// Encrypt and authenticate a standalone value using a unique nonce.
+    pub fn seal(&self, nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
+        let cipher = Aes128Gcm::new_from_slice(&self.aes_key)
+            .map_err(|_| anyhow!("invalid AES key length"))?;
+        cipher
+            .encrypt(Nonce::from_slice(nonce), plaintext)
+            .map_err(|_| anyhow!("failed to encrypt authenticated value"))
+    }
+
+    /// Decrypt and authenticate a standalone value using its stored nonce.
+    pub fn open(&self, nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let cipher = Aes128Gcm::new_from_slice(&self.aes_key)
+            .map_err(|_| anyhow!("invalid AES key length"))?;
+        cipher
+            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .map_err(|_| anyhow!("encrypted value failed authentication"))
+    }
 }
 
 #[cfg(test)]
@@ -91,6 +112,19 @@ mod tests {
             let encrypted_suffix = encrypt.segment(1, i as u64, &data[i..]);
             assert_eq!(encrypted_suffix, &encrypted[i..]);
         }
+    }
+
+    #[test]
+    fn roundtrip_authenticated_value() -> anyhow::Result<()> {
+        let encrypt = Encrypt::new("this is a test key");
+        let nonce = *b"unique-nonce";
+        let encrypted = encrypt.seal(&nonce, b"connection profile")?;
+        assert_ne!(encrypted, b"connection profile");
+        assert_eq!(encrypt.open(&nonce, &encrypted)?, b"connection profile");
+        assert!(encrypt
+            .open(&nonce, &encrypted[..encrypted.len() - 1])
+            .is_err());
+        Ok(())
     }
 
     #[test]

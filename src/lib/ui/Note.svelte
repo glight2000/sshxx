@@ -3,6 +3,7 @@
   import { SettingsIcon, XIcon } from "svelte-feather-icons";
 
   import type { WsNote } from "$lib/protocol";
+  import ResizeHandles, { type ResizeDirection } from "./ResizeHandles.svelte";
 
   export let note: WsNote;
   export let hasWriteAccess: boolean | undefined;
@@ -15,7 +16,7 @@
     update: WsNote;
     bringToFront: void;
     startMove: MouseEvent;
-    startResize: MouseEvent;
+    startResize: { event: MouseEvent; direction: ResizeDirection };
     editing: boolean;
     text: string;
   }>();
@@ -38,13 +39,23 @@
   }
 
   async function beginEditing(event: MouseEvent) {
+    if (editing) return;
     event.preventDefault();
     event.stopPropagation();
     if (!hasWriteAccess || (editingBy !== null && editingBy !== userId)) return;
+    dispatch("bringToFront");
     editing = true;
     dispatch("editing", true);
     await tick();
-    textarea.focus();
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(text.length, text.length);
+  }
+
+  function collapseSelection(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const caret = textarea.selectionEnd;
+    textarea.setSelectionRange(caret, caret);
   }
 
   function finishEditing() {
@@ -70,7 +81,7 @@
 <article
   role="presentation"
   data-canvas-note
-  class="note-container relative overflow-visible rounded-lg border border-white/10 shadow-xl shadow-black/40 ring-1 ring-amber-200/5"
+  class="note-container relative overflow-visible rounded-lg border border-white/15 shadow-xl shadow-black/40 ring-1 ring-white/10"
   style:width="{note.width}px"
   style:height="{note.height}px"
   style:background={note.background}
@@ -97,12 +108,12 @@
     </button>
     <span class="min-w-0 text-center">
       <span
-        class="block text-xs font-medium uppercase tracking-widest text-amber-100/65"
+        class="block text-xs font-medium uppercase tracking-widest text-zinc-200/75"
       >
         Note
       </span>
       {#if editingBy !== null && editingBy !== userId}
-        <span class="block max-w-36 truncate text-[10px] text-amber-200/60">
+        <span class="block max-w-36 truncate text-[10px] text-zinc-300/60">
           {editingName || `User ${editingBy}`} is editing
         </span>
       {/if}
@@ -163,33 +174,28 @@
       ? ""
       : editingBy !== null && editingBy !== userId
         ? `${editingName || `User ${editingBy}`} is editing this note`
-        : "Double-click to edit this note"}
+        : "Click to edit this note"}
     class="h-[calc(100%-2.25rem)] w-full resize-none bg-transparent p-4 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-300/40 {editing
-      ? 'cursor-text ring-2 ring-inset ring-indigo-500/60'
+      ? 'cursor-text ring-2 ring-inset ring-zinc-200/70'
       : 'cursor-default'}"
     on:mousedown|stopPropagation
-    on:dblclick={beginEditing}
+    on:click={beginEditing}
+    on:dblclick={collapseSelection}
     on:input={() => dispatch("text", text)}
     on:blur={finishEditing}
     on:keydown={(event) => {
       if (event.key === "Escape") textarea.blur();
     }}></textarea>
 
-  <button
-    type="button"
-    aria-label="Resize note"
-    class="absolute -bottom-1 -right-1 h-5 w-5 cursor-nwse-resize"
+  <ResizeHandles
     disabled={!hasWriteAccess}
-    on:mousedown={(event) => {
-      if (event.button === 0) dispatch("startResize", event);
-    }}
-    on:pointerdown={(event) => event.stopPropagation()}
-  ></button>
+    on:start={(event) => dispatch("startResize", event.detail)}
+  />
 </article>
 
 <style lang="postcss">
   .note-container:focus-within {
-    outline: 2px solid rgb(252 211 77 / 75%);
+    outline: 2px solid rgb(228 228 231 / 88%);
     outline-offset: -1px;
   }
 </style>

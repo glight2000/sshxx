@@ -53,11 +53,15 @@ pub struct Terminal {
 impl Terminal {
     /// Create a new terminal, with attached PTY.
     #[instrument]
-    pub async fn new(shell: &str, working_directory: Option<&Path>) -> Result<Terminal> {
+    pub async fn new(
+        program: &str,
+        args: &[String],
+        working_directory: Option<&Path>,
+    ) -> Result<Terminal> {
         let result = pty::openpty(None, None)?;
 
         // The slave file descriptor was created by openpty() and is forked here.
-        let child = Self::fork_child(shell, result.slave.as_raw_fd(), working_directory)?;
+        let child = Self::fork_child(program, args, result.slave.as_raw_fd(), working_directory)?;
 
         // We need to clone the file object to prevent livelocks in Tokio, when multiple
         // reads and writes happen concurrently on the same file descriptor. This is a
@@ -76,8 +80,20 @@ impl Terminal {
     }
 
     /// Entry point for the child process, which spawns a shell.
-    fn fork_child(shell: &str, slave_port: RawFd, working_directory: Option<&Path>) -> Result<Pid> {
-        let shell = CString::new(shell.to_owned())?;
+    fn fork_child(
+        program: &str,
+        args: &[String],
+        slave_port: RawFd,
+        working_directory: Option<&Path>,
+    ) -> Result<Pid> {
+        let program = CString::new(program.to_owned())?;
+        let mut argv = Vec::with_capacity(args.len() + 1);
+        argv.push(program.clone());
+        argv.extend(
+            args.iter()
+                .map(|arg| CString::new(arg.as_str()))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
         let working_directory = working_directory
             .map(|path| CString::new(path.as_os_str().as_bytes()))
             .transpose()?;
@@ -87,7 +103,7 @@ impl Terminal {
         match unsafe { fork() }? {
             ForkResult::Parent { child } => Ok(child),
             ForkResult::Child => {
-                match Self::execv_child(&shell, slave_port, working_directory.as_deref()) {
+                match Self::execv_child(&program, &argv, slave_port, working_directory.as_deref()) {
                     Ok(infallible) => match infallible {},
                     Err(_) => std::process::exit(1),
                 }
@@ -96,7 +112,8 @@ impl Terminal {
     }
 
     fn execv_child(
-        shell: &CStr,
+        program: &CStr,
+        argv: &[CString],
         slave_port: RawFd,
         working_directory: Option<&CStr>,
     ) -> Result<Infallible, Errno> {
@@ -118,7 +135,7 @@ impl Terminal {
         env::remove_var("TERM_PROGRAM_VERSION");
 
         // Start the process.
-        execvp(shell, &[shell])
+        execvp(program, argv)
     }
 
     /// Get the window size of the TTY.

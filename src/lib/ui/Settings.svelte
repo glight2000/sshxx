@@ -4,6 +4,7 @@
   import { settings, updateSettings } from "$lib/settings";
   import OverlayMenu from "./OverlayMenu.svelte";
   import themes, { type ThemeName } from "./themes";
+  import type { ColorModePreference } from "$lib/colorMode";
 
   export let open: boolean;
   export let serverVersion: string;
@@ -13,6 +14,7 @@
   let inputTheme: ThemeName;
   let inputScrollback: number;
   let inputSnapToGrid: boolean;
+  let inputColorMode: ColorModePreference;
 
   let initialized = false;
   $: (open, (initialized = false));
@@ -22,6 +24,7 @@
     inputTheme = $settings.theme;
     inputScrollback = $settings.scrollback;
     inputSnapToGrid = $settings.snapToGrid;
+    inputColorMode = $settings.colorMode;
   }
 </script>
 
@@ -53,6 +56,29 @@
     </div>
     <div class="item">
       <div>
+        <p class="item-title">Appearance</p>
+        <p class="item-subtitle">
+          Choose the application UI mode. Terminal and note colors are not
+          changed.
+        </p>
+      </div>
+      <div class="relative">
+        <ChevronDownIcon
+          class="absolute top-[11px] right-2.5 w-4 h-4 text-zinc-400"
+        />
+        <select
+          class="input-common !pr-5"
+          bind:value={inputColorMode}
+          on:change={() => updateSettings({ colorMode: inputColorMode })}
+        >
+          <option value="system">Follow system</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </div>
+    </div>
+    <div class="item">
+      <div>
         <p class="item-title">Name</p>
         <p class="item-subtitle">Choose how you appear to other users.</p>
       </div>
@@ -73,7 +99,9 @@
     <div class="item">
       <div>
         <p class="item-title">Color palette</p>
-        <p class="item-subtitle">Color theme for text in terminals.</p>
+        <p class="item-subtitle">
+          Default color theme for newly created terminals.
+        </p>
       </div>
       <div class="relative">
         <ChevronDownIcon
@@ -159,5 +187,15 @@
     @apply w-52 px-3 py-2 text-sm rounded-md bg-transparent hover:bg-white/5;
     @apply border border-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/50;
     @apply appearance-none transition-colors;
+  }
+
+  select.input-common {
+    background-color: var(--control-bg);
+    color: var(--control-text);
+  }
+
+  select.input-common option {
+    background-color: var(--control-bg);
+    color: var(--control-text);
   }
 </style>

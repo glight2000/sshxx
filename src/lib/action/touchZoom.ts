@@ -37,6 +37,30 @@ const getNearestScrollableContainer = (
   return document;
 };
 
+/** Whether a wheel event started inside a scrollable descendant of the canvas. */
+const isInsideScrollableContent = (
+  target: EventTarget | null,
+  boundary: HTMLElement,
+) => {
+  let element = target instanceof HTMLElement ? target : null;
+  while (element && element !== boundary) {
+    const { overflowX, overflowY } = window.getComputedStyle(element);
+    const scrollsVertically =
+      element.scrollHeight > element.clientHeight &&
+      (overflowY === "auto" ||
+        overflowY === "scroll" ||
+        overflowY === "overlay");
+    const scrollsHorizontally =
+      element.scrollWidth > element.clientWidth &&
+      (overflowX === "auto" ||
+        overflowX === "scroll" ||
+        overflowX === "overlay");
+    if (scrollsVertically || scrollsHorizontally) return true;
+    element = element.parentElement;
+  }
+  return false;
+};
+
 function isDarwin(): boolean {
   return /Mac|iPod|iPhone|iPad/.test(window.navigator.platform);
 }
@@ -72,6 +96,8 @@ export class TouchZoom {
   #delta: number[] = [0, 0];
   #lastMovement = 1;
   #wheelLastTimeStamp = 0;
+  #middlePointerId: number | null = null;
+  #middleLastPoint: number[] = [0, 0];
 
   #callbacks = new Set<(manual: boolean) => void>();
 
@@ -93,6 +119,25 @@ export class TouchZoom {
     this.#updateBounds();
     window.addEventListener("resize", this.#updateBoundsD);
     this.#scrollingAnchor.addEventListener("scroll", this.#updateBoundsD);
+    node.addEventListener("pointerdown", this.#handleMiddlePointerDown, {
+      capture: true,
+    });
+    node.addEventListener("auxclick", this.#preventMiddleAuxClick, {
+      capture: true,
+    });
+    window.addEventListener("pointermove", this.#handleMiddlePointerMove, {
+      capture: true,
+    });
+    window.addEventListener("pointerup", this.#handleMiddlePointerEnd, {
+      capture: true,
+    });
+    window.addEventListener("pointercancel", this.#handleMiddlePointerEnd, {
+      capture: true,
+    });
+    window.addEventListener("wheel", this.#handleForcedWheel, {
+      capture: true,
+      passive: false,
+    });
 
     this.#resizeObserver = new ResizeObserver((entries) => {
       if (this.isPinching) return;
@@ -147,6 +192,45 @@ export class TouchZoom {
 
   #updateBoundsD = debounce(this.#updateBounds, 100);
 
+  #handleMiddlePointerDown = (event: PointerEvent) => {
+    if (event.button !== 1 || this.#middlePointerId !== null) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.#middlePointerId = event.pointerId;
+    this.#middleLastPoint = [event.clientX, event.clientY];
+    this.#node.classList.add("canvas-middle-panning");
+  };
+
+  #handleMiddlePointerMove = (event: PointerEvent) => {
+    if (event.pointerId !== this.#middlePointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const point = [event.clientX, event.clientY];
+    const delta = Vec.sub(point, this.#middleLastPoint);
+    this.#middleLastPoint = point;
+    if (Vec.isEqual(delta, [0, 0])) return;
+
+    this.center = Vec.sub(this.center, Vec.div(delta, this.zoom));
+    this.#moved();
+  };
+
+  #handleMiddlePointerEnd = (event: PointerEvent) => {
+    if (event.pointerId !== this.#middlePointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.#middlePointerId = null;
+    this.#node.classList.remove("canvas-middle-panning");
+  };
+
+  #preventMiddleAuxClick = (event: MouseEvent) => {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   onMove(callback: (manual: boolean) => void): () => void {
     this.#callbacks.add(callback);
     return () => this.#callbacks.delete(callback);
@@ -192,8 +276,25 @@ export class TouchZoom {
     }
   }
 
-  #handleWheel: Handler<"wheel", WheelEvent> = ({ event: e }) => {
+  #handleForcedWheel = (event: WheelEvent) => {
+    if (event.ctrlKey) this.#processWheel(event);
+  };
+
+  #handleWheel: Handler<"wheel", WheelEvent> = ({ event }) => {
+    this.#processWheel(event);
+  };
+
+  #processWheel(e: WheelEvent) {
+    // Menus and other scrollable surfaces rendered inside the canvas own the
+    // wheel while hovered. This keeps their scroll state separate from canvas
+    // pan/zoom state, including when the canvas currently has no focus.
+    if (!e.ctrlKey && isInsideScrollableContent(e.target, this.#node)) {
+      e.stopPropagation();
+      return;
+    }
+
     e.preventDefault();
+    if (e.ctrlKey) e.stopPropagation();
     if (this.isPinching || e.timeStamp <= this.#wheelLastTimeStamp) return;
 
     this.#wheelLastTimeStamp = e.timeStamp;
@@ -238,7 +339,7 @@ export class TouchZoom {
 
     this.center = Vec.add(this.center, Vec.div(delta, this.zoom));
     this.#moved();
-  };
+  }
 
   #handlePinchStart: Handler<
     "pinch",
@@ -295,12 +396,35 @@ export class TouchZoom {
   destroy() {
     if (this.#node) {
       // @ts-ignore
-      document.addEventListener("gesturestart", this.#preventGesture);
+      document.removeEventListener("gesturestart", this.#preventGesture);
       // @ts-ignore
-      document.addEventListener("gesturechange", this.#preventGesture);
+      document.removeEventListener("gesturechange", this.#preventGesture);
 
       window.removeEventListener("resize", this.#updateBoundsD);
       this.#scrollingAnchor.removeEventListener("scroll", this.#updateBoundsD);
+      this.#node.removeEventListener(
+        "pointerdown",
+        this.#handleMiddlePointerDown,
+        { capture: true },
+      );
+      this.#node.removeEventListener("auxclick", this.#preventMiddleAuxClick, {
+        capture: true,
+      });
+      window.removeEventListener("pointermove", this.#handleMiddlePointerMove, {
+        capture: true,
+      });
+      window.removeEventListener("pointerup", this.#handleMiddlePointerEnd, {
+        capture: true,
+      });
+      window.removeEventListener(
+        "pointercancel",
+        this.#handleMiddlePointerEnd,
+        { capture: true },
+      );
+      window.removeEventListener("wheel", this.#handleForcedWheel, {
+        capture: true,
+      });
+      this.#node.classList.remove("canvas-middle-panning");
 
       this.#resizeObserver.disconnect();
 

@@ -16,6 +16,12 @@ pub struct WsWinsize {
     pub rows: u16,
     /// The number of columns in the terminal.
     pub cols: u16,
+    /// Exact canvas window width, or zero for legacy content sizing.
+    #[serde(default)]
+    pub width: u16,
+    /// Exact canvas window height, or zero for legacy content sizing.
+    #[serde(default)]
+    pub height: u16,
     /// User-defined title override, or an empty string to use the terminal title.
     #[serde(default)]
     pub title: String,
@@ -28,6 +34,9 @@ pub struct WsWinsize {
     /// Canvas page containing this terminal.
     #[serde(default = "default_page_id")]
     pub page_id: u32,
+    /// Per-terminal color theme, or empty for a legacy client default.
+    #[serde(default)]
+    pub theme: String,
 }
 
 fn default_opacity() -> u8 {
@@ -53,10 +62,13 @@ impl Default for WsWinsize {
             y: 0,
             rows: 24,
             cols: 80,
+            width: 0,
+            height: 0,
             title: String::new(),
             background: String::new(),
             opacity: default_opacity(),
             page_id: default_page_id(),
+            theme: String::new(),
         }
     }
 }
@@ -96,6 +108,43 @@ pub struct WsPage {
     pub name: String,
 }
 
+/// Authentication behavior for a reusable SSH connection.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum WsSshAuthMethod {
+    /// Let OpenSSH use its configuration and normal authentication order.
+    #[default]
+    Default,
+    /// Prefer keys exposed by an SSH agent.
+    Agent,
+    /// Use a specific private-key file.
+    KeyFile,
+    /// Prompt for a password inside the terminal without storing it.
+    Password,
+}
+
+/// Reusable SSH connection metadata. Passwords are intentionally absent.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WsSshProfile {
+    /// Stable profile identifier.
+    pub id: String,
+    /// User-visible unique connection name.
+    pub name: String,
+    /// OpenSSH host name, address, or config alias.
+    pub host: String,
+    /// TCP port for the SSH service.
+    pub port: u16,
+    /// Optional remote username.
+    pub username: String,
+    /// Authentication method passed to OpenSSH.
+    pub auth_method: WsSshAuthMethod,
+    /// Private key path on the daemon host, when applicable.
+    pub key_path: String,
+    /// Whether OpenSSH may accept a new host key on first use.
+    pub accept_new_host_key: bool,
+}
+
 /// Real-time message providing information about a user.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +180,8 @@ pub enum WsServer {
     Notes(Vec<(Sid, WsNote)>),
     /// Snapshot of named canvas pages.
     Pages(Vec<WsPage>),
+    /// Snapshot of reusable SSH connection profiles.
+    SshProfiles(Vec<WsSshProfile>),
     /// Current editor of a note, or none after editing ends.
     NoteEditing(Sid, u32, Option<Uid>),
     /// Character-level live text update for a note.
@@ -162,14 +213,34 @@ pub enum WsClient {
     SetFocus(Option<(Sid, u32)>),
     /// Create a new shell.
     Create(i32, i32, u32),
+    /// Create a new shell with an explicit initial terminal size.
+    CreateSized(i32, i32, u16, u16, u32),
+    /// Create a shell with explicit size and per-terminal color theme.
+    CreateStyled(i32, i32, u16, u16, u32, String),
+    /// Create a shell with exact canvas and PTY dimensions.
+    CreateWindowed(i32, i32, u16, u16, u16, u16, u32, String),
+    /// Create a shell using a saved SSH connection profile.
+    CreateSsh(String, i32, i32, u16, u16, u32),
+    /// Create an SSH shell with explicit size and per-terminal color theme.
+    CreateSshStyled(String, i32, i32, u16, u16, u32, String),
+    /// Create an SSH shell with exact canvas and PTY dimensions.
+    CreateSshWindowed(String, i32, i32, u16, u16, u16, u16, u32, String),
     /// Create a shell using another shell as its working-directory source.
     Clone(Sid, i32, i32, u32),
+    /// Clone a shell with an explicit initial terminal size.
+    CloneSized(Sid, i32, i32, u16, u16, u32),
+    /// Clone a shell with explicit size and per-terminal color theme.
+    CloneStyled(Sid, i32, i32, u16, u16, u32, String),
+    /// Clone a shell with exact canvas and PTY dimensions.
+    CloneWindowed(Sid, i32, i32, u16, u16, u16, u16, u32, String),
     /// Close a specific shell.
     Close(Sid, u32),
     /// Move a shell window to a new position and focus it.
     Move(Sid, u32, Option<WsWinsize>),
     /// Create a note at a canvas position.
     CreateNote(i32, i32, u32),
+    /// Create a note with an explicit initial canvas size.
+    CreateNoteSized(i32, i32, u16, u16, u32),
     /// Close a note.
     CloseNote(Sid, u32),
     /// Update a note, or bring it to the front when no value is supplied.
@@ -182,6 +253,10 @@ pub enum WsClient {
     CreatePage(String),
     /// Rename an existing canvas page.
     RenamePage(u32, String),
+    /// Create or update a reusable SSH connection profile.
+    UpsertSshProfile(WsSshProfile),
+    /// Delete a reusable SSH connection profile by stable ID.
+    DeleteSshProfile(String),
     /// Add user data to a given shell.
     Data(Sid, u32, Bytes, u64),
     /// Subscribe to a shell, starting at a given chunk index.

@@ -44,8 +44,13 @@ pub struct Terminal {
 impl Terminal {
     /// Create a new terminal, with attached PTY.
     #[instrument]
-    pub async fn new(shell: &str, working_directory: Option<&Path>) -> Result<Terminal> {
-        let mut command = Command::new(shell);
+    pub async fn new(
+        program: &str,
+        args: &[String],
+        working_directory: Option<&Path>,
+    ) -> Result<Terminal> {
+        let mut command = Command::new(program);
+        command.args(args);
         if let Some(working_directory) = working_directory {
             command.current_dir(working_directory);
         }

@@ -44,6 +44,7 @@ message OpenRequest {
   optional bytes write_password_hash = 4; // Hashed write password, if read-only mode is enabled.
   string daemon_version = 5;              // Version of the daemon hosting terminal processes.
   optional WorkspaceState workspace = 6;  // Locally persisted workspace to restore.
+  optional SshProfileCollection ssh_profiles = 7; // Locally persisted SSH connection profiles.
 }
 
 // Details of a newly-created sshxx session.
@@ -65,6 +66,12 @@ message NewShell {
   int32 y = 3;   // Y position of the shell.
   optional uint32 source_id = 4; // Shell whose working directory should be copied.
   uint32 page_id = 5; // Canvas page containing the shell.
+  uint32 rows = 6; // Initial terminal rows, or zero for the default.
+  uint32 cols = 7; // Initial terminal columns, or zero for the default.
+  optional SshProfile ssh_profile = 8; // Optional SSH connection to launch instead of the local shell.
+  string theme = 9; // Per-terminal color theme, or empty for a legacy default.
+  uint32 width = 10; // Exact canvas window width, or zero for legacy auto sizing.
+  uint32 height = 11; // Exact canvas window height, or zero for legacy auto sizing.
 }
 
 // Bidirectional streaming update from the client.
@@ -89,6 +96,7 @@ message ServerUpdate {
     SequenceNumbers sync = 4;  // Periodic sequence number sync.
     TerminalSize resize = 5;   // Resize a terminal window.
     WorkspaceState workspace = 6; // Workspace metadata to persist locally.
+    SshProfileCollection ssh_profiles = 7; // SSH connection profiles to persist locally.
     fixed64 ping = 14;         // Request a pong, with the timestamp.
     string error = 15;
   }
@@ -112,6 +120,9 @@ message WorkspaceShell {
   string background = 7;
   uint32 opacity = 8;
   uint32 page_id = 9;
+  string theme = 10;
+  uint32 width = 11;
+  uint32 height = 12;
 }
 
 message WorkspaceNote {
@@ -129,6 +140,32 @@ message WorkspaceNote {
 message WorkspacePage {
   uint32 id = 1;
   string name = 2;
+}
+
+// Authentication behavior for an OpenSSH connection profile.
+enum SshAuthMethod {
+  SSH_AUTH_DEFAULT = 0;
+  SSH_AUTH_AGENT = 1;
+  SSH_AUTH_KEY_FILE = 2;
+  SSH_AUTH_PASSWORD = 3;
+}
+
+// Reusable OpenSSH connection configuration owned by sshxx-daemon.
+message SshProfile {
+  string id = 1;
+  string name = 2;
+  string host = 3;
+  uint32 port = 4;
+  string username = 5;
+  SshAuthMethod auth_method = 6;
+  string key_path = 7;
+  bool accept_new_host_key = 8;
+}
+
+// Versioned collection encrypted on disk by sshxx-daemon.
+message SshProfileCollection {
+  uint32 format_version = 1;
+  repeated SshProfile profiles = 2;
 }
 
 // Request to stop an sshxx session gracefully.
@@ -151,6 +188,7 @@ message SerializedSession {
   map<uint32, SerializedNote> notes = 7;
   string daemon_version = 8;
   repeated SerializedPage pages = 9;
+  repeated SshProfile ssh_profiles = 10;
 }
 
 message SerializedShell {
@@ -167,6 +205,9 @@ message SerializedShell {
   string background = 11;
   uint32 opacity = 12;
   uint32 page_id = 13;
+  string theme = 14;
+  uint32 width = 15;
+  uint32 height = 16;
 }
 
 message SerializedNote {

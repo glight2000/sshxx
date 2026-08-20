@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" data-color-mode="dark">
   <head>
     <meta charset="utf-8" />
     <link rel="icon" href="/favicon.svg" />
@@ -7,6 +7,26 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no"
     />
+
+    <script>
+      try {
+        const saved = JSON.parse(
+          localStorage.getItem("sshx-settings-store") || "{}",
+        );
+        const preference = ["light", "dark"].includes(saved.colorMode)
+          ? saved.colorMode
+          : matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+        document.documentElement.dataset.colorMode = preference;
+      } catch {
+        document.documentElement.dataset.colorMode = matchMedia(
+          "(prefers-color-scheme: dark)",
+        ).matches
+          ? "dark"
+          : "light";
+      }
+    </script>
 
     <title>sshxx</title>
     <meta
@@ -25,7 +45,7 @@
 
     %sveltekit.head%
   </head>
-  <body class="dark:bg-[#111111] dark:text-white">
+  <body>
     <div>%sveltekit.body%</div>
   </body>
 </html>

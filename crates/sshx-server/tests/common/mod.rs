@@ -197,6 +197,7 @@ impl ClientSocket {
                     WsServer::Shells(shells) => self.shells = BTreeMap::from_iter(shells),
                     WsServer::Notes(notes) => self.notes = BTreeMap::from_iter(notes),
                     WsServer::Pages(pages) => self.pages = pages,
+                    WsServer::SshProfiles(_) => {}
                     WsServer::NoteEditing(id, page_id, editor) => {
                         self.note_editors.remove(&id);
                         if let Some(editor) = editor {

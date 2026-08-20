@@ -13,11 +13,13 @@
   import { Encrypt } from "./encrypt";
   import { createLock } from "./lock";
   import { Srocket } from "./srocket";
+  import { isNativeApp } from "./runtime";
   import type {
     WsClient,
     WsNote,
     WsPage,
     WsServer,
+    WsSshProfile,
     WsUser,
     WsWinsize,
   } from "./protocol";
@@ -28,6 +30,9 @@
   import NetworkInfo from "./ui/NetworkInfo.svelte";
   import Note from "./ui/Note.svelte";
   import PagePager from "./ui/PagePager.svelte";
+  import ResizeHandles, {
+    type ResizeDirection,
+  } from "./ui/ResizeHandles.svelte";
   import Settings from "./ui/Settings.svelte";
   import Toolbar from "./ui/Toolbar.svelte";
   import TerminalSearch, {
@@ -38,8 +43,19 @@
   import LiveCursor from "./ui/LiveCursor.svelte";
   import { slide } from "./action/slide";
   import { TouchZoom, INITIAL_ZOOM } from "./action/touchZoom";
-  import { arrangeNewTerminal } from "./arrange";
+  import { arrangeNewCanvasItem } from "./arrange";
+  import {
+    GRID_SIZE,
+    gridAlignedRect,
+    gridLeadingEdge,
+    gridTrailingEdge,
+  } from "./grid";
   import { settings } from "./settings";
+  import {
+    LOCAL_VIEW_STATE_VERSION,
+    localViewStateKey,
+    parseLocalViewState,
+  } from "./viewState";
   import { EyeIcon } from "svelte-feather-icons";
 
   export let id: string;
@@ -58,24 +74,31 @@
   // Terminal width and height limits.
   const TERM_MIN_ROWS = 8;
   const TERM_MIN_COLS = 32;
-  const GRID_SIZE = 24;
-  const GRID_EDGE_GAP = GRID_SIZE / 10;
+  const TERM_INITIAL_ROWS = 26;
+  const TERM_INITIAL_COLS = 79;
+  const TERM_INITIAL_WIDTH = 715;
+  const TERM_INITIAL_HEIGHT = 523;
+  const NOTE_INITIAL_WIDTH = 384;
+  const NOTE_INITIAL_HEIGHT = 224;
   const MAX_TERMINAL_HISTORY = 2 * 1024 * 1024;
-
-  const nearestGridPoint = (value: number) =>
-    Math.round(value / GRID_SIZE) * GRID_SIZE;
-  const snapLeadingEdge = (value: number, canvasOffset: number) =>
-    $settings.snapToGrid
-      ? Math.round(
-          nearestGridPoint(value + canvasOffset) + GRID_EDGE_GAP - canvasOffset,
-        )
-      : value;
-  const snapTrailingEdge = (value: number, canvasOffset: number) =>
-    $settings.snapToGrid
-      ? Math.round(
-          nearestGridPoint(value + canvasOffset) - GRID_EDGE_GAP - canvasOffset,
-        )
-      : value;
+  const snapLeadingEdge = (value: number) =>
+    $settings.snapToGrid ? gridLeadingEdge(value) : value;
+  const snapTrailingEdge = (value: number) =>
+    $settings.snapToGrid ? gridTrailingEdge(value) : value;
+  const resizesWest = (direction: ResizeDirection) => direction.endsWith("w");
+  const resizesEast = (direction: ResizeDirection) => direction.endsWith("e");
+  const resizesNorth = (direction: ResizeDirection) =>
+    direction.startsWith("n");
+  const resizesSouth = (direction: ResizeDirection) =>
+    direction.startsWith("s");
+  const resizeCursor = (direction: ResizeDirection) =>
+    direction === "n" || direction === "s"
+      ? "ns-resize"
+      : direction === "e" || direction === "w"
+        ? "ew-resize"
+        : direction === "ne" || direction === "sw"
+          ? "nesw-resize"
+          : "nwse-resize";
 
   function getConstantOffset() {
     return [
@@ -88,6 +111,38 @@
   let touchZoom: TouchZoom;
   let center = [0, 0];
   let zoom = INITIAL_ZOOM;
+  let localViewStorageKey = "";
+  let localViewSaveTimer: number | null = null;
+
+  function saveLocalViewState() {
+    if (!localViewStorageKey) return;
+    if (localViewSaveTimer !== null) {
+      window.clearTimeout(localViewSaveTimer);
+      localViewSaveTimer = null;
+    }
+    pageViews[activePageId] = { center: [...center], zoom };
+    try {
+      window.localStorage.setItem(
+        localViewStorageKey,
+        JSON.stringify({
+          version: LOCAL_VIEW_STATE_VERSION,
+          activePageId: preferredPageId,
+          pages: pageViews,
+        }),
+      );
+      window.localStorage.removeItem(`sshx.activePage.${id}`);
+    } catch (error) {
+      console.warn("Could not persist local canvas view state.", error);
+    }
+  }
+
+  function scheduleLocalViewSave() {
+    if (!localViewStorageKey) return;
+    if (localViewSaveTimer !== null) {
+      window.clearTimeout(localViewSaveTimer);
+    }
+    localViewSaveTimer = window.setTimeout(saveLocalViewState, 250);
+  }
 
   let showChat = false; // @hmr:keep
   let settingsOpen = false; // @hmr:keep
@@ -107,17 +162,50 @@
   }
 
   onMount(() => {
-    const storedPageId = Number(
-      window.localStorage.getItem(`sshx.activePage.${id}`),
+    const configuredServer = isNativeApp()
+      ? new URLSearchParams(window.location.search).get("server")
+      : null;
+    localViewStorageKey = localViewStateKey(
+      id,
+      window.location.origin,
+      configuredServer,
     );
-    if (Number.isSafeInteger(storedPageId) && storedPageId > 0) {
-      preferredPageId = storedPageId;
+    let storedViewState = null;
+    try {
+      storedViewState = parseLocalViewState(
+        window.localStorage.getItem(localViewStorageKey),
+      );
+    } catch (error) {
+      console.warn("Could not load local canvas view state.", error);
     }
+    if (storedViewState) {
+      preferredPageId = storedViewState.activePageId;
+      for (const [pageId, view] of Object.entries(storedViewState.pages)) {
+        pageViews[Number(pageId)] = {
+          center: [...view.center],
+          zoom: view.zoom,
+        };
+      }
+    } else {
+      // One-time migration from the original active-page-only local setting.
+      const storedPageId = Number(
+        window.localStorage.getItem(`sshx.activePage.${id}`),
+      );
+      if (Number.isSafeInteger(storedPageId) && storedPageId > 0) {
+        preferredPageId = storedPageId;
+      }
+    }
+
     touchZoom = new TouchZoom(fabricEl, () => !hasActiveCanvasItem());
-    touchZoom.onMove(() => {
+    const initialView = pageViews[activePageId];
+    center = [...initialView.center];
+    zoom = initialView.zoom;
+    touchZoom.setView(center, zoom);
+    const unsubscribe = touchZoom.onMove(() => {
       center = touchZoom.center;
       zoom = touchZoom.zoom;
       pageViews[activePageId] = { center: [...center], zoom };
+      scheduleLocalViewSave();
 
       // Blur if the user is currently focused on a terminal.
       //
@@ -132,6 +220,10 @@
 
       showNetworkInfo = false;
     });
+    return () => {
+      unsubscribe();
+      saveLocalViewState();
+    };
   });
 
   /** Returns the mouse position in infinite grid coordinates, offset transformations and zoom. */
@@ -147,7 +239,46 @@
   let srocket: Srocket<WsServer, WsClient> | null = null;
 
   let connected = false;
+  let sessionReady = false;
   let exitReason: string | null = null;
+  let failureStage: "server" | "session" | null = null;
+  let readinessTimer: number | null = null;
+  let lastNotifiedConnectionIssue = "";
+
+  function clearReadinessTimer() {
+    if (readinessTimer !== null) {
+      window.clearTimeout(readinessTimer);
+      readinessTimer = null;
+    }
+  }
+
+  function reportConnectionIssue(message: string, stage: "server" | "session") {
+    exitReason = message;
+    failureStage = stage;
+    if (lastNotifiedConnectionIssue !== message) {
+      lastNotifiedConnectionIssue = message;
+      makeToast({ kind: "error", message }, 7000);
+    }
+  }
+
+  function scheduleReadinessWarning() {
+    if (readinessTimer !== null) return;
+    readinessTimer = window.setTimeout(() => {
+      readinessTimer = null;
+      if (sessionReady || exitReason) return;
+      if (connected) {
+        reportConnectionIssue(
+          "Connected to sshxx-server, but the session handshake timed out. Check that sshxx-daemon is running; retrying automatically.",
+          "session",
+        );
+      } else {
+        reportConnectionIssue(
+          "Unable to reach sshxx-server through the WebSocket endpoint. Check the server and reverse proxy; retrying automatically.",
+          "server",
+        );
+      }
+    }, 5000);
+  }
 
   /** Bound "write" method for each terminal. */
   const writers: Record<number, (data: string, replay?: boolean) => void> = {};
@@ -161,13 +292,21 @@
     number,
     (data: string, replay?: boolean) => void
   > = {};
+  // Transient collaboration state: synchronized, but never persisted.
   let userId = 0;
   let users: [number, WsUser][] = [];
+  let noteEditors: Record<number, { pageId: number; userId: number }> = {};
+
+  // Browser-memory-only derived state: neither synchronized nor persisted.
+  let terminalTitles: Record<number, string> = {};
+
+  // Shared workspace state: synchronized by server and persisted by daemon.
   let shells: [number, WsWinsize][] = [];
   let notes: [number, WsNote][] = [];
-  let terminalTitles: Record<number, string> = {};
-  let noteEditors: Record<number, { pageId: number; userId: number }> = {};
   let pages: WsPage[] = [{ id: 1, name: "Page 1" }];
+  let sshProfiles: WsSshProfile[] = [];
+
+  // Browser-local view state: never sent to server or persisted by daemon.
   let activePageId = 1;
   let preferredPageId = 1;
   let selectCreatedPage = false;
@@ -199,19 +338,21 @@
 
   let resizing = -1; // Terminal ID that is being resized.
   let resizingStartPointer = [0, 0];
-  let resizingStartBottomRight = [0, 0];
+  let resizingStartEdges = [0, 0, 0, 0];
+  let resizingStartPixels = [0, 0];
   let resizingStartSize: WsWinsize;
   let resizingCanvasCell = [0, 0];
   let resizingSize: WsWinsize; // Last resize message sent.
+  let resizingDirection: ResizeDirection = "se";
 
   let movingNote = -1;
   let movingNoteOrigin = [0, 0];
   let movingNoteState: WsNote;
   let resizingNote = -1;
   let resizingNoteStartPointer = [0, 0];
-  let resizingNoteStartBottomRight = [0, 0];
   let resizingNoteStartState: WsNote;
   let resizingNoteState: WsNote;
+  let resizingNoteDirection: ResizeDirection = "se";
 
   let chatMessages: ChatMessage[] = [];
   let newMessages = false;
@@ -237,6 +378,7 @@
       ? await (await Encrypt.new(writePassword)).zeros()
       : null;
 
+    scheduleReadinessWarning();
     srocket = new Srocket<WsServer, WsClient>(`/api/s/${id}`, {
       onMessage(message) {
         if (message.hello) {
@@ -249,9 +391,12 @@
             message: `Connected to the server.`,
           });
           exitReason = null;
+          failureStage = null;
         } else if (message.invalidAuth) {
-          exitReason =
-            "The URL is not correct, invalid end-to-end encryption key.";
+          reportConnectionIssue(
+            "The URL is not correct: the end-to-end encryption key is invalid.",
+            "session",
+          );
           srocket?.dispose();
         } else if (message.chunks) {
           let [id, pageId, replay, seqnum, chunks] = message.chunks;
@@ -276,6 +421,11 @@
             }
           });
         } else if (message.users) {
+          sessionReady = true;
+          clearReadinessTimer();
+          exitReason = null;
+          failureStage = null;
+          lastNotifiedConnectionIssue = "";
           users = message.users.map(([id, user]) => [
             id,
             { ...user, pageId: user.pageId ?? 1 },
@@ -291,10 +441,13 @@
             shellId,
             {
               ...winsize,
+              width: winsize.width ?? 0,
+              height: winsize.height ?? 0,
               title: winsize.title ?? "",
               background: winsize.background ?? "",
               opacity: winsize.opacity ?? 80,
               pageId: winsize.pageId ?? 1,
+              theme: winsize.theme ?? "",
             },
           ]);
           if (movingIsDone) {
@@ -332,6 +485,8 @@
           } else if (!pages.some((page) => page.id === activePageId)) {
             switchPage(pages[0].id);
           }
+        } else if (message.sshProfiles) {
+          sshProfiles = message.sshProfiles;
         } else if (message.noteEditing) {
           const [noteId, pageId, editor] = message.noteEditing;
           noteEditors = { ...noteEditors };
@@ -357,10 +512,14 @@
           serverLatencies = [...serverLatencies, serverLatency].slice(-10);
         } else if (message.error) {
           console.warn("Server error: " + message.error);
+          makeToast({ kind: "error", message: message.error });
         }
       },
 
       onConnect() {
+        exitReason = null;
+        failureStage = null;
+        scheduleReadinessWarning();
         srocket?.send({ authenticate: [encryptedZeros, writeEncryptedZeros] });
         if ($settings.name) {
           srocket?.send({ setName: $settings.name });
@@ -370,6 +529,8 @@
 
       onDisconnect() {
         connected = false;
+        sessionReady = false;
+        userId = 0;
         subscriptions.clear();
         users = [];
         noteEditors = {};
@@ -379,15 +540,32 @@
 
       onClose(event) {
         if (event.code === 4404) {
-          exitReason = "Failed to connect: " + event.reason;
+          reportConnectionIssue(
+            `Session is unavailable: ${event.reason || "sshxx-daemon is not connected"}. Retrying automatically.`,
+            "session",
+          );
         } else if (event.code === 4500) {
-          exitReason = "Internal server error: " + event.reason;
+          reportConnectionIssue(
+            `sshxx-server reported an internal error${event.reason ? `: ${event.reason}` : ""}. Retrying automatically.`,
+            "session",
+          );
+        } else {
+          reportConnectionIssue(
+            event.reason
+              ? `WebSocket closed (${event.code}): ${event.reason}. Retrying automatically.`
+              : "Unable to reach sshxx-server through the WebSocket endpoint. Check the server and reverse proxy; retrying automatically.",
+            "server",
+          );
         }
+        scheduleReadinessWarning();
       },
     });
   });
 
-  onDestroy(() => srocket?.dispose());
+  onDestroy(() => {
+    clearReadinessTimer();
+    srocket?.dispose();
+  });
 
   // Send periodic ping messages for latency estimation.
   onMount(() => {
@@ -415,12 +593,22 @@
   }
 
   let counter = 0n;
+  let connectionStatus: "connected" | "connecting" | "unavailable";
+
+  $: connectionStatus =
+    connected && sessionReady
+      ? "connected"
+      : exitReason
+        ? "unavailable"
+        : "connecting";
 
   function switchPage(pageId: number) {
     if (!pages.some((page) => page.id === pageId)) return;
     preferredPageId = pageId;
-    window.localStorage.setItem(`sshx.activePage.${id}`, String(pageId));
-    if (pageId === activePageId) return;
+    if (pageId === activePageId) {
+      scheduleLocalViewSave();
+      return;
+    }
     pageViews[activePageId] = { center: [...center], zoom };
     activePageId = pageId;
     const view = pageViews[pageId] ?? {
@@ -431,6 +619,7 @@
     center = [...view.center];
     zoom = view.zoom;
     touchZoom?.setView(center, zoom);
+    scheduleLocalViewSave();
     srocket?.send({ setCursor: [pageId, null] });
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -452,8 +641,8 @@
                 {
                   x: winsize.x,
                   y: winsize.y,
-                  width: wrapper.clientWidth / zoom,
-                  height: wrapper.clientHeight / zoom,
+                  width: winsize.width || wrapper.clientWidth / zoom,
+                  height: winsize.height || wrapper.clientHeight / zoom,
                 },
               ]
             : [];
@@ -469,13 +658,9 @@
     ];
   }
 
-  function nextCanvasPosition() {
-    const position = arrangeNewTerminal(existingCanvasItems());
-    const [offsetX, offsetY] = getConstantOffset();
-    return {
-      x: snapLeadingEdge(position.x, offsetX),
-      y: snapLeadingEdge(position.y, offsetY),
-    };
+  function nextCanvasRect(width: number, height: number) {
+    const position = arrangeNewCanvasItem(existingCanvasItems(), width, height);
+    return gridAlignedRect({ ...position, width, height });
   }
 
   async function handleCreate() {
@@ -493,23 +678,81 @@
       });
       return;
     }
-    const { x, y } = nextCanvasPosition();
-    srocket?.send({ create: [x, y, activePageId] });
+    const { x, y, width, height } = nextCanvasRect(
+      TERM_INITIAL_WIDTH,
+      TERM_INITIAL_HEIGHT,
+    );
+    srocket?.send({
+      createWindowed: [
+        x,
+        y,
+        width,
+        height,
+        TERM_INITIAL_ROWS,
+        TERM_INITIAL_COLS,
+        activePageId,
+        $settings.theme,
+      ],
+    });
+    touchZoom.moveTo([x, y], INITIAL_ZOOM);
+  }
+
+  function handleCreateSsh(profileId: string) {
+    if (!hasWriteAccess || shells.length >= 100) return;
+    const { x, y, width, height } = nextCanvasRect(
+      TERM_INITIAL_WIDTH,
+      TERM_INITIAL_HEIGHT,
+    );
+    srocket?.send({
+      createSshWindowed: [
+        profileId,
+        x,
+        y,
+        width,
+        height,
+        TERM_INITIAL_ROWS,
+        TERM_INITIAL_COLS,
+        activePageId,
+        $settings.theme,
+      ],
+    });
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
   function handleCreateNote() {
     if (hasWriteAccess === false || notes.length >= 100) return;
-    const { x, y } = nextCanvasPosition();
-    srocket?.send({ createNote: [x, y, activePageId] });
+    const { x, y, width, height } = nextCanvasRect(
+      NOTE_INITIAL_WIDTH,
+      NOTE_INITIAL_HEIGHT,
+    );
+    srocket?.send({ createNoteSized: [x, y, width, height, activePageId] });
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
   function handleDuplicate(sourceId: number) {
     if (!hasWriteAccess || shells.length >= 100) return;
-    const { x, y } = nextCanvasPosition();
-    srocket?.send({ clone: [sourceId, x, y, activePageId] });
-    touchZoom.moveTo([x, y], INITIAL_ZOOM);
+    const source = shells.find(([id]) => id === sourceId)?.[1];
+    if (!source) return;
+    const wrapper = termWrappers[sourceId];
+    const width =
+      source.width || wrapper?.clientWidth / zoom || TERM_INITIAL_WIDTH;
+    const height =
+      source.height || wrapper?.clientHeight / zoom || TERM_INITIAL_HEIGHT;
+    const rect = nextCanvasRect(width, height);
+    srocket?.send({
+      cloneWindowed: [
+        sourceId,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        source.rows,
+        source.cols,
+        activePageId,
+        source.theme || $settings.theme,
+      ],
+    });
+    touchZoom.moveTo([rect.x, rect.y], INITIAL_ZOOM);
   }
 
   $: canvasSearchItems = [
@@ -602,52 +845,98 @@
     function handleMouse(event: MouseEvent) {
       if (moving !== -1 && !movingIsDone) {
         const [x, y] = normalizePosition(event);
-        const [offsetX, offsetY] = getConstantOffset();
         movingSize = {
           ...movingSize,
-          x: snapLeadingEdge(Math.round(x - movingOrigin[0]), offsetX),
-          y: snapLeadingEdge(Math.round(y - movingOrigin[1]), offsetY),
+          x: snapLeadingEdge(Math.round(x - movingOrigin[0])),
+          y: snapLeadingEdge(Math.round(y - movingOrigin[1])),
         };
         sendMove({ move: [moving, movingSize.pageId, movingSize] });
       }
 
       if (movingNote !== -1) {
         const [x, y] = normalizePosition(event);
-        const [offsetX, offsetY] = getConstantOffset();
         movingNoteState = {
           ...movingNoteState,
-          x: snapLeadingEdge(Math.round(x - movingNoteOrigin[0]), offsetX),
-          y: snapLeadingEdge(Math.round(y - movingNoteOrigin[1]), offsetY),
+          x: snapLeadingEdge(Math.round(x - movingNoteOrigin[0])),
+          y: snapLeadingEdge(Math.round(y - movingNoteOrigin[1])),
         };
       }
 
       if (resizing !== -1) {
         const [x, y] = normalizePosition(event);
-        const [offsetX, offsetY] = getConstantOffset();
-        const right = snapTrailingEdge(
-          resizingStartBottomRight[0] + x - resizingStartPointer[0],
-          offsetX,
-        );
-        const bottom = snapTrailingEdge(
-          resizingStartBottomRight[1] + y - resizingStartPointer[1],
-          offsetY,
-        );
-        const cols = Math.max(
-          resizingStartSize.cols +
-            Math.round(
-              (right - resizingStartBottomRight[0]) / resizingCanvasCell[0],
-            ),
-          TERM_MIN_COLS,
-        );
-        const rows = Math.max(
-          resizingStartSize.rows +
-            Math.round(
-              (bottom - resizingStartBottomRight[1]) / resizingCanvasCell[1],
-            ),
-          TERM_MIN_ROWS,
-        );
-        if (rows !== resizingSize.rows || cols !== resizingSize.cols) {
-          resizingSize = { ...resizingSize, rows, cols };
+        const dx = x - resizingStartPointer[0];
+        const dy = y - resizingStartPointer[1];
+        const [startLeft, startTop, startRight, startBottom] =
+          resizingStartEdges;
+        let left = resizesWest(resizingDirection)
+          ? snapLeadingEdge(startLeft + dx)
+          : startLeft;
+        let top = resizesNorth(resizingDirection)
+          ? snapLeadingEdge(startTop + dy)
+          : startTop;
+        const right = resizesEast(resizingDirection)
+          ? snapTrailingEdge(startRight + dx)
+          : startRight;
+        const bottom = resizesSouth(resizingDirection)
+          ? snapTrailingEdge(startBottom + dy)
+          : startBottom;
+        const changesWidth =
+          resizesWest(resizingDirection) || resizesEast(resizingDirection);
+        const changesHeight =
+          resizesNorth(resizingDirection) || resizesSouth(resizingDirection);
+        const cols = changesWidth
+          ? Math.max(
+              resizingStartSize.cols +
+                Math.round(
+                  (right - left - resizingStartPixels[0]) /
+                    resizingCanvasCell[0],
+                ),
+              TERM_MIN_COLS,
+            )
+          : resizingStartSize.cols;
+        const rows = changesHeight
+          ? Math.max(
+              resizingStartSize.rows +
+                Math.round(
+                  (bottom - top - resizingStartPixels[1]) /
+                    resizingCanvasCell[1],
+                ),
+              TERM_MIN_ROWS,
+            )
+          : resizingStartSize.rows;
+        if (resizesWest(resizingDirection) && cols === TERM_MIN_COLS) {
+          left = Math.round(
+            startRight -
+              (resizingStartPixels[0] +
+                (cols - resizingStartSize.cols) * resizingCanvasCell[0]),
+          );
+        }
+        if (resizesNorth(resizingDirection) && rows === TERM_MIN_ROWS) {
+          top = Math.round(
+            startBottom -
+              (resizingStartPixels[1] +
+                (rows - resizingStartSize.rows) * resizingCanvasCell[1]),
+          );
+        }
+        const width = Math.round(right - left);
+        const height = Math.round(bottom - top);
+        if (
+          rows !== resizingSize.rows ||
+          cols !== resizingSize.cols ||
+          width !== resizingSize.width ||
+          height !== resizingSize.height ||
+          left !== resizingSize.x ||
+          top !== resizingSize.y
+        ) {
+          resizingSize = {
+            ...resizingSize,
+            x: left,
+            y: top,
+            width,
+            height,
+            rows,
+            cols,
+          };
           srocket?.send({
             move: [resizing, resizingSize.pageId, resizingSize],
           });
@@ -656,19 +945,38 @@
 
       if (resizingNote !== -1) {
         const [x, y] = normalizePosition(event);
-        const [offsetX, offsetY] = getConstantOffset();
-        const right = snapTrailingEdge(
-          resizingNoteStartBottomRight[0] + x - resizingNoteStartPointer[0],
-          offsetX,
-        );
-        const bottom = snapTrailingEdge(
-          resizingNoteStartBottomRight[1] + y - resizingNoteStartPointer[1],
-          offsetY,
-        );
+        const dx = x - resizingNoteStartPointer[0];
+        const dy = y - resizingNoteStartPointer[1];
+        const startRight =
+          resizingNoteStartState.x + resizingNoteStartState.width;
+        const startBottom =
+          resizingNoteStartState.y + resizingNoteStartState.height;
+        let left = resizesWest(resizingNoteDirection)
+          ? snapLeadingEdge(resizingNoteStartState.x + dx)
+          : resizingNoteStartState.x;
+        let top = resizesNorth(resizingNoteDirection)
+          ? snapLeadingEdge(resizingNoteStartState.y + dy)
+          : resizingNoteStartState.y;
+        let right = resizesEast(resizingNoteDirection)
+          ? snapTrailingEdge(startRight + dx)
+          : startRight;
+        let bottom = resizesSouth(resizingNoteDirection)
+          ? snapTrailingEdge(startBottom + dy)
+          : startBottom;
+        if (right - left < 240) {
+          if (resizesWest(resizingNoteDirection)) left = right - 240;
+          else right = left + 240;
+        }
+        if (bottom - top < 160) {
+          if (resizesNorth(resizingNoteDirection)) top = bottom - 160;
+          else bottom = top + 160;
+        }
         resizingNoteState = {
           ...resizingNoteState,
-          width: Math.max(240, Math.round(right - resizingNoteStartState.x)),
-          height: Math.max(160, Math.round(bottom - resizingNoteStartState.y)),
+          x: Math.round(left),
+          y: Math.round(top),
+          width: Math.round(right - left),
+          height: Math.round(bottom - top),
         };
       }
 
@@ -685,6 +993,9 @@
 
       if (resizing !== -1) {
         const resizedId = resizing;
+        srocket?.send({
+          move: [resizedId, resizingSize.pageId, resizingSize],
+        });
         shells = shells.map(([id, winsize]) =>
           id === resizedId ? [id, resizingSize] : [id, winsize],
         );
@@ -745,7 +1056,11 @@
 <!-- Wheel handler stops native macOS Chrome zooming on pinch. -->
 <main
   class="p-8"
-  class:cursor-nwse-resize={resizing !== -1 || resizingNote !== -1}
+  style:cursor={resizing !== -1
+    ? resizeCursor(resizingDirection)
+    : resizingNote !== -1
+      ? resizeCursor(resizingNoteDirection)
+      : undefined}
   on:wheel={(event) => event.preventDefault()}
 >
   <div
@@ -753,9 +1068,17 @@
   >
     <Toolbar
       {connected}
+      {connectionStatus}
+      connectionDetail={exitReason}
       {newMessages}
       {hasWriteAccess}
+      profiles={sshProfiles}
       on:create={handleCreate}
+      on:createSsh={(event) => handleCreateSsh(event.detail)}
+      on:saveSshProfile={(event) =>
+        srocket?.send({ upsertSshProfile: event.detail })}
+      on:deleteSshProfile={(event) =>
+        srocket?.send({ deleteSshProfile: event.detail })}
       on:createNote={handleCreateNote}
       on:chat={() => {
         showChat = !showChat;
@@ -780,13 +1103,16 @@
     {#if showNetworkInfo}
       <div class="absolute top-20 translate-x-[116.5px]">
         <NetworkInfo
-          status={connected
+          status={connectionStatus === "connected"
             ? "connected"
             : exitReason
-              ? "no-shell"
+              ? failureStage === "session"
+                ? "no-shell"
+                : "no-server"
               : "no-server"}
           serverLatency={integerMedian(serverLatencies)}
           shellLatency={integerMedian(shellLatencies)}
+          detail={exitReason}
         />
       </div>
     {/if}
@@ -835,28 +1161,22 @@
   -->
   <div
     class="absolute inset-0 -z-10"
-    style:background-image="radial-gradient(#333 {zoom}px, transparent 0)"
-    style:background-size="{24 * zoom}px {24 * zoom}px"
-    style:background-position="{-zoom * center[0]}px {-zoom * center[1]}px"
+    style:background-image="radial-gradient(var(--canvas-grid-dot) {zoom}px,
+    transparent 0)"
+    style:background-size="{GRID_SIZE * zoom}px {GRID_SIZE * zoom}px"
+    style:background-position="calc({zoom * 50}vw - {zoom *
+      (CONSTANT_OFFSET_LEFT + center[0])}px) calc({zoom * 50}vh - {zoom *
+      (CONSTANT_OFFSET_TOP + center[1])}px)"
   ></div>
 
   <div class="py-2">
-    {#if exitReason !== null}
-      <div class="text-red-400">{exitReason}</div>
-    {:else if connected}
-      <div class="flex items-center">
-        <div class="text-green-400">You are connected!</div>
-        {#if userId && hasWriteAccess === false}
-          <div
-            class="bg-yellow-900 text-yellow-200 px-1 py-0.5 rounded ml-3 inline-flex items-center gap-1"
-          >
-            <EyeIcon size="14" />
-            <span class="text-xs">Read-only</span>
-          </div>
-        {/if}
+    {#if userId && hasWriteAccess === false}
+      <div
+        class="bg-yellow-900 text-yellow-200 px-1 py-0.5 rounded inline-flex items-center gap-1"
+      >
+        <EyeIcon size="14" />
+        <span class="text-xs">Read-only</span>
       </div>
-    {:else}
-      <div class="text-yellow-400">Connecting…</div>
     {/if}
 
     <div class="mt-4">
@@ -874,14 +1194,23 @@
         style:top={OFFSET_TOP_CSS}
         style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
         transition:fade|local
-        use:slide={{ x: ws.x, y: ws.y, center, zoom, immediate: id === moving }}
+        use:slide={{
+          x: ws.x,
+          y: ws.y,
+          center,
+          zoom,
+          immediate: id === moving || id === resizing,
+        }}
         bind:this={termWrappers[id]}
       >
         <XTerm
           rows={ws.rows}
           cols={ws.cols}
+          windowWidth={ws.width}
+          windowHeight={ws.height}
           title={ws.title}
           background={ws.background}
+          colorTheme={ws.theme}
           opacity={ws.opacity}
           {hasWriteAccess}
           bind:write={writers[id]}
@@ -932,32 +1261,34 @@
           />
         </div>
 
-        <!-- Interactable element for resizing -->
-        <button
-          type="button"
-          aria-label="Resize terminal"
-          class="absolute w-5 h-5 -bottom-1 -right-1 cursor-nwse-resize"
-          on:mousedown={(event) => {
+        <ResizeHandles
+          disabled={!hasWriteAccess}
+          on:start={({ detail }) => {
             const canvasEl = termElements[id].querySelector(".xterm-screen");
             if (canvasEl) {
               const screenRect = canvasEl.getBoundingClientRect();
               const wrapperRect = termWrappers[id].getBoundingClientRect();
-              resizingStartPointer = normalizePosition(event);
-              resizingStartBottomRight = [
-                ws.x + wrapperRect.width / zoom,
-                ws.y + wrapperRect.height / zoom,
+              const canvasWidth = ws.width || wrapperRect.width / zoom;
+              const canvasHeight = ws.height || wrapperRect.height / zoom;
+              resizingStartPointer = normalizePosition(detail.event);
+              resizingStartEdges = [
+                ws.x,
+                ws.y,
+                ws.x + canvasWidth,
+                ws.y + canvasHeight,
               ];
+              resizingStartPixels = [canvasWidth, canvasHeight];
               resizingStartSize = ws;
               resizingCanvasCell = [
                 screenRect.width / zoom / ws.cols,
                 screenRect.height / zoom / ws.rows,
               ];
               resizingSize = ws;
+              resizingDirection = detail.direction;
               resizing = id;
             }
           }}
-          on:pointerdown={(event) => event.stopPropagation()}
-        ></button>
+        />
       </div>
     {/each}
 
@@ -1022,15 +1353,12 @@
             movingNoteState = startingNote;
             movingNote = id;
           }}
-          on:startResize={({ detail: event }) => {
+          on:startResize={({ detail }) => {
             const startingNote = displayNote;
-            resizingNoteStartPointer = normalizePosition(event);
-            resizingNoteStartBottomRight = [
-              startingNote.x + startingNote.width,
-              startingNote.y + startingNote.height,
-            ];
+            resizingNoteStartPointer = normalizePosition(detail.event);
             resizingNoteStartState = startingNote;
             resizingNoteState = startingNote;
+            resizingNoteDirection = detail.direction;
             srocket?.send({ updateNote: [id, note.pageId, null] });
             resizingNote = id;
           }}

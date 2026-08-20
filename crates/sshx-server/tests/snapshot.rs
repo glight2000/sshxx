@@ -38,10 +38,13 @@ async fn test_basic_restore() -> Result<()> {
         y: 105,
         rows: 200,
         cols: 20,
+        width: 714,
+        height: 518,
         title: "Build logs".into(),
         background: "#123456".into(),
         opacity: 72,
         page_id,
+        theme: "Tokyo Night".into(),
     };
     let note = WsNote {
         x: 120,

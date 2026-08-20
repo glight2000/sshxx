@@ -12,7 +12,7 @@ contributor for the original architecture and implementation. sshxx keeps that
 foundation while adding features and interaction changes for a different set of
 personal workflows.
 
-![sshxx workspace with a terminal and synchronized note](docs/images/sshxx-workspace.png)
+![sshxx workspace with a terminal, synchronized note, and canvas pages](docs/images/sshxx-workspace.png)
 
 ## Upstream relationship
 
@@ -30,9 +30,17 @@ git remote add upstream https://github.com/ekzhang/sshx.git
 - Browser and Tauri-based desktop/mobile viewers share one Svelte frontend.
 - The daemon persists pages, terminal layout, appearance, and notes in the
   current working directory.
-- Multiple independent canvas pages, global search, editable notes, terminal
-  duplication, appearance controls, and optional grid snapping.
+- Multiple independent canvas pages, page-aware global search, editable notes,
+  terminal duplication, eight-direction resizing, and optional grid snapping.
+- Per-terminal color themes, background overrides, opacity and title controls;
+  notes use a distinct neutral palette and retain independent appearance.
+- Light, dark, and system-following application modes without changing terminal
+  or note palettes.
+- A split terminal launcher with daemon-persisted OpenSSH connection profiles
+  for default/config, agent, private-key, and interactive password workflows.
 - Character-level note synchronization and page-aware collaboration events.
+- Browser-local page/view restoration is kept separate from synchronized
+  workspace data, while the toolbar connection indicator reports session state.
 - Updated terminal rendering and frontend/backend dependencies.
 - Product binaries are named `sshxx-daemon`, `sshxx-server`, and `sshxx-client`
   to distinguish them from upstream sshx.
@@ -77,6 +85,30 @@ directory. This compatibility filename is intentionally retained from sshx so
 existing workspaces continue to load. Start the daemon from the same directory
 to restore the saved pages, notes, layout, and terminal configuration. Shell
 processes themselves are recreated.
+
+Reusable SSH connection profiles are stored beside the workspace as an
+authenticated encrypted `.sshx-connections` file. Its local key is created with
+owner-only permissions in `.sshx-connections.key`. Password authentication
+always prompts inside OpenSSH and never stores the password. Unreadable or
+future-format files are preserved with an `.invalid-*` suffix so they cannot
+prevent the daemon from starting.
+
+## Canvas and terminal controls
+
+- Drag empty canvas space to pan. Middle-button drag always pans the canvas,
+  including while the pointer is over a terminal or note.
+- `Ctrl` + wheel always zooms the canvas and overrides browser zoom. Plain wheel
+  zooms when no terminal or note is active; focused terminals and scrollable
+  menus retain their normal scrolling behavior.
+- With grid snapping enabled, moving and resizing align window edges to visible
+  grid points with a small, consistent inset. New windows use the same grid.
+- Click a note to edit it; press `Escape` or click outside to leave editing.
+- When terminal text is selected, `Ctrl+C` copies and clears the selection.
+  Otherwise it is sent to the shell. `Shift+Enter` sends LF for applications
+  that support multiline input.
+- Terminal and note state belongs to its canvas page. Page switching and view
+  position are browser-local; page content and edits remain page-aware when
+  synchronized with other viewers.
 
 ## Build
 
@@ -141,6 +173,9 @@ instances.
 - Cross-browser and cross-platform UI automation does not yet cover drag/resize
   snapping, page persistence, terminal keyboard handling, or concurrent note
   editing.
+- TypeAhead local echo still reads xterm's private current-SGR state because the
+  public API does not expose an equivalent. The access is isolated, but needs a
+  compatibility guard before future xterm upgrades.
 
 ## TODO
 
@@ -152,6 +187,8 @@ instances.
       terminal shortcuts.
 - [ ] Design an explicit daemon-to-client process-status protocol before adding
       AI-agent icons or semantic completion notifications.
+- [ ] Add a capability-checked xterm compatibility adapter that disables
+      TypeAhead safely if the required private SGR API changes.
 - [ ] Finish the currently deferred cursor-style setting.
 
 ## Known issues and limitations
@@ -170,6 +207,9 @@ instances.
   for input, or finished.
 - WebGL terminal rendering falls back to the DOM renderer when WebGL is
   unavailable or blocked, which can reduce performance with large terminals.
+- TypeAhead depends on one private xterm API for exact style restoration during
+  local-echo rollback. An incompatible xterm update requires auditing that
+  boundary before upgrading.
 - Plain HTTP and WebSocket connections are intended for trusted local networks
   only. Internet-facing deployments must provide HTTPS/WSS and appropriate
   access controls at the proxy or network layer.

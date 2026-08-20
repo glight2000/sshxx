@@ -55,6 +55,12 @@ async fn test_command() -> Result<()> {
         y: 0,
         source_id: None,
         page_id: 1,
+        rows: 24,
+        cols: 80,
+        width: 0,
+        height: 0,
+        ssh_profile: None,
+        theme: String::new(),
     };
     updates.send(ServerMessage::CreateShell(new_shell)).await?;
 
@@ -104,10 +110,23 @@ async fn test_ws_basic() -> Result<()> {
     s.flush().await;
     assert_eq!(s.user_id, Uid(1));
 
-    s.send(WsClient::Create(0, 0, 1)).await;
+    s.send(WsClient::CreateWindowed(
+        2,
+        2,
+        714,
+        518,
+        24,
+        80,
+        1,
+        "Dracula".into(),
+    ))
+    .await;
     s.flush().await;
     assert_eq!(s.shells.len(), 1);
     assert!(s.shells.contains_key(&Sid(1)));
+    assert_eq!(s.shells.get(&Sid(1)).unwrap().theme, "Dracula");
+    assert_eq!(s.shells.get(&Sid(1)).unwrap().width, 714);
+    assert_eq!(s.shells.get(&Sid(1)).unwrap().height, 518);
 
     s.send(WsClient::Subscribe(Sid(1), 1, 0)).await;
     assert_eq!(s.read(Sid(1)), "");
@@ -129,11 +148,25 @@ async fn test_ws_basic() -> Result<()> {
     assert_eq!(viewer.read(Sid(1)), "hello! 123");
     assert_eq!(viewer.chunk_replays, [(Sid(1), true)]);
 
-    s.send(WsClient::Clone(Sid(1), 40, 60, 1)).await;
+    s.send(WsClient::CloneWindowed(
+        Sid(1),
+        42,
+        62,
+        714,
+        518,
+        24,
+        80,
+        1,
+        "Tokyo Night".into(),
+    ))
+    .await;
     s.flush().await;
     assert_eq!(s.shells.len(), 2);
-    assert_eq!(s.shells.get(&Sid(2)).unwrap().x, 40);
-    assert_eq!(s.shells.get(&Sid(2)).unwrap().y, 60);
+    assert_eq!(s.shells.get(&Sid(2)).unwrap().x, 42);
+    assert_eq!(s.shells.get(&Sid(2)).unwrap().y, 62);
+    assert_eq!(s.shells.get(&Sid(2)).unwrap().width, 714);
+    assert_eq!(s.shells.get(&Sid(2)).unwrap().height, 518);
+    assert_eq!(s.shells.get(&Sid(2)).unwrap().theme, "Tokyo Night");
 
     Ok(())
 }

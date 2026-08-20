@@ -5,11 +5,13 @@ use std::collections::{BTreeMap, HashSet};
 use anyhow::{ensure, Context, Result};
 use prost::Message;
 use sshx_core::{
-    proto::{SerializedNote, SerializedPage, SerializedSession, SerializedShell},
-    Sid, Uid,
+    proto::{
+        SerializedNote, SerializedPage, SerializedSession, SerializedShell, SshProfileCollection,
+    },
+    Sid, Uid, SSH_PROFILE_FORMAT_VERSION,
 };
 
-use super::{validate_page_name, Metadata, Session, State};
+use super::{validate_page_name, validate_terminal_window_size, Metadata, Session, State};
 use crate::web::protocol::{WsNote, WsPage, WsWinsize};
 
 /// Persist at most this many bytes of output in storage, per shell.
@@ -59,6 +61,9 @@ impl Session {
                         background: winsize.background,
                         opacity: winsize.opacity.into(),
                         page_id: winsize.page_id,
+                        theme: winsize.theme,
+                        width: winsize.width.into(),
+                        height: winsize.height.into(),
                     };
                     (sid.0, shell)
                 })
@@ -97,6 +102,7 @@ impl Session {
                     name: page.name.clone(),
                 })
                 .collect(),
+            ssh_profiles: self.ssh_profile_collection().profiles,
         };
         let data = message.encode_to_vec();
         ensure!(data.len() < MAX_SNAPSHOT_SIZE, "snapshot too large");
@@ -156,11 +162,15 @@ impl Session {
                     shell.opacity.try_into().context("opacity overflow")?
                 },
                 page_id: shell.page_id.max(1),
+                theme: shell.theme,
+                width: shell.width.try_into().context("width overflow")?,
+                height: shell.height.try_into().context("height overflow")?,
             };
             ensure!(
                 page_ids.contains(&winsize.page_id),
                 "terminal references a missing page"
             );
+            validate_terminal_window_size(winsize.width, winsize.height)?;
             winsizes.push((Sid(sid), winsize));
             let shell = State {
                 seqnum: shell.seqnum,
@@ -216,6 +226,10 @@ impl Session {
                 .collect::<Result<Vec<_>>>()?,
         );
         session.pages.send_replace(pages);
+        session.restore_ssh_profiles(SshProfileCollection {
+            format_version: SSH_PROFILE_FORMAT_VERSION,
+            profiles: message.ssh_profiles,
+        })?;
         session
             .counter
             .set_current_values(Sid(message.next_sid), Uid(message.next_uid));

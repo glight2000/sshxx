@@ -151,6 +151,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     let mut shells_stream = session.subscribe_shells();
     let mut notes_stream = session.subscribe_notes();
     let mut pages_stream = session.subscribe_pages();
+    let mut ssh_profiles_stream = session.subscribe_ssh_profiles();
     loop {
         let msg = tokio::select! {
             _ = session.terminated() => break,
@@ -169,6 +170,10 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
             }
             Some(pages) = pages_stream.next() => {
                 send(socket, WsServer::Pages(pages)).await?;
+                continue;
+            }
+            Some(profiles) = ssh_profiles_stream.next() => {
+                send(socket, WsServer::SshProfiles(profiles)).await?;
                 continue;
             }
             Some((id, page_id, replay, seqnum, chunks)) = chunks_rx.recv() => {
@@ -239,9 +244,310 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     y,
                     source_id: None,
                     page_id,
+                    rows: 0,
+                    cols: 0,
+                    width: 0,
+                    height: 0,
+                    ssh_profile: None,
+                    theme: String::new(),
                 };
                 update_tx
                     .send(ServerMessage::CreateShell(new_shell))
+                    .await?;
+            }
+            WsClient::CreateSized(x, y, rows, cols, page_id) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid page or terminal dimensions.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: None,
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        width: 0,
+                        height: 0,
+                        ssh_profile: None,
+                        theme: String::new(),
+                    }))
+                    .await?;
+            }
+            WsClient::CreateStyled(x, y, rows, cols, page_id, theme) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                    || theme.len() > 100
+                    || theme.chars().any(char::is_control)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid terminal creation settings.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: None,
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        width: 0,
+                        height: 0,
+                        ssh_profile: None,
+                        theme,
+                    }))
+                    .await?;
+            }
+            WsClient::CreateWindowed(x, y, width, height, rows, cols, page_id, theme) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(240..=4_000).contains(&width)
+                    || !(160..=4_000).contains(&height)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                    || theme.len() > 100
+                    || theme.chars().any(char::is_control)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid terminal creation settings.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: None,
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        ssh_profile: None,
+                        theme,
+                        width: width.into(),
+                        height: height.into(),
+                    }))
+                    .await?;
+            }
+            WsClient::CreateSsh(profile_id, x, y, rows, cols, page_id) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid page or terminal dimensions.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let profile = match session.ssh_profile(&profile_id) {
+                    Ok(profile) => profile,
+                    Err(err) => {
+                        send(socket, WsServer::Error(err.to_string())).await?;
+                        continue;
+                    }
+                };
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: None,
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        width: 0,
+                        height: 0,
+                        ssh_profile: Some(profile),
+                        theme: String::new(),
+                    }))
+                    .await?;
+            }
+            WsClient::CreateSshStyled(profile_id, x, y, rows, cols, page_id, theme) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                    || theme.len() > 100
+                    || theme.chars().any(char::is_control)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid terminal creation settings.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let profile = match session.ssh_profile(&profile_id) {
+                    Ok(profile) => profile,
+                    Err(err) => {
+                        send(socket, WsServer::Error(err.to_string())).await?;
+                        continue;
+                    }
+                };
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: None,
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        width: 0,
+                        height: 0,
+                        ssh_profile: Some(profile),
+                        theme,
+                    }))
+                    .await?;
+            }
+            WsClient::CreateSshWindowed(
+                profile_id,
+                x,
+                y,
+                width,
+                height,
+                rows,
+                cols,
+                page_id,
+                theme,
+            ) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(240..=4_000).contains(&width)
+                    || !(160..=4_000).contains(&height)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                    || theme.len() > 100
+                    || theme.chars().any(char::is_control)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid terminal creation settings.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let profile = match session.ssh_profile(&profile_id) {
+                    Ok(profile) => profile,
+                    Err(err) => {
+                        send(socket, WsServer::Error(err.to_string())).await?;
+                        continue;
+                    }
+                };
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: None,
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        ssh_profile: Some(profile),
+                        theme,
+                        width: width.into(),
+                        height: height.into(),
+                    }))
                     .await?;
             }
             WsClient::Clone(source_id, x, y, page_id) => {
@@ -273,9 +579,159 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     y,
                     source_id: Some(source_id.0),
                     page_id,
+                    rows: 0,
+                    cols: 0,
+                    width: 0,
+                    height: 0,
+                    ssh_profile: None,
+                    theme: String::new(),
                 };
                 update_tx
                     .send(ServerMessage::CreateShell(new_shell))
+                    .await?;
+            }
+            WsClient::CloneSized(source_id, x, y, rows, cols, page_id) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid page or terminal dimensions.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if let Err(err) = session.check_shell_page(source_id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: Some(source_id.0),
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        width: 0,
+                        height: 0,
+                        ssh_profile: None,
+                        theme: String::new(),
+                    }))
+                    .await?;
+            }
+            WsClient::CloneStyled(source_id, x, y, rows, cols, page_id, theme) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                    || theme.len() > 100
+                    || theme.chars().any(char::is_control)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid terminal creation settings.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if let Err(err) = session.check_shell_page(source_id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: Some(source_id.0),
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        width: 0,
+                        height: 0,
+                        ssh_profile: None,
+                        theme,
+                    }))
+                    .await?;
+            }
+            WsClient::CloneWindowed(source_id, x, y, width, height, rows, cols, page_id, theme) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || !(240..=4_000).contains(&width)
+                    || !(160..=4_000).contains(&height)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                    || theme.len() > 100
+                    || theme.chars().any(char::is_control)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid terminal creation settings.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if let Err(err) = session.check_shell_page(source_id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: Some(source_id.0),
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        ssh_profile: None,
+                        theme,
+                        width: width.into(),
+                        height: height.into(),
+                    }))
                     .await?;
             }
             WsClient::Close(id, page_id) => {
@@ -321,7 +777,25 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     continue;
                 }
                 let id = session.counter().next_sid();
-                if let Err(err) = session.add_note(id, (x, y), page_id) {
+                if let Err(err) = session.add_note(id, (x, y), page_id, None) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::CreateNoteSized(x, y, width, height, page_id) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if session.note_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 notes.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                if let Err(err) = session.add_note(id, (x, y), page_id, Some((width, height))) {
                     send(socket, WsServer::Error(err.to_string())).await?;
                 }
             }
@@ -376,6 +850,24 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     continue;
                 }
                 if let Err(err) = session.rename_page(id, name) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::UpsertSshProfile(profile) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.upsert_ssh_profile(profile) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::DeleteSshProfile(id) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.delete_ssh_profile(&id) {
                     send(socket, WsServer::Error(err.to_string())).await?;
                 }
             }

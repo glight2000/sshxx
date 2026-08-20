@@ -90,7 +90,7 @@ export class Srocket<T, U> {
       this.#stateChange(true);
     };
     this.#ws.onclose = (event) => {
-      this.#options.onClose?.(event);
+      if (!this.#disposed) this.#options.onClose?.(event);
       this.#ws = null;
       this.#stateChange(false);
       setTimeout(() => this.#reconnect(), RECONNECT_DELAY);

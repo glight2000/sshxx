@@ -202,6 +202,101 @@ const tokyoNight: ITheme = {
   brightWhite: "#acb0d0",
 };
 
+/** Official Catppuccin Windows Terminal palettes. */
+const catppuccinMocha: ITheme = {
+  foreground: "#cdd6f4",
+  background: "#1e1e2e",
+  cursor: "#f5e0dc",
+  selectionBackground: "#585b70",
+  black: "#45475a",
+  red: "#f38ba8",
+  green: "#a6e3a1",
+  yellow: "#f9e2af",
+  blue: "#89b4fa",
+  magenta: "#f5c2e7",
+  cyan: "#94e2d5",
+  white: "#bac2de",
+  brightBlack: "#585b70",
+  brightRed: "#f38ba8",
+  brightGreen: "#a6e3a1",
+  brightYellow: "#f9e2af",
+  brightBlue: "#89b4fa",
+  brightMagenta: "#f5c2e7",
+  brightCyan: "#94e2d5",
+  brightWhite: "#a6adc8",
+};
+
+const catppuccinLatte: ITheme = {
+  foreground: "#4c4f69",
+  background: "#eff1f5",
+  cursor: "#dc8a78",
+  selectionBackground: "#acb0be",
+  black: "#5c5f77",
+  red: "#d20f39",
+  green: "#40a02b",
+  yellow: "#df8e1d",
+  blue: "#1e66f5",
+  magenta: "#ea76cb",
+  cyan: "#179299",
+  white: "#acb0be",
+  brightBlack: "#acb0be",
+  brightRed: "#d20f39",
+  brightGreen: "#40a02b",
+  brightYellow: "#df8e1d",
+  brightBlue: "#1e66f5",
+  brightMagenta: "#ea76cb",
+  brightCyan: "#179299",
+  brightWhite: "#bcc0cc",
+};
+
+/** Official Nord GNOME Terminal palette. */
+const nord: ITheme = {
+  foreground: "#d8dee9",
+  background: "#2e3440",
+  cursor: "#d8dee9",
+  selectionBackground: "#88c0d0",
+  black: "#3b4252",
+  red: "#bf616a",
+  green: "#a3be8c",
+  yellow: "#ebcb8b",
+  blue: "#81a1c1",
+  magenta: "#b48ead",
+  cyan: "#88c0d0",
+  white: "#e5e9f0",
+  brightBlack: "#4c566a",
+  brightRed: "#bf616a",
+  brightGreen: "#a3be8c",
+  brightYellow: "#ebcb8b",
+  brightBlue: "#81a1c1",
+  brightMagenta: "#b48ead",
+  brightCyan: "#8fbcbb",
+  brightWhite: "#eceff4",
+};
+
+/** Official Kanagawa Wave Alacritty palette. */
+const kanagawaWave: ITheme = {
+  foreground: "#dcd7ba",
+  background: "#1f1f28",
+  selectionForeground: "#c8c093",
+  selectionBackground: "#2d4f67",
+  black: "#090618",
+  red: "#c34043",
+  green: "#76946a",
+  yellow: "#c0a36e",
+  blue: "#7e9cd8",
+  magenta: "#957fb8",
+  cyan: "#6a9589",
+  white: "#c8c093",
+  brightBlack: "#727169",
+  brightRed: "#e82424",
+  brightGreen: "#98bb6c",
+  brightYellow: "#e6c384",
+  brightBlue: "#7fb4ca",
+  brightMagenta: "#938aa9",
+  brightCyan: "#7aa89f",
+  brightWhite: "#dcd7ba",
+};
+
 const themes = {
   "VS Code Dark": defaultDark,
   Hybrid: hybrid,
@@ -212,10 +307,18 @@ const themes = {
   "Gruvbox Dark": gruvboxDark,
   "Solarized Dark": solarizedDark,
   "Tokyo Night": tokyoNight,
+  "Catppuccin Mocha": catppuccinMocha,
+  "Catppuccin Latte": catppuccinLatte,
+  Nord: nord,
+  "Kanagawa Wave": kanagawaWave,
 };
 
 export type ThemeName = keyof typeof themes;
 
 export const defaultTheme: ThemeName = "VS Code Dark";
+
+export function isThemeName(value: string): value is ThemeName {
+  return Object.hasOwn(themes, value);
+}
 
 export default themes;

@@ -13,6 +13,7 @@ keywords = ["ssh", "terminal", "collaborative", "self-hosted"]
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+aes-gcm = "0.10.3"
 clap = { version = "4.6.6", features = ["derive", "env"] }
 prost = "0.14.4"
 rand = "0.10.2"

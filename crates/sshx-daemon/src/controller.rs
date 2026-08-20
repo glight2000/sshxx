@@ -18,8 +18,8 @@ use tonic::transport::Channel;
 use tracing::{debug, error, warn};
 
 use crate::encrypt::Encrypt;
-use crate::runner::{Runner, ShellData};
-use crate::workspace;
+use crate::runner::{Runner, ShellData, ShellOptions};
+use crate::{ssh_profiles, workspace};
 
 /// Interval for sending empty heartbeat messages to the server.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
@@ -48,6 +48,8 @@ pub struct Controller {
 
     workspace_path: Option<std::path::PathBuf>,
     workspace_tx: Option<watch::Sender<WorkspaceState>>,
+    ssh_profiles_path: Option<std::path::PathBuf>,
+    ssh_profiles_encrypt: Option<Encrypt>,
 }
 
 impl Controller {
@@ -58,7 +60,7 @@ impl Controller {
         runner: Runner,
         enable_readers: bool,
     ) -> Result<Self> {
-        Self::new_inner(origin, name, runner, enable_readers, None, None).await
+        Self::new_inner(origin, name, runner, enable_readers, None, None, None).await
     }
 
     /// Construct a controller with an optional fixed encryption key for local testing.
@@ -69,7 +71,16 @@ impl Controller {
         enable_readers: bool,
         encryption_key: Option<&str>,
     ) -> Result<Self> {
-        Self::new_inner(origin, name, runner, enable_readers, encryption_key, None).await
+        Self::new_inner(
+            origin,
+            name,
+            runner,
+            enable_readers,
+            encryption_key,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Construct a persistent controller using the default workspace file in
@@ -82,6 +93,7 @@ impl Controller {
         encryption_key: Option<&str>,
     ) -> Result<Self> {
         let workspace_path = workspace::path_in_current_dir()?;
+        let ssh_profiles_path = ssh_profiles::path_in_current_dir()?;
         Self::new_inner(
             origin,
             name,
@@ -89,6 +101,7 @@ impl Controller {
             enable_readers,
             encryption_key,
             Some(workspace_path),
+            Some(ssh_profiles_path),
         )
         .await
     }
@@ -100,6 +113,7 @@ impl Controller {
         enable_readers: bool,
         encryption_key: Option<&str>,
         workspace_path: Option<std::path::PathBuf>,
+        ssh_profiles_path: Option<std::path::PathBuf>,
     ) -> Result<Self> {
         debug!(%origin, "connecting to server");
         let encryption_key = encryption_key
@@ -142,6 +156,43 @@ impl Controller {
             None
         };
 
+        let (ssh_profiles_encrypt, ssh_profile_state) = if let Some(path) = &ssh_profiles_path {
+            match ssh_profiles::load_or_create_encryptor(path).await {
+                Ok(profile_encrypt) => {
+                    let profiles = match ssh_profiles::load(path, &profile_encrypt).await {
+                        Ok(Some(profiles)) => profiles,
+                        Ok(None) => ssh_profiles::empty(),
+                        Err(err) => {
+                            warn!(?err, path = %path.display(), "isolating invalid SSH profile file");
+                            match ssh_profiles::quarantine(path).await {
+                                Ok(destination) => {
+                                    warn!(path = %destination.display(), "preserved invalid SSH profile file")
+                                }
+                                Err(quarantine_err) => warn!(
+                                    ?quarantine_err,
+                                    "failed to isolate invalid SSH profile file"
+                                ),
+                            }
+                            ssh_profiles::empty()
+                        }
+                    };
+                    (Some(profile_encrypt), Some(profiles))
+                }
+                Err(err) => {
+                    warn!(?err, path = %path.display(), "replacing invalid SSH profile key");
+                    match ssh_profiles::replace_invalid_encryptor(path).await {
+                        Ok(profile_encrypt) => (Some(profile_encrypt), Some(ssh_profiles::empty())),
+                        Err(recovery_err) => {
+                            warn!(?recovery_err, path = %path.display(), "SSH profile persistence is unavailable");
+                            (None, Some(ssh_profiles::empty()))
+                        }
+                    }
+                }
+            }
+        } else {
+            (None, None)
+        };
+
         let req = OpenRequest {
             origin: origin.into(),
             encrypted_zeros: encrypt.zeros().into(),
@@ -149,6 +200,7 @@ impl Controller {
             write_password_hash,
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             workspace: workspace_state.clone(),
+            ssh_profiles: ssh_profile_state,
         };
         let mut resp = client.open(req).await?.into_inner();
         resp.url = resp.url + "#" + &encryption_key;
@@ -188,6 +240,8 @@ impl Controller {
             output_rx,
             workspace_path,
             workspace_tx,
+            ssh_profiles_path,
+            ssh_profiles_encrypt,
         })
     }
 
@@ -287,12 +341,34 @@ impl Controller {
                     let id = Sid(new_shell.id);
                     let center = (new_shell.x, new_shell.y);
                     let page_id = new_shell.page_id.max(1);
+                    let rows = u16::try_from(new_shell.rows)
+                        .ok()
+                        .filter(|value| (8..=500).contains(value))
+                        .unwrap_or(24);
+                    let cols = u16::try_from(new_shell.cols)
+                        .ok()
+                        .filter(|value| (32..=500).contains(value))
+                        .unwrap_or(80);
+                    let width = u16::try_from(new_shell.width)
+                        .ok()
+                        .filter(|value| *value == 0 || (240..=4_000).contains(value))
+                        .unwrap_or(0);
+                    let height = u16::try_from(new_shell.height)
+                        .ok()
+                        .filter(|value| *value == 0 || (160..=4_000).contains(value))
+                        .unwrap_or(0);
+                    let ssh_profile = new_shell.ssh_profile;
+                    let theme = new_shell.theme;
                     if !self.shells_tx.contains_key(&id) {
-                        let working_directory = if let Some(source_id) = new_shell.source_id {
-                            if let Some(sender) = self.shells_tx.get(&Sid(source_id)).cloned() {
-                                let (tx, rx) = oneshot::channel();
-                                if sender.send(ShellData::WorkingDirectory(tx)).await.is_ok() {
-                                    rx.await.ok().flatten()
+                        let working_directory = if ssh_profile.is_none() {
+                            if let Some(source_id) = new_shell.source_id {
+                                if let Some(sender) = self.shells_tx.get(&Sid(source_id)).cloned() {
+                                    let (tx, rx) = oneshot::channel();
+                                    if sender.send(ShellData::WorkingDirectory(tx)).await.is_ok() {
+                                        rx.await.ok().flatten()
+                                    } else {
+                                        None
+                                    }
                                 } else {
                                     None
                                 }
@@ -302,7 +378,20 @@ impl Controller {
                         } else {
                             None
                         };
-                        self.spawn_shell_task(id, center, page_id, working_directory);
+                        self.spawn_shell_task(
+                            id,
+                            center,
+                            page_id,
+                            ShellOptions {
+                                working_directory,
+                                ssh_profile,
+                                rows,
+                                cols,
+                                theme,
+                                width,
+                                height,
+                            },
+                        );
                     } else {
                         warn!(%id, "server asked to create duplicate shell");
                     }
@@ -339,6 +428,21 @@ impl Controller {
                         tx.send_replace(workspace);
                     }
                 }
+                ServerMessage::SshProfiles(profiles) => {
+                    if let (Some(path), Some(encrypt)) =
+                        (&self.ssh_profiles_path, &self.ssh_profiles_encrypt)
+                    {
+                        if let Err(err) = ssh_profiles::save(path, encrypt, &profiles).await {
+                            warn!(?err, path = %path.display(), "failed to persist SSH profiles");
+                            self.output_tx
+                                .send(ClientMessage::Error(
+                                    "Failed to save SSH connection profiles.".into(),
+                                ))
+                                .await
+                                .ok();
+                        }
+                    }
+                }
                 ServerMessage::Ping(ts) => {
                     // Echo back the timestamp, for stateless latency measurement.
                     send_msg(&tx, ClientMessage::Pong(ts)).await?;
@@ -356,7 +460,7 @@ impl Controller {
         id: Sid,
         center: (i32, i32),
         page_id: u32,
-        working_directory: Option<std::path::PathBuf>,
+        options: ShellOptions,
     ) {
         let (shell_tx, shell_rx) = mpsc::channel(16);
         let opt = self.shells_tx.insert(id, shell_tx);
@@ -366,6 +470,11 @@ impl Controller {
         let encrypt = self.encrypt.clone();
         let output_tx = self.output_tx.clone();
         tokio::spawn(async move {
+            let rows = options.rows;
+            let cols = options.cols;
+            let theme = options.theme.clone();
+            let width = options.width;
+            let height = options.height;
             debug!(%id, "spawning new shell");
             let new_shell = NewShell {
                 id: id.0,
@@ -373,13 +482,19 @@ impl Controller {
                 y: center.1,
                 source_id: None,
                 page_id,
+                rows: rows.into(),
+                cols: cols.into(),
+                ssh_profile: None,
+                theme,
+                width: width.into(),
+                height: height.into(),
             };
             if let Err(err) = output_tx.send(ClientMessage::CreatedShell(new_shell)).await {
                 error!(%id, ?err, "failed to send shell creation message");
                 return;
             }
             if let Err(err) = runner
-                .run(id, encrypt, shell_rx, output_tx.clone(), working_directory)
+                .run(id, encrypt, shell_rx, output_tx.clone(), options)
                 .await
             {
                 let err = ClientMessage::Error(err.to_string());

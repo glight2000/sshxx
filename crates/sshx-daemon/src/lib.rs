@@ -9,5 +9,6 @@
 pub mod controller;
 pub mod encrypt;
 pub mod runner;
+mod ssh_profiles;
 pub mod terminal;
 mod workspace;

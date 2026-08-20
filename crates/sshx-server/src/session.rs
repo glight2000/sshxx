@@ -9,10 +9,10 @@ use bytes::Bytes;
 use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 use sshx_core::{
     proto::{
-        server_update::ServerMessage, NewShell, SequenceNumbers, WorkspaceNote, WorkspacePage,
-        WorkspaceShell, WorkspaceState,
+        server_update::ServerMessage, NewShell, SequenceNumbers, SshAuthMethod, SshProfile,
+        SshProfileCollection, WorkspaceNote, WorkspacePage, WorkspaceShell, WorkspaceState,
     },
-    IdCounter, Sid, Uid, WORKSPACE_FORMAT_VERSION,
+    IdCounter, Sid, Uid, SSH_PROFILE_FORMAT_VERSION, WORKSPACE_FORMAT_VERSION,
 };
 use tokio::sync::{broadcast, watch, Notify};
 use tokio::time::Instant;
@@ -21,7 +21,9 @@ use tokio_stream::Stream;
 use tracing::{debug, warn};
 
 use crate::utils::Shutdown;
-use crate::web::protocol::{WsNote, WsPage, WsServer, WsUser, WsWinsize};
+use crate::web::protocol::{
+    WsNote, WsPage, WsServer, WsSshAuthMethod, WsSshProfile, WsUser, WsWinsize,
+};
 
 mod snapshot;
 
@@ -70,6 +72,9 @@ pub struct Session {
 
     /// Watch channel source for the ordered list of named canvas pages.
     pages: watch::Sender<Vec<WsPage>>,
+
+    /// Reusable SSH connection profiles owned and persisted by the daemon.
+    ssh_profiles: watch::Sender<Vec<WsSshProfile>>,
 
     /// User currently editing each note. This transient state is not persisted.
     note_editors: RwLock<HashMap<Sid, Uid>>,
@@ -140,6 +145,7 @@ impl Session {
                 name: "Page 1".into(),
             }])
             .0,
+            ssh_profiles: watch::channel(Vec::new()).0,
             note_editors: RwLock::new(HashMap::new()),
             workspace_revision: watch::channel(0).0,
             pending_restored_shells: Mutex::new(HashSet::new()),
@@ -196,6 +202,102 @@ impl Session {
         WatchStream::new(self.pages.subscribe())
     }
 
+    /// Receive a notification every time reusable SSH profiles change.
+    pub fn subscribe_ssh_profiles(&self) -> impl Stream<Item = Vec<WsSshProfile>> + Unpin {
+        WatchStream::new(self.ssh_profiles.subscribe())
+    }
+
+    /// Restore daemon-owned SSH profiles while ignoring no individual records.
+    pub fn restore_ssh_profiles(&self, collection: SshProfileCollection) -> Result<()> {
+        if collection.format_version != SSH_PROFILE_FORMAT_VERSION {
+            bail!(
+                "unsupported SSH profile format version {}",
+                collection.format_version
+            );
+        }
+        if collection.profiles.len() > 100 {
+            bail!("too many SSH profiles");
+        }
+        let mut profiles = Vec::with_capacity(collection.profiles.len());
+        for profile in collection.profiles {
+            let profile = ws_profile_from_proto(profile)?;
+            validate_ssh_profile(&profile, &profiles)?;
+            profiles.push(profile);
+        }
+        self.ssh_profiles.send_replace(profiles);
+        Ok(())
+    }
+
+    /// Return the persistable representation of all SSH profiles.
+    pub fn ssh_profile_collection(&self) -> SshProfileCollection {
+        SshProfileCollection {
+            format_version: SSH_PROFILE_FORMAT_VERSION,
+            profiles: self
+                .ssh_profiles
+                .borrow()
+                .iter()
+                .cloned()
+                .map(proto_profile_from_ws)
+                .collect(),
+        }
+    }
+
+    /// Add or update a reusable SSH connection profile.
+    pub fn upsert_ssh_profile(&self, mut profile: WsSshProfile) -> Result<()> {
+        profile.name = profile.name.trim().to_owned();
+        profile.host = profile.host.trim().to_owned();
+        profile.username = profile.username.trim().to_owned();
+        let current = self.ssh_profiles.borrow().clone();
+        let others = current
+            .iter()
+            .filter(|existing| existing.id != profile.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        validate_ssh_profile(&profile, &others)?;
+        if current.len() >= 100 && !current.iter().any(|item| item.id == profile.id) {
+            bail!("you can only save up to 100 SSH connections");
+        }
+        self.ssh_profiles.send_modify(|profiles| {
+            if let Some(existing) = profiles.iter_mut().find(|item| item.id == profile.id) {
+                *existing = profile.clone();
+            } else {
+                profiles.push(profile.clone());
+            }
+        });
+        self.update_tx
+            .try_send(ServerMessage::SshProfiles(self.ssh_profile_collection()))
+            .context("failed to queue SSH profile persistence")?;
+        Ok(())
+    }
+
+    /// Delete a reusable SSH connection profile by stable ID.
+    pub fn delete_ssh_profile(&self, id: &str) -> Result<()> {
+        let mut removed = false;
+        self.ssh_profiles.send_modify(|profiles| {
+            let old_len = profiles.len();
+            profiles.retain(|profile| profile.id != id);
+            removed = old_len != profiles.len();
+        });
+        if !removed {
+            bail!("SSH connection does not exist");
+        }
+        self.update_tx
+            .try_send(ServerMessage::SshProfiles(self.ssh_profile_collection()))
+            .context("failed to queue SSH profile persistence")?;
+        Ok(())
+    }
+
+    /// Resolve an SSH profile to the daemon transport representation.
+    pub fn ssh_profile(&self, id: &str) -> Result<SshProfile> {
+        self.ssh_profiles
+            .borrow()
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+            .map(proto_profile_from_ws)
+            .context("SSH connection does not exist")
+    }
+
     /// Return current note editors for initial WebSocket state.
     pub fn list_note_editors(&self) -> Vec<(Sid, u32, Uid)> {
         let notes = self.notes.borrow();
@@ -234,6 +336,9 @@ impl Session {
                     background: shell.background.clone(),
                     opacity: shell.opacity.into(),
                     page_id: shell.page_id,
+                    theme: shell.theme.clone(),
+                    width: shell.width.into(),
+                    height: shell.height.into(),
                 })
                 .collect(),
             notes: self
@@ -322,6 +427,12 @@ impl Session {
                     .try_into()
                     .context("terminal opacity overflow")?,
                 page_id: if shell.page_id == 0 { 1 } else { shell.page_id },
+                theme: shell.theme,
+                width: shell.width.try_into().context("terminal width overflow")?,
+                height: shell
+                    .height
+                    .try_into()
+                    .context("terminal height overflow")?,
             };
             if winsize.rows == 0 || winsize.cols == 0 {
                 bail!("terminal dimensions must be positive");
@@ -329,12 +440,19 @@ impl Session {
             validate_title(&winsize.title)?;
             validate_color(&winsize.background)?;
             validate_opacity(winsize.opacity)?;
+            validate_theme(&winsize.theme)?;
+            validate_terminal_window_size(winsize.width, winsize.height)?;
             if !page_ids.contains(&winsize.page_id) {
                 bail!("terminal references a missing page");
             }
 
             let id = Sid(shell.id);
             let page_id = winsize.page_id;
+            let rows = winsize.rows;
+            let cols = winsize.cols;
+            let theme = winsize.theme.clone();
+            let width = winsize.width;
+            let height = winsize.height;
             max_id = max_id.max(shell.id);
             shells.insert(id, State::default());
             source.push((id, winsize));
@@ -344,6 +462,12 @@ impl Session {
                 y: shell.y,
                 source_id: None,
                 page_id,
+                rows: rows.into(),
+                cols: cols.into(),
+                ssh_profile: None,
+                theme,
+                width: width.into(),
+                height: height.into(),
             });
         }
 
@@ -539,6 +663,9 @@ impl Session {
         id: Sid,
         center: (i32, i32),
         page_id: u32,
+        requested_terminal_size: (u16, u16),
+        requested_window_size: (u16, u16),
+        requested_theme: String,
     ) -> Result<Option<WsWinsize>> {
         use std::collections::hash_map::Entry::*;
         let restored = self.pending_restored_shells.lock().remove(&id);
@@ -557,6 +684,27 @@ impl Session {
         if !self.page_exists(page_id) {
             bail!("cannot add terminal to missing page");
         }
+        let (requested_rows, requested_cols) = requested_terminal_size;
+        let (requested_width, requested_height) = requested_window_size;
+        let rows = if requested_rows == 0 {
+            24
+        } else {
+            requested_rows
+        };
+        let cols = if requested_cols == 0 {
+            80
+        } else {
+            requested_cols
+        };
+        if !(8..=500).contains(&rows) || !(32..=500).contains(&cols) {
+            bail!("terminal dimensions are out of range");
+        }
+        if (requested_width != 0 && !(240..=4_000).contains(&requested_width))
+            || (requested_height != 0 && !(160..=4_000).contains(&requested_height))
+        {
+            bail!("terminal window dimensions are out of range");
+        }
+        validate_theme(&requested_theme)?;
 
         let _guard = match self.shells.write().entry(id) {
             Occupied(_) => bail!("shell already exists with id={id}"),
@@ -567,6 +715,11 @@ impl Session {
                 x: center.0,
                 y: center.1,
                 page_id,
+                rows,
+                cols,
+                width: requested_width,
+                height: requested_height,
+                theme: requested_theme,
                 ..Default::default()
             };
             source.push((id, winsize));
@@ -612,6 +765,8 @@ impl Session {
             validate_title(&winsize.title)?;
             validate_color(&winsize.background)?;
             validate_opacity(winsize.opacity)?;
+            validate_theme(&winsize.theme)?;
+            validate_terminal_window_size(winsize.width, winsize.height)?;
             if winsize.page_id != page_id {
                 bail!("terminal update cannot move between pages");
             }
@@ -627,9 +782,19 @@ impl Session {
     }
 
     /// Add a new note to the canvas.
-    pub fn add_note(&self, id: Sid, position: (i32, i32), page_id: u32) -> Result<()> {
+    pub fn add_note(
+        &self,
+        id: Sid,
+        position: (i32, i32),
+        page_id: u32,
+        requested_size: Option<(u16, u16)>,
+    ) -> Result<()> {
         if !self.page_exists(page_id) {
             bail!("cannot add note to missing page");
+        }
+        let (width, height) = requested_size.unwrap_or((384, 224));
+        if !(240..=2_000).contains(&width) || !(160..=2_000).contains(&height) {
+            bail!("note dimensions are out of range");
         }
         self.notes.send_modify(|notes| {
             notes.push((
@@ -637,10 +802,10 @@ impl Session {
                 WsNote {
                     x: position.0,
                     y: position.1,
-                    width: 384,
-                    height: 224,
+                    width,
+                    height,
                     text: String::new(),
-                    background: "#4b4534".into(),
+                    background: "#3f3f46".into(),
                     opacity: 80,
                     page_id,
                 },
@@ -1002,4 +1167,114 @@ fn validate_page_name(name: &str) -> Result<()> {
         bail!("page name must contain between 1 and 100 bytes");
     }
     Ok(())
+}
+
+fn validate_theme(theme: &str) -> Result<()> {
+    if theme.len() > 100 || theme.chars().any(char::is_control) {
+        bail!("terminal color theme is invalid");
+    }
+    Ok(())
+}
+
+pub(super) fn validate_terminal_window_size(width: u16, height: u16) -> Result<()> {
+    if (width == 0) != (height == 0)
+        || (width != 0 && !(240..=4_000).contains(&width))
+        || (height != 0 && !(160..=4_000).contains(&height))
+    {
+        bail!("terminal window dimensions are out of range");
+    }
+    Ok(())
+}
+
+fn validate_ssh_profile(profile: &WsSshProfile, others: &[WsSshProfile]) -> Result<()> {
+    if profile.id.is_empty()
+        || profile.id.len() > 64
+        || !profile
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        bail!("SSH connection ID is invalid");
+    }
+    if profile.name.trim().is_empty() || profile.name.len() > 100 {
+        bail!("SSH connection name must contain between 1 and 100 bytes");
+    }
+    if others
+        .iter()
+        .any(|other| other.name.eq_ignore_ascii_case(profile.name.trim()))
+    {
+        bail!("SSH connection names must be unique");
+    }
+    if profile.host.trim().is_empty()
+        || profile.host.len() > 255
+        || profile.host.starts_with('-')
+        || profile
+            .host
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        bail!("SSH host is invalid");
+    }
+    if profile.port == 0 {
+        bail!("SSH port must be positive");
+    }
+    if profile.username.len() > 100
+        || profile.username.starts_with('-')
+        || profile
+            .username
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        bail!("SSH username is invalid");
+    }
+    if profile.key_path.len() > 4_096 || profile.key_path.contains('\0') {
+        bail!("SSH private key path is invalid");
+    }
+    if profile.auth_method == WsSshAuthMethod::KeyFile && profile.key_path.trim().is_empty() {
+        bail!("SSH private key path is required");
+    }
+    Ok(())
+}
+
+fn ws_profile_from_proto(profile: SshProfile) -> Result<WsSshProfile> {
+    let auth_method = match SshAuthMethod::try_from(profile.auth_method)
+        .map_err(|_| anyhow::anyhow!("unsupported SSH authentication method"))?
+    {
+        SshAuthMethod::SshAuthDefault => WsSshAuthMethod::Default,
+        SshAuthMethod::SshAuthAgent => WsSshAuthMethod::Agent,
+        SshAuthMethod::SshAuthKeyFile => WsSshAuthMethod::KeyFile,
+        SshAuthMethod::SshAuthPassword => WsSshAuthMethod::Password,
+    };
+    Ok(WsSshProfile {
+        id: profile.id,
+        name: profile.name,
+        host: profile.host,
+        port: profile
+            .port
+            .try_into()
+            .context("SSH port is out of range")?,
+        username: profile.username,
+        auth_method,
+        key_path: profile.key_path,
+        accept_new_host_key: profile.accept_new_host_key,
+    })
+}
+
+fn proto_profile_from_ws(profile: WsSshProfile) -> SshProfile {
+    let auth_method = match profile.auth_method {
+        WsSshAuthMethod::Default => SshAuthMethod::SshAuthDefault,
+        WsSshAuthMethod::Agent => SshAuthMethod::SshAuthAgent,
+        WsSshAuthMethod::KeyFile => SshAuthMethod::SshAuthKeyFile,
+        WsSshAuthMethod::Password => SshAuthMethod::SshAuthPassword,
+    };
+    SshProfile {
+        id: profile.id,
+        name: profile.name,
+        host: profile.host,
+        port: profile.port.into(),
+        username: profile.username,
+        auth_method: auth_method.into(),
+        key_path: profile.key_path,
+        accept_new_host_key: profile.accept_new_host_key,
+    }
 }

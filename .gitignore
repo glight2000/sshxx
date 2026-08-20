@@ -20,6 +20,11 @@ id_ed25519
 /build
 .sshx-workspace
 .sshx-workspace.tmp
+.sshx-connections
+.sshx-connections.key
+.sshx-connections.key.invalid-*
+.sshx-connections.tmp
+.sshx-connections.invalid-*
 
 # Machine-specific deployment files.
 /deploy/center/

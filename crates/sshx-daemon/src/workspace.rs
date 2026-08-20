@@ -99,10 +99,13 @@ mod tests {
                 y: 24,
                 rows: 30,
                 cols: 100,
+                width: 714,
+                height: 518,
                 title: "Logs".into(),
                 background: "#112233".into(),
                 opacity: 75,
                 page_id: 2,
+                theme: "Tokyo Night".into(),
             }],
             notes: vec![WorkspaceNote {
                 id: 8,

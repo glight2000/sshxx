@@ -20,6 +20,8 @@ pub mod proto {
 
 /// Current on-disk format version for daemon workspace persistence.
 pub const WORKSPACE_FORMAT_VERSION: u32 = 1;
+/// Current on-disk format version for encrypted SSH connection profiles.
+pub const SSH_PROFILE_FORMAT_VERSION: u32 = 1;
 
 /// Generate a cryptographically-secure, random alphanumeric value.
 pub fn rand_alphanumeric(len: usize) -> String {
