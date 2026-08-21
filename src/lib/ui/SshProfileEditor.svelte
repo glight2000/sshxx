@@ -3,6 +3,7 @@
 
   import type { WsSshProfile } from "$lib/protocol";
   import OverlayMenu from "./OverlayMenu.svelte";
+  import themes from "./themes";
 
   export let open: boolean;
   export let profile: WsSshProfile | null;
@@ -29,6 +30,7 @@
       username: draft.username.trim(),
       keyPath: draft.keyPath.trim(),
       port: Number(draft.port),
+      background: draft.background || "#181818",
     };
     if (!draft.name || !draft.host) {
       error = "Name and host are required.";
@@ -137,6 +139,47 @@
           bind:checked={draft.acceptNewHostKey}
         />Automatically accept a host key on first connection</label
       >
+      <div
+        class="rounded-lg border border-zinc-700/80 bg-zinc-900/45 p-3 space-y-3"
+      >
+        <p class="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+          New terminal appearance
+        </p>
+        <label class="field">
+          <span>Color theme</span>
+          <select class="input-common" bind:value={draft.theme}>
+            {#each Object.keys(themes) as themeName}
+              <option value={themeName}>{themeName}</option>
+            {/each}
+          </select>
+        </label>
+        <label
+          class="flex items-center justify-between gap-3 text-sm text-zinc-300 cursor-pointer"
+        >
+          <span>
+            <span class="block">Custom background</span>
+            <span class="block text-xs text-zinc-500"
+              >Override the selected theme</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            class="h-4 w-4 accent-indigo-500"
+            bind:checked={draft.backgroundEnabled}
+          />
+        </label>
+        <label
+          class="flex items-center justify-between gap-3 text-sm text-zinc-300"
+          class:opacity-40={!draft.backgroundEnabled}
+        >
+          Background color
+          <input
+            type="color"
+            bind:value={draft.background}
+            disabled={!draft.backgroundEnabled}
+          />
+        </label>
+      </div>
       {#if error}<p class="text-sm text-red-400" role="alert">{error}</p>{/if}
       <div class="flex justify-end gap-2 pt-2">
         <button

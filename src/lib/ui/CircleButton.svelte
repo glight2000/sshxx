@@ -1,9 +1,17 @@
 <script lang="ts">
-  import { CopyIcon, MinusIcon, PlusIcon, XIcon } from "svelte-feather-icons";
+  import {
+    CopyIcon,
+    Maximize2Icon,
+    Minimize2Icon,
+    MinusIcon,
+    PlusIcon,
+    XIcon,
+  } from "svelte-feather-icons";
 
   export let kind: keyof typeof details;
   export let disabled = false;
   export let ariaLabel: string;
+  export let active = false;
 
   const details = {
     red: {
@@ -22,6 +30,10 @@
       cls: "border-sky-300/50 bg-sky-400 text-sky-950 group-hover:bg-sky-300 group-active:bg-sky-500",
       icon: CopyIcon,
     },
+    purple: {
+      cls: "border-violet-300/50 bg-violet-400 text-violet-950 group-hover:bg-violet-300 group-active:bg-violet-500",
+      icon: Maximize2Icon,
+    },
   };
 </script>
 
@@ -38,7 +50,7 @@
     ].cls}"
   >
     <svelte:component
-      this={details[kind].icon}
+      this={kind === "purple" && active ? Minimize2Icon : details[kind].icon}
       class="block h-2.5 w-2.5"
       strokeWidth={2.5}
     />

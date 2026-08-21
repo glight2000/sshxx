@@ -89,9 +89,35 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             width: 400,
             height: 240,
             text: "Deploy after tests".into(),
+            paragraphs: vec!["Deploy after tests".into()],
+            linked_shell_ids: vec![7],
+            linked_note_ids: Vec::new(),
+            linked_file_window_ids: vec![9],
             background: "#445566".into(),
             opacity: 75,
             page_id: 2,
+        }],
+        file_windows: vec![WorkspaceFileWindow {
+            id: 9,
+            shell_id: 7,
+            page_id: 2,
+            path: "/tmp".into(),
+            title: "Build".into(),
+            x: 480,
+            y: 600,
+            width: 1040,
+            height: 680,
+            current_path: "/tmp/project".into(),
+            expanded_paths: vec!["/".into(), "/tmp".into(), "/tmp/project".into()],
+            selected_path: "/tmp/project/config.toml".into(),
+            selected_kind: "file".into(),
+            tree_scroll_top: 96,
+            editor_path: "/tmp/project/config.toml".into(),
+            editor_stream: 1 << 63,
+            editor_data: b"encrypted editor".as_slice().into(),
+            editor_dirty: true,
+            sidebar_width: 360,
+            tree_revision: 4,
         }],
         pages: vec![
             WorkspacePage {
@@ -126,7 +152,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
         2,
         (30, 100),
         (714, 518),
-        "Dracula".into(),
+        ("Dracula".into(), String::new()),
     )?;
     assert_eq!(restored.unwrap().rows, 30);
     assert_eq!(session.workspace_state().shells[0].page_id, 2);
@@ -134,8 +160,9 @@ async fn test_restore_daemon_workspace() -> Result<()> {
     assert_eq!(session.workspace_state().shells[0].width, 714);
     assert_eq!(session.workspace_state().shells[0].height, 518);
     assert_eq!(session.workspace_state().notes[0].page_id, 2);
+    assert_eq!(session.workspace_state().file_windows[0].shell_id, 7);
     assert!(session.sequence_numbers().map.contains_key(&7));
-    assert_eq!(session.counter().next_sid(), sshx_core::Sid(9));
+    assert_eq!(session.counter().next_sid(), sshx_core::Sid(10));
     Ok(())
 }
 
@@ -152,6 +179,9 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
         auth_method: SshAuthMethod::SshAuthAgent.into(),
         key_path: String::new(),
         accept_new_host_key: true,
+        theme: "Dracula".into(),
+        background_enabled: true,
+        background: "#101010".into(),
     };
     let response = client
         .open(OpenRequest {
@@ -180,6 +210,9 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
         auth_method: WsSshAuthMethod::Default,
         key_path: String::new(),
         accept_new_host_key: false,
+        theme: String::new(),
+        background_enabled: false,
+        background: String::new(),
     };
     assert!(session.upsert_ssh_profile(duplicate_name).is_err());
     Ok(())

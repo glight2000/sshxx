@@ -188,6 +188,9 @@ mod tests {
                 auth_method: SshAuthMethod::SshAuthKeyFile.into(),
                 key_path: "/private/id_ed25519".into(),
                 accept_new_host_key: true,
+                theme: String::new(),
+                background_enabled: false,
+                background: String::new(),
             }],
         }
     }

@@ -29,6 +29,18 @@ message TerminalInput {
   uint64 offset = 3; // Offset of the first byte for encryption.
 }
 
+// Encrypted image bytes uploaded from a browser to the daemon cache.
+message ImageUploadChunk {
+  uint32 id = 1;         // ID of the local shell receiving the resulting path.
+  string upload_id = 2;  // Random lowercase hexadecimal identifier.
+  string media_type = 3; // Supported browser image MIME type.
+  uint64 total_size = 4; // Complete plaintext image size.
+  uint64 stream_num = 5; // Unique AES-CTR stream number for this upload.
+  uint64 offset = 6;     // Plaintext byte offset of this chunk.
+  bytes data = 7;        // Encrypted image bytes.
+  bool complete = 8;     // This chunk completes the image.
+}
+
 // Pair of a terminal ID and its associated size.
 message TerminalSize {
   uint32 id = 1;   // ID of the shell.
@@ -72,6 +84,24 @@ message NewShell {
   string theme = 9; // Per-terminal color theme, or empty for a legacy default.
   uint32 width = 10; // Exact canvas window width, or zero for legacy auto sizing.
   uint32 height = 11; // Exact canvas window height, or zero for legacy auto sizing.
+  string background = 12; // Per-terminal background override, or empty to use the theme.
+  string working_directory = 13; // Explicit local or remote working directory for the new shell.
+}
+
+// End-to-end encrypted filesystem operation sent to sshxx-daemon.
+message FileRequest {
+  uint32 id = 1; // Shell whose local or SSH filesystem should be used.
+  string request_id = 2; // Random request identifier used by the browser.
+  uint64 request_stream = 3; // Unique AES-CTR stream for the request body.
+  uint64 response_stream = 4; // Unique AES-CTR stream reserved for the response.
+  bytes data = 5; // Encrypted JSON request body.
+}
+
+// End-to-end encrypted filesystem result returned to the requesting browser.
+message FileResponse {
+  string request_id = 1;
+  uint64 stream_num = 2;
+  bytes data = 3; // Encrypted JSON response body.
 }
 
 // Bidirectional streaming update from the client.
@@ -82,6 +112,7 @@ message ClientUpdate {
     TerminalData data = 2;      // Stream data from the terminal.
     NewShell created_shell = 3; // Acknowledge that a new shell was created.
     uint32 closed_shell = 4;    // Acknowledge that a shell was closed.
+    FileResponse file_response = 9; // Encrypted filesystem operation result.
     fixed64 pong = 14;          // Response for latency measurement.
     string error = 15;
   }
@@ -97,6 +128,8 @@ message ServerUpdate {
     TerminalSize resize = 5;   // Resize a terminal window.
     WorkspaceState workspace = 6; // Workspace metadata to persist locally.
     SshProfileCollection ssh_profiles = 7; // SSH connection profiles to persist locally.
+    ImageUploadChunk image_upload = 8; // Encrypted browser image stored by the daemon.
+    FileRequest file_request = 9; // Encrypted filesystem operation for the daemon.
     fixed64 ping = 14;         // Request a pong, with the timestamp.
     string error = 15;
   }
@@ -108,6 +141,7 @@ message WorkspaceState {
   repeated WorkspaceShell shells = 2;
   repeated WorkspaceNote notes = 3;
   repeated WorkspacePage pages = 4;
+  repeated WorkspaceFileWindow file_windows = 5;
 }
 
 message WorkspaceShell {
@@ -135,11 +169,38 @@ message WorkspaceNote {
   string background = 7;
   uint32 opacity = 8;
   uint32 page_id = 9;
+  repeated string paragraphs = 10;
+  repeated uint32 linked_shell_ids = 11;
+  repeated uint32 linked_note_ids = 12;
+  repeated uint32 linked_file_window_ids = 13;
 }
 
 message WorkspacePage {
   uint32 id = 1;
   string name = 2;
+}
+
+message WorkspaceFileWindow {
+  uint32 id = 1;
+  uint32 shell_id = 2;
+  uint32 page_id = 3;
+  string path = 4;
+  string title = 5;
+  int32 x = 6;
+  int32 y = 7;
+  uint32 width = 8;
+  uint32 height = 9;
+  string current_path = 10;
+  repeated string expanded_paths = 11;
+  string selected_path = 12;
+  string selected_kind = 13;
+  uint32 tree_scroll_top = 14;
+  string editor_path = 15;
+  uint64 editor_stream = 16;
+  bytes editor_data = 17; // End-to-end encrypted UTF-8 editor contents.
+  bool editor_dirty = 18;
+  uint32 sidebar_width = 19; // Shared file-tree pane width in canvas pixels.
+  uint32 tree_revision = 20; // Change token after filesystem mutations.
 }
 
 // Authentication behavior for an OpenSSH connection profile.
@@ -160,6 +221,9 @@ message SshProfile {
   SshAuthMethod auth_method = 6;
   string key_path = 7;
   bool accept_new_host_key = 8;
+  string theme = 9; // Default terminal color theme for this connection.
+  bool background_enabled = 10; // Whether background overrides the theme.
+  string background = 11; // Default terminal background override.
 }
 
 // Versioned collection encrypted on disk by sshxx-daemon.
@@ -189,6 +253,7 @@ message SerializedSession {
   string daemon_version = 8;
   repeated SerializedPage pages = 9;
   repeated SshProfile ssh_profiles = 10;
+  repeated SerializedFileWindow file_windows = 11;
 }
 
 message SerializedShell {
@@ -219,9 +284,36 @@ message SerializedNote {
   uint32 width = 6;
   uint32 height = 7;
   uint32 page_id = 8;
+  repeated string paragraphs = 9;
+  repeated uint32 linked_shell_ids = 10;
+  repeated uint32 linked_note_ids = 11;
+  repeated uint32 linked_file_window_ids = 12;
 }
 
 message SerializedPage {
   uint32 id = 1;
   string name = 2;
+}
+
+message SerializedFileWindow {
+  uint32 id = 1;
+  uint32 shell_id = 2;
+  uint32 page_id = 3;
+  string path = 4;
+  string title = 5;
+  int32 x = 6;
+  int32 y = 7;
+  uint32 width = 8;
+  uint32 height = 9;
+  string current_path = 10;
+  repeated string expanded_paths = 11;
+  string selected_path = 12;
+  string selected_kind = 13;
+  uint32 tree_scroll_top = 14;
+  string editor_path = 15;
+  uint64 editor_stream = 16;
+  bytes editor_data = 17; // End-to-end encrypted UTF-8 editor contents.
+  bool editor_dirty = 18;
+  uint32 sidebar_width = 19;
+  uint32 tree_revision = 20;
 }

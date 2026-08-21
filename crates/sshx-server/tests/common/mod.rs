@@ -12,7 +12,7 @@ use sshx_core::{Sid, Uid};
 use sshx_daemon::encrypt::Encrypt;
 use sshx_server::{
     state::ServerState,
-    web::protocol::{WsClient, WsNote, WsPage, WsServer, WsUser, WsWinsize},
+    web::protocol::{WsClient, WsFileWindow, WsNote, WsPage, WsServer, WsUser, WsWinsize},
     Server, ServerOptions,
 };
 use tokio::net::{TcpListener, TcpStream};
@@ -98,6 +98,7 @@ pub struct ClientSocket {
     pub users: BTreeMap<Uid, WsUser>,
     pub shells: BTreeMap<Sid, WsWinsize>,
     pub notes: BTreeMap<Sid, WsNote>,
+    pub file_windows: BTreeMap<Sid, WsFileWindow>,
     pub pages: Vec<WsPage>,
     pub note_editors: BTreeMap<Sid, (u32, Uid)>,
     pub data: HashMap<Sid, String>,
@@ -122,6 +123,7 @@ impl ClientSocket {
             users: BTreeMap::new(),
             shells: BTreeMap::new(),
             notes: BTreeMap::new(),
+            file_windows: BTreeMap::new(),
             pages: Vec::new(),
             note_editors: BTreeMap::new(),
             data: HashMap::new(),
@@ -196,6 +198,9 @@ impl ClientSocket {
                     }
                     WsServer::Shells(shells) => self.shells = BTreeMap::from_iter(shells),
                     WsServer::Notes(notes) => self.notes = BTreeMap::from_iter(notes),
+                    WsServer::FileWindows(windows) => {
+                        self.file_windows = BTreeMap::from_iter(windows)
+                    }
                     WsServer::Pages(pages) => self.pages = pages,
                     WsServer::SshProfiles(_) => {}
                     WsServer::NoteEditing(id, page_id, editor) => {
@@ -206,7 +211,15 @@ impl ClientSocket {
                     }
                     WsServer::NoteText(id, page_id, text) => {
                         assert_eq!(self.notes.get(&id).unwrap().page_id, page_id);
-                        self.notes.get_mut(&id).unwrap().text = text;
+                        let note = self.notes.get_mut(&id).unwrap();
+                        note.paragraphs = text.split('\n').map(str::to_owned).collect();
+                        note.text = text;
+                    }
+                    WsServer::NoteParagraphs(id, page_id, paragraphs) => {
+                        assert_eq!(self.notes.get(&id).unwrap().page_id, page_id);
+                        let note = self.notes.get_mut(&id).unwrap();
+                        note.text = paragraphs.join("\n");
+                        note.paragraphs = paragraphs;
                     }
                     WsServer::Chunks(id, page_id, replay, seqnum, chunks) => {
                         assert_eq!(self.shells.get(&id).unwrap().page_id, page_id);
@@ -226,6 +239,7 @@ impl ClientSocket {
                         self.messages.push((id, name, msg));
                     }
                     WsServer::ShellLatency(_) => {}
+                    WsServer::FileResponse(_, _, _) => {}
                     WsServer::Pong(_) => {}
                     WsServer::Error(err) => self.errors.push(err),
                 }

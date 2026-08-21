@@ -1,16 +1,18 @@
 //! Network gRPC client allowing server control of terminals.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::pin::pin;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use sshx_core::proto::{
     client_update::ClientMessage, server_update::ServerMessage,
-    sshx_service_client::SshxServiceClient, ClientUpdate, CloseRequest, NewShell, OpenRequest,
-    WorkspacePage, WorkspaceState,
+    sshx_service_client::SshxServiceClient, ClientUpdate, CloseRequest, FileResponse, NewShell,
+    OpenRequest, WorkspacePage, WorkspaceState,
 };
 use sshx_core::{rand_alphanumeric, Sid, WORKSPACE_FORMAT_VERSION};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task;
 use tokio::time::{self, Duration, Instant, MissedTickBehavior};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -26,6 +28,12 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Interval to automatically reestablish connections.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
+
+struct PersistencePaths {
+    workspace: std::path::PathBuf,
+    ssh_profiles: std::path::PathBuf,
+    uploads: std::path::PathBuf,
+}
 
 /// Handles a single session's communication with the remote server.
 pub struct Controller {
@@ -50,6 +58,9 @@ pub struct Controller {
     workspace_tx: Option<watch::Sender<WorkspaceState>>,
     ssh_profiles_path: Option<std::path::PathBuf>,
     ssh_profiles_encrypt: Option<Encrypt>,
+    uploads: Option<crate::uploads::UploadManager>,
+    remote_profiles: HashMap<Sid, sshx_core::proto::SshProfile>,
+    file_tasks: Arc<Semaphore>,
 }
 
 impl Controller {
@@ -60,7 +71,7 @@ impl Controller {
         runner: Runner,
         enable_readers: bool,
     ) -> Result<Self> {
-        Self::new_inner(origin, name, runner, enable_readers, None, None, None).await
+        Self::new_inner(origin, name, runner, enable_readers, None, None).await
     }
 
     /// Construct a controller with an optional fixed encryption key for local testing.
@@ -71,16 +82,7 @@ impl Controller {
         enable_readers: bool,
         encryption_key: Option<&str>,
     ) -> Result<Self> {
-        Self::new_inner(
-            origin,
-            name,
-            runner,
-            enable_readers,
-            encryption_key,
-            None,
-            None,
-        )
-        .await
+        Self::new_inner(origin, name, runner, enable_readers, encryption_key, None).await
     }
 
     /// Construct a persistent controller using the default workspace file in
@@ -94,14 +96,19 @@ impl Controller {
     ) -> Result<Self> {
         let workspace_path = workspace::path_in_current_dir()?;
         let ssh_profiles_path = ssh_profiles::path_in_current_dir()?;
+        let uploads_path = crate::uploads::path_in_current_dir()?;
+        let persistence = PersistencePaths {
+            workspace: workspace_path,
+            ssh_profiles: ssh_profiles_path,
+            uploads: uploads_path,
+        };
         Self::new_inner(
             origin,
             name,
             runner,
             enable_readers,
             encryption_key,
-            Some(workspace_path),
-            Some(ssh_profiles_path),
+            Some(persistence),
         )
         .await
     }
@@ -112,9 +119,16 @@ impl Controller {
         runner: Runner,
         enable_readers: bool,
         encryption_key: Option<&str>,
-        workspace_path: Option<std::path::PathBuf>,
-        ssh_profiles_path: Option<std::path::PathBuf>,
+        persistence: Option<PersistencePaths>,
     ) -> Result<Self> {
+        let (workspace_path, ssh_profiles_path, uploads_path) = match persistence {
+            Some(paths) => (
+                Some(paths.workspace),
+                Some(paths.ssh_profiles),
+                Some(paths.uploads),
+            ),
+            None => (None, None, None),
+        };
         debug!(%origin, "connecting to server");
         let encryption_key = encryption_key
             .map(str::to_owned)
@@ -148,7 +162,17 @@ impl Controller {
             match workspace::load(path).await {
                 Ok(workspace) => workspace,
                 Err(err) => {
-                    warn!(?err, path = %path.display(), "ignoring invalid workspace file");
+                    warn!(?err, path = %path.display(), "isolating invalid workspace file");
+                    match workspace::quarantine(path).await {
+                        Ok(destination) => {
+                            warn!(path = %destination.display(), "preserved invalid workspace file")
+                        }
+                        Err(quarantine_err) => warn!(
+                            ?quarantine_err,
+                            path = %path.display(),
+                            "failed to isolate invalid workspace file"
+                        ),
+                    }
                     None
                 }
             }
@@ -192,6 +216,10 @@ impl Controller {
         } else {
             (None, None)
         };
+        let uploads = match uploads_path {
+            Some(path) => Some(crate::uploads::UploadManager::new(path).await?),
+            None => None,
+        };
 
         let req = OpenRequest {
             origin: origin.into(),
@@ -217,6 +245,7 @@ impl Controller {
                 format_version: WORKSPACE_FORMAT_VERSION,
                 shells: Vec::new(),
                 notes: Vec::new(),
+                file_windows: Vec::new(),
                 pages: vec![WorkspacePage {
                     id: 1,
                     name: "Page 1".into(),
@@ -242,6 +271,9 @@ impl Controller {
             workspace_tx,
             ssh_profiles_path,
             ssh_profiles_encrypt,
+            uploads,
+            remote_profiles: HashMap::new(),
+            file_tasks: Arc::new(Semaphore::new(4)),
         })
     }
 
@@ -337,6 +369,144 @@ impl Controller {
                         warn!(%input.id, "received data for non-existing shell");
                     }
                 }
+                ServerMessage::ImageUpload(upload) => {
+                    let id = Sid(upload.id);
+                    if self.remote_profiles.contains_key(&id) {
+                        if upload.offset == 0 {
+                            send_msg(
+                                &tx,
+                                ClientMessage::Error(format!(
+                                    "Terminal {id} is an SSH connection; browser images can only be uploaded to local terminals."
+                                )),
+                            )
+                            .await?;
+                        }
+                        continue;
+                    }
+                    let Some(sender) = self.shells_tx.get(&id).cloned() else {
+                        if upload.offset == 0 {
+                            send_msg(
+                                &tx,
+                                ClientMessage::Error(format!(
+                                    "Cannot upload an image to missing terminal {id}."
+                                )),
+                            )
+                            .await?;
+                        }
+                        continue;
+                    };
+                    let Some(uploads) = &mut self.uploads else {
+                        if upload.offset == 0 {
+                            send_msg(
+                                &tx,
+                                ClientMessage::Error(
+                                    "Image uploads are unavailable for this daemon session.".into(),
+                                ),
+                            )
+                            .await?;
+                        }
+                        continue;
+                    };
+                    match uploads.accept(&self.encrypt, &upload).await {
+                        Ok(Some(path)) => {
+                            let input = format!("{} ", path.display()).into_bytes();
+                            sender.send(ShellData::Data(input)).await.ok();
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            uploads.abort(id, &upload.upload_id).await;
+                            send_msg(
+                                &tx,
+                                ClientMessage::Error(format!("Image upload failed: {err}")),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                ServerMessage::FileRequest(file_request) => {
+                    let id = Sid(file_request.id);
+                    let plaintext =
+                        self.encrypt
+                            .segment(file_request.request_stream, 0, &file_request.data);
+                    let request =
+                        serde_json::from_slice::<crate::file_browser::FileOperationRequest>(
+                            &plaintext,
+                        )
+                        .context("invalid file request");
+                    let sender = self.shells_tx.get(&id).cloned();
+                    let remote_profile = self.remote_profiles.get(&id).cloned();
+                    let working_directory = if remote_profile.is_some() {
+                        None
+                    } else if let Some(sender) = sender.as_ref() {
+                        let (working_tx, working_rx) = oneshot::channel();
+                        if sender
+                            .send(ShellData::WorkingDirectory(working_tx))
+                            .await
+                            .is_ok()
+                        {
+                            working_rx.await.ok().flatten()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let output_tx = self.output_tx.clone();
+                    let encrypt = self.encrypt.clone();
+                    let limiter = Arc::clone(&self.file_tasks);
+                    task::spawn(async move {
+                        let response = match (request, sender) {
+                            (Ok(request), Some(_)) => {
+                                let operation = match limiter.acquire_owned().await {
+                                    Ok(_permit) => tokio::time::timeout(
+                                        Duration::from_secs(30),
+                                        crate::file_browser::execute(
+                                            &request,
+                                            working_directory,
+                                            remote_profile.as_ref(),
+                                        ),
+                                    )
+                                    .await
+                                    .map_err(|_| anyhow::anyhow!("filesystem operation timed out"))
+                                    .and_then(|result| result),
+                                    Err(_) => Err(anyhow::anyhow!(
+                                        "filesystem operations are unavailable"
+                                    )),
+                                };
+                                match operation {
+                                    Ok(response) => serde_json::to_vec(&response),
+                                    Err(error) => serde_json::to_vec(
+                                        &crate::file_browser::FileOperationResponse::failure(
+                                            &request, error,
+                                        ),
+                                    ),
+                                }
+                            }
+                            (Err(error), _) => serde_json::to_vec(&serde_json::json!({
+                                "ok": false,
+                                "operation": "list",
+                                "path": "",
+                                "error": error.to_string(),
+                            })),
+                            (Ok(_), None) => serde_json::to_vec(&serde_json::json!({
+                                "ok": false,
+                                "operation": "list",
+                                "path": "",
+                                "error": format!("terminal {id} does not exist"),
+                            })),
+                        };
+                        let Ok(response) = response else { return };
+                        let data = encrypt.segment(file_request.response_stream, 0, &response);
+                        output_tx
+                            .send(ClientMessage::FileResponse(FileResponse {
+                                request_id: file_request.request_id,
+                                stream_num: file_request.response_stream,
+                                data: data.into(),
+                            }))
+                            .await
+                            .ok();
+                    });
+                }
                 ServerMessage::CreateShell(new_shell) => {
                     let id = Sid(new_shell.id);
                     let center = (new_shell.x, new_shell.y);
@@ -357,12 +527,23 @@ impl Controller {
                         .ok()
                         .filter(|value| *value == 0 || (160..=4_000).contains(value))
                         .unwrap_or(0);
-                    let ssh_profile = new_shell.ssh_profile;
+                    let source_id = new_shell.source_id.map(Sid);
+                    let explicit_working_directory = (!new_shell.working_directory.is_empty())
+                        .then(|| PathBuf::from(new_shell.working_directory));
+                    let ssh_profile = new_shell.ssh_profile.or_else(|| {
+                        source_id
+                            .and_then(|source_id| self.remote_profiles.get(&source_id).cloned())
+                    });
+                    let remote_profile = ssh_profile.clone();
+                    let is_remote = ssh_profile.is_some();
                     let theme = new_shell.theme;
+                    let background = new_shell.background;
                     if !self.shells_tx.contains_key(&id) {
-                        let working_directory = if ssh_profile.is_none() {
-                            if let Some(source_id) = new_shell.source_id {
-                                if let Some(sender) = self.shells_tx.get(&Sid(source_id)).cloned() {
+                        let working_directory = if explicit_working_directory.is_some() {
+                            explicit_working_directory
+                        } else if ssh_profile.is_none() {
+                            if let Some(source_id) = source_id {
+                                if let Some(sender) = self.shells_tx.get(&source_id).cloned() {
                                     let (tx, rx) = oneshot::channel();
                                     if sender.send(ShellData::WorkingDirectory(tx)).await.is_ok() {
                                         rx.await.ok().flatten()
@@ -388,10 +569,16 @@ impl Controller {
                                 rows,
                                 cols,
                                 theme,
+                                background,
                                 width,
                                 height,
                             },
                         );
+                        if is_remote {
+                            if let Some(profile) = remote_profile {
+                                self.remote_profiles.insert(id, profile);
+                            }
+                        }
                     } else {
                         warn!(%id, "server asked to create duplicate shell");
                     }
@@ -399,6 +586,7 @@ impl Controller {
                 ServerMessage::CloseShell(id) => {
                     // Closes the channel when it is dropped, notifying the task to shut down.
                     self.shells_tx.remove(&Sid(id));
+                    self.remote_profiles.remove(&Sid(id));
                     send_msg(&tx, ClientMessage::ClosedShell(id)).await?;
                 }
                 ServerMessage::Sync(seqnums) => {
@@ -473,6 +661,7 @@ impl Controller {
             let rows = options.rows;
             let cols = options.cols;
             let theme = options.theme.clone();
+            let options_background = options.background.clone();
             let width = options.width;
             let height = options.height;
             debug!(%id, "spawning new shell");
@@ -488,8 +677,17 @@ impl Controller {
                 theme,
                 width: width.into(),
                 height: height.into(),
+                background: options_background,
+                working_directory: options
+                    .working_directory
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
             };
-            if let Err(err) = output_tx.send(ClientMessage::CreatedShell(new_shell)).await {
+            if let Err(err) = output_tx
+                .send(ClientMessage::CreatedShell(Box::new(new_shell)))
+                .await
+            {
                 error!(%id, ?err, "failed to send shell creation message");
                 return;
             }

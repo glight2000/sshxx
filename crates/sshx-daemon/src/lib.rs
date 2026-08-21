@@ -8,7 +8,9 @@
 
 pub mod controller;
 pub mod encrypt;
+mod file_browser;
 pub mod runner;
 mod ssh_profiles;
 pub mod terminal;
+mod uploads;
 mod workspace;

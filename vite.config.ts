@@ -17,6 +17,9 @@ export default defineConfig({
     host: tauriDevHost || false,
     port: 5173,
     strictPort: true,
+    watch: {
+      ignored: ["**/target/**", "**/build/**"],
+    },
     hmr: tauriDevHost
       ? {
           protocol: "ws",

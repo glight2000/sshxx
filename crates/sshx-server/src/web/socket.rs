@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use axum::extract::{
@@ -9,7 +10,10 @@ use axum::extract::{
 use axum::response::IntoResponse;
 use bytes::Bytes;
 use futures_util::SinkExt;
-use sshx_core::proto::{server_update::ServerMessage, NewShell, TerminalInput, TerminalSize};
+use sshx_core::proto::{
+    server_update::ServerMessage, FileRequest as ProtoFileRequest, ImageUploadChunk, NewShell,
+    TerminalInput, TerminalSize,
+};
 use sshx_core::Sid;
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
@@ -19,6 +23,52 @@ use tracing::{error, info_span, warn, Instrument};
 use crate::session::Session;
 use crate::web::protocol::{WsClient, WsServer};
 use crate::ServerState;
+
+const IMAGE_UPLOAD_CHUNK_BYTES: usize = 64 << 10;
+const IMAGE_UPLOAD_MAX_BYTES: u64 = 20 << 20;
+const FILE_REQUEST_MAX_BYTES: usize = 12 << 20;
+
+fn valid_file_request(
+    request_id: &str,
+    request_stream: u64,
+    response_stream: u64,
+    len: usize,
+) -> bool {
+    request_id.len() == 32
+        && request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && request_stream & (1 << 63) != 0
+        && response_stream & (1 << 63) != 0
+        && request_stream != response_stream
+        && (1..=FILE_REQUEST_MAX_BYTES).contains(&len)
+}
+
+fn valid_image_upload(
+    upload_id: &str,
+    media_type: &str,
+    total_size: u64,
+    stream_num: u64,
+    offset: u64,
+    data_len: usize,
+    complete: bool,
+) -> bool {
+    upload_id.len() == 32
+        && upload_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && matches!(
+            media_type,
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        )
+        && (1..=IMAGE_UPLOAD_MAX_BYTES).contains(&total_size)
+        && stream_num & (1 << 63) != 0
+        && data_len > 0
+        && data_len <= IMAGE_UPLOAD_CHUNK_BYTES
+        && offset
+            .checked_add(data_len as u64)
+            .is_some_and(|end| end <= total_size && (!complete || end == total_size))
+}
 
 pub async fn get_session_ws(
     Path(name): Path<String>,
@@ -146,10 +196,14 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     }
 
     let mut subscribed = HashSet::new(); // prevent duplicate subscriptions
+                                         // Filesystem responses are returned only to the WebSocket that requested
+                                         // them, even though the daemon-to-server transport is session-scoped.
+    let mut pending_file_requests = HashMap::<String, Instant>::new();
     let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u32, bool, u64, Vec<Bytes>)>(1);
 
     let mut shells_stream = session.subscribe_shells();
     let mut notes_stream = session.subscribe_notes();
+    let mut file_windows_stream = session.subscribe_file_windows();
     let mut pages_stream = session.subscribe_pages();
     let mut ssh_profiles_stream = session.subscribe_ssh_profiles();
     loop {
@@ -157,6 +211,11 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
             _ = session.terminated() => break,
             Some(result) = broadcast_stream.next() => {
                 let msg = result.context("client fell behind on broadcast stream")?;
+                if let WsServer::FileResponse(request_id, _, _) = &msg {
+                    if pending_file_requests.remove(request_id).is_none() {
+                        continue;
+                    }
+                }
                 send(socket, msg).await?;
                 continue;
             }
@@ -166,6 +225,10 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
             }
             Some(notes) = notes_stream.next() => {
                 send(socket, WsServer::Notes(notes)).await?;
+                continue;
+            }
+            Some(file_windows) = file_windows_stream.next() => {
+                send(socket, WsServer::FileWindows(file_windows)).await?;
                 continue;
             }
             Some(pages) = pages_stream.next() => {
@@ -250,6 +313,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     height: 0,
                     ssh_profile: None,
                     theme: String::new(),
+                    background: String::new(),
+                    working_directory: String::new(),
                 };
                 update_tx
                     .send(ServerMessage::CreateShell(new_shell))
@@ -294,6 +359,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         height: 0,
                         ssh_profile: None,
                         theme: String::new(),
+                        background: String::new(),
+                        working_directory: String::new(),
                     }))
                     .await?;
             }
@@ -338,6 +405,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         height: 0,
                         ssh_profile: None,
                         theme,
+                        background: String::new(),
+                        working_directory: String::new(),
                     }))
                     .await?;
             }
@@ -384,6 +453,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme,
                         width: width.into(),
                         height: height.into(),
+                        background: String::new(),
+                        working_directory: String::new(),
                     }))
                     .await?;
             }
@@ -420,6 +491,12 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 };
                 let id = session.counter().next_sid();
                 session.sync_now();
+                let theme = profile.theme.clone();
+                let background = if profile.background_enabled {
+                    profile.background.clone()
+                } else {
+                    String::new()
+                };
                 update_tx
                     .send(ServerMessage::CreateShell(NewShell {
                         id: id.0,
@@ -432,7 +509,9 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         width: 0,
                         height: 0,
                         ssh_profile: Some(profile),
-                        theme: String::new(),
+                        theme,
+                        background,
+                        working_directory: String::new(),
                     }))
                     .await?;
             }
@@ -471,6 +550,16 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 };
                 let id = session.counter().next_sid();
                 session.sync_now();
+                let theme = if profile.theme.is_empty() {
+                    theme
+                } else {
+                    profile.theme.clone()
+                };
+                let background = if profile.background_enabled {
+                    profile.background.clone()
+                } else {
+                    String::new()
+                };
                 update_tx
                     .send(ServerMessage::CreateShell(NewShell {
                         id: id.0,
@@ -484,6 +573,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         height: 0,
                         ssh_profile: Some(profile),
                         theme,
+                        background,
+                        working_directory: String::new(),
                     }))
                     .await?;
             }
@@ -534,6 +625,16 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 };
                 let id = session.counter().next_sid();
                 session.sync_now();
+                let theme = if profile.theme.is_empty() {
+                    theme
+                } else {
+                    profile.theme.clone()
+                };
+                let background = if profile.background_enabled {
+                    profile.background.clone()
+                } else {
+                    String::new()
+                };
                 update_tx
                     .send(ServerMessage::CreateShell(NewShell {
                         id: id.0,
@@ -547,6 +648,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme,
                         width: width.into(),
                         height: height.into(),
+                        background,
+                        working_directory: String::new(),
                     }))
                     .await?;
             }
@@ -585,6 +688,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     height: 0,
                     ssh_profile: None,
                     theme: String::new(),
+                    background: String::new(),
+                    working_directory: String::new(),
                 };
                 update_tx
                     .send(ServerMessage::CreateShell(new_shell))
@@ -633,6 +738,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         height: 0,
                         ssh_profile: None,
                         theme: String::new(),
+                        background: String::new(),
+                        working_directory: String::new(),
                     }))
                     .await?;
             }
@@ -681,6 +788,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         height: 0,
                         ssh_profile: None,
                         theme,
+                        background: String::new(),
+                        working_directory: String::new(),
                     }))
                     .await?;
             }
@@ -731,6 +840,71 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme,
                         width: width.into(),
                         height: height.into(),
+                        background: String::new(),
+                        working_directory: String::new(),
+                    }))
+                    .await?;
+            }
+            WsClient::CreateAt(
+                source_id,
+                working_directory,
+                x,
+                y,
+                width,
+                height,
+                rows,
+                cols,
+                page_id,
+                theme,
+            ) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if session.shell_count() >= 100 {
+                    send(
+                        socket,
+                        WsServer::Error("You can only create up to 100 terminals.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !session.page_exists(page_id)
+                    || session.check_shell_page(source_id, page_id).is_err()
+                    || !(240..=4_000).contains(&width)
+                    || !(160..=4_000).contains(&height)
+                    || !(8..=500).contains(&rows)
+                    || !(32..=500).contains(&cols)
+                    || working_directory.is_empty()
+                    || working_directory.len() > 16_384
+                    || working_directory.chars().any(char::is_control)
+                    || theme.len() > 100
+                    || theme.chars().any(char::is_control)
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid terminal creation settings.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                session.sync_now();
+                update_tx
+                    .send(ServerMessage::CreateShell(NewShell {
+                        id: id.0,
+                        x,
+                        y,
+                        source_id: Some(source_id.0),
+                        page_id,
+                        rows: rows.into(),
+                        cols: cols.into(),
+                        width: width.into(),
+                        height: height.into(),
+                        ssh_profile: None,
+                        theme,
+                        background: String::new(),
+                        working_directory,
                     }))
                     .await?;
             }
@@ -835,6 +1009,45 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     send(socket, WsServer::Error(err.to_string())).await?;
                 }
             }
+            WsClient::UpdateNoteParagraphs(id, page_id, paragraphs) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.update_note_paragraphs(id, page_id, user_id, paragraphs) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                }
+            }
+            WsClient::CreateFileWindow(shell_id, page_id, path, title, x, y, width, height) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                if let Err(error) = session
+                    .open_file_window(id, shell_id, page_id, path, title, x, y, width, height)
+                {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::CloseFileWindow(id, page_id) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if let Err(error) = session.close_file_window(id, page_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::UpdateFileWindow(id, page_id, window) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if let Err(error) = session.update_file_window(id, page_id, window) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
             WsClient::CreatePage(name) => {
                 if let Err(e) = session.check_write_permission(user_id) {
                     send(socket, WsServer::Error(e.to_string())).await?;
@@ -886,6 +1099,99 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     offset,
                 };
                 update_tx.send(ServerMessage::Input(input)).await?;
+            }
+            WsClient::UploadImage(
+                id,
+                page_id,
+                upload_id,
+                media_type,
+                total_size,
+                stream_num,
+                offset,
+                data,
+                complete,
+            ) => {
+                if let Err(e) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(e.to_string())).await?;
+                    continue;
+                }
+                if let Err(err) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                if !valid_image_upload(
+                    &upload_id,
+                    &media_type,
+                    total_size,
+                    stream_num,
+                    offset,
+                    data.len(),
+                    complete,
+                ) {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid image upload chunk.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                update_tx
+                    .send(ServerMessage::ImageUpload(ImageUploadChunk {
+                        id: id.0,
+                        upload_id,
+                        media_type,
+                        total_size,
+                        stream_num,
+                        offset,
+                        data,
+                        complete,
+                    }))
+                    .await?;
+            }
+            WsClient::FileRequest(
+                id,
+                page_id,
+                request_id,
+                request_stream,
+                response_stream,
+                data,
+            ) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if let Err(error) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if !valid_file_request(&request_id, request_stream, response_stream, data.len()) {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid filesystem request.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                pending_file_requests
+                    .retain(|_, created| created.elapsed() < Duration::from_secs(40));
+                if pending_file_requests.len() >= 8 {
+                    send(
+                        socket,
+                        WsServer::Error("Too many filesystem requests are still pending.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                pending_file_requests.insert(request_id.clone(), Instant::now());
+                update_tx
+                    .send(ServerMessage::FileRequest(ProtoFileRequest {
+                        id: id.0,
+                        request_id,
+                        request_stream,
+                        response_stream,
+                        data,
+                    }))
+                    .await?;
             }
             WsClient::Subscribe(id, page_id, chunknum) => {
                 if let Err(err) = session.check_shell_page(id, page_id) {
@@ -980,4 +1286,60 @@ async fn proxy_redirect(socket: &mut WebSocket, host: &str, name: &str) -> Resul
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_image_upload;
+
+    #[test]
+    fn validates_image_upload_boundaries() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let stream = 0x8000_0000_0000_0001;
+        assert!(valid_image_upload(
+            id,
+            "image/png",
+            100,
+            stream,
+            0,
+            64,
+            false
+        ));
+        assert!(valid_image_upload(
+            id,
+            "image/png",
+            100,
+            stream,
+            64,
+            36,
+            true
+        ));
+        assert!(!valid_image_upload(
+            "../../unsafe",
+            "image/png",
+            100,
+            stream,
+            0,
+            64,
+            false
+        ));
+        assert!(!valid_image_upload(
+            id,
+            "image/svg+xml",
+            100,
+            stream,
+            0,
+            64,
+            false
+        ));
+        assert!(!valid_image_upload(
+            id,
+            "image/png",
+            100,
+            stream,
+            0,
+            64,
+            true
+        ));
+    }
 }

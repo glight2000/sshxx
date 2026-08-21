@@ -80,6 +80,7 @@ export const INITIAL_ZOOM = 1.0;
 export class TouchZoom {
   #node: HTMLElement;
   #shouldZoomWheel: () => boolean;
+  #isEnabled: () => boolean;
   #scrollingAnchor: HTMLElement | Document;
   #gesture: Gesture;
   #resizeObserver: ResizeObserver;
@@ -98,6 +99,7 @@ export class TouchZoom {
   #wheelLastTimeStamp = 0;
   #middlePointerId: number | null = null;
   #middleLastPoint: number[] = [0, 0];
+  #dragPanning = false;
 
   #callbacks = new Set<(manual: boolean) => void>();
 
@@ -107,9 +109,14 @@ export class TouchZoom {
 
   #preventGesture = (event: TouchEvent) => event.preventDefault();
 
-  constructor(node: HTMLElement, shouldZoomWheel = () => false) {
+  constructor(
+    node: HTMLElement,
+    shouldZoomWheel = () => false,
+    isEnabled = () => true,
+  ) {
     this.#node = node;
     this.#shouldZoomWheel = shouldZoomWheel;
+    this.#isEnabled = isEnabled;
     this.#scrollingAnchor = getNearestScrollableContainer(node);
     // @ts-ignore
     document.addEventListener("gesturestart", this.#preventGesture);
@@ -152,7 +159,9 @@ export class TouchZoom {
         onPinchStart: this.#handlePinchStart,
         onPinch: this.#handlePinch,
         onPinchEnd: this.#handlePinchEnd,
+        onDragStart: this.#handleDragStart,
         onDrag: this.#handleDrag,
+        onDragEnd: this.#handleDragEnd,
       },
       {
         target: node,
@@ -164,7 +173,14 @@ export class TouchZoom {
           },
         },
         drag: {
-          filterTaps: true,
+          // `filterTaps` installs a capturing click listener on the whole
+          // canvas. Canvas items intentionally stop pointerdown propagation,
+          // so that listener cannot observe the matching pointer gesture and
+          // ends up suppressing otherwise valid button clicks inside them.
+          // Keep the same tap-sized activation threshold without installing
+          // the global click suppressor.
+          filterTaps: false,
+          threshold: 3,
           pointer: { keys: false },
         },
       },
@@ -193,17 +209,28 @@ export class TouchZoom {
   #updateBoundsD = debounce(this.#updateBounds, 100);
 
   #handleMiddlePointerDown = (event: PointerEvent) => {
-    if (event.button !== 1 || this.#middlePointerId !== null) return;
+    if (
+      !this.#isEnabled() ||
+      event.button !== 1 ||
+      this.#middlePointerId !== null
+    )
+      return;
 
     event.preventDefault();
     event.stopPropagation();
+    window.getSelection()?.removeAllRanges();
     this.#middlePointerId = event.pointerId;
     this.#middleLastPoint = [event.clientX, event.clientY];
     this.#node.classList.add("canvas-middle-panning");
+    this.#updatePanningSelectionGuard();
   };
 
   #handleMiddlePointerMove = (event: PointerEvent) => {
     if (event.pointerId !== this.#middlePointerId) return;
+    if (!this.#isEnabled()) {
+      this.#finishMiddlePointer();
+      return;
+    }
 
     event.preventDefault();
     event.stopPropagation();
@@ -221,9 +248,14 @@ export class TouchZoom {
 
     event.preventDefault();
     event.stopPropagation();
+    this.#finishMiddlePointer();
+  };
+
+  #finishMiddlePointer() {
     this.#middlePointerId = null;
     this.#node.classList.remove("canvas-middle-panning");
-  };
+    this.#updatePanningSelectionGuard();
+  }
 
   #preventMiddleAuxClick = (event: MouseEvent) => {
     if (event.button !== 1) return;
@@ -285,6 +317,13 @@ export class TouchZoom {
   };
 
   #processWheel(e: WheelEvent) {
+    if (!this.#isEnabled()) {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
     // Menus and other scrollable surfaces rendered inside the canvas own the
     // wheel while hovered. This keeps their scroll state separate from canvas
     // pan/zoom state, including when the canvas currently has no focus.
@@ -345,7 +384,7 @@ export class TouchZoom {
     "pinch",
     WheelEvent | PointerEvent | TouchEvent | WebKitGestureEvent
   > = ({ origin, event }) => {
-    if (event instanceof WheelEvent) return;
+    if (!this.#isEnabled() || event instanceof WheelEvent) return;
 
     this.isPinching = true;
     this.#originPoint = origin;
@@ -358,7 +397,7 @@ export class TouchZoom {
     "pinch",
     WheelEvent | PointerEvent | TouchEvent | WebKitGestureEvent
   > = ({ origin, movement, event }) => {
-    if (event instanceof WheelEvent) return;
+    if (!this.#isEnabled() || event instanceof WheelEvent) return;
 
     if (!this.#originPoint) return;
     const delta = Vec.sub(this.#originPoint, origin);
@@ -388,10 +427,37 @@ export class TouchZoom {
     "drag",
     MouseEvent | PointerEvent | TouchEvent | KeyboardEvent
   > = ({ delta, elapsedTime }) => {
+    if (!this.#isEnabled()) return;
     if (delta[0] === 0 && delta[1] === 0 && elapsedTime < 200) return;
     this.center = Vec.sub(this.center, Vec.div(delta, this.zoom));
     this.#moved();
   };
+
+  #handleDragStart: Handler<
+    "drag",
+    MouseEvent | PointerEvent | TouchEvent | KeyboardEvent
+  > = ({ event }) => {
+    if (!this.#isEnabled()) return;
+    event.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    this.#dragPanning = true;
+    this.#updatePanningSelectionGuard();
+  };
+
+  #handleDragEnd: Handler<
+    "drag",
+    MouseEvent | PointerEvent | TouchEvent | KeyboardEvent
+  > = () => {
+    this.#dragPanning = false;
+    this.#updatePanningSelectionGuard();
+  };
+
+  #updatePanningSelectionGuard() {
+    this.#node.classList.toggle(
+      "canvas-panning",
+      this.#dragPanning || this.#middlePointerId !== null,
+    );
+  }
 
   destroy() {
     if (this.#node) {
@@ -425,6 +491,7 @@ export class TouchZoom {
         capture: true,
       });
       this.#node.classList.remove("canvas-middle-panning");
+      this.#node.classList.remove("canvas-panning");
 
       this.#resizeObserver.disconnect();
 

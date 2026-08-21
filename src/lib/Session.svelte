@@ -16,6 +16,10 @@
   import { isNativeApp } from "./runtime";
   import type {
     WsClient,
+    FileTreeEntry,
+    FileOperationRequest,
+    FileOperationResponse,
+    WsFileWindow,
     WsNote,
     WsPage,
     WsServer,
@@ -26,7 +30,6 @@
   import { makeToast } from "./toast";
   import Chat, { type ChatMessage } from "./ui/Chat.svelte";
   import ChooseName from "./ui/ChooseName.svelte";
-  import NameList from "./ui/NameList.svelte";
   import NetworkInfo from "./ui/NetworkInfo.svelte";
   import Note from "./ui/Note.svelte";
   import PagePager from "./ui/PagePager.svelte";
@@ -39,6 +42,12 @@
     type CanvasSearchItem,
   } from "./ui/TerminalSearch.svelte";
   import XTerm from "./ui/XTerm.svelte";
+  import FileExplorer from "./ui/FileExplorer.svelte";
+  import type { CanvasRelationItem } from "./ui/CanvasRelations.svelte";
+  import type {
+    TextInsertPosition,
+    TextInsertResult,
+  } from "./ui/CodeEditor.svelte";
   import Avatars from "./ui/Avatars.svelte";
   import LiveCursor from "./ui/LiveCursor.svelte";
   import { slide } from "./action/slide";
@@ -161,6 +170,41 @@
     );
   }
 
+  function activePageFullscreenKeys() {
+    return [
+      ...shells
+        .filter(([, shell]) => shell.pageId === activePageId)
+        .map(([shellId]) => `terminal:${shellId}`),
+      ...notes
+        .filter(([, note]) => note.pageId === activePageId)
+        .map(([noteId]) => `note:${noteId}`),
+      ...fileWindows
+        .filter(([, fileWindow]) => fileWindow.pageId === activePageId)
+        .map(([windowId]) => `file:${windowId}`),
+    ].filter((key) => fullscreenItems[key]);
+  }
+
+  function activeFullscreenKey() {
+    return activePageFullscreenKeys()[0] ?? null;
+  }
+
+  function exitActivePageFullscreen() {
+    const activeKeys = activePageFullscreenKeys();
+    if (!activeKeys.length) return;
+    fullscreenItems = {
+      ...fullscreenItems,
+      ...Object.fromEntries(activeKeys.map((key) => [key, false])),
+    };
+  }
+
+  function handleWindowMouseDownCapture(event: MouseEvent) {
+    const fullscreenKey = activeFullscreenKey();
+    const target = event.target instanceof Element ? event.target : null;
+    if (fullscreenKey && !target?.closest(".canvas-fullscreen"))
+      exitActivePageFullscreen();
+    handleCanvasLinkSelection(event);
+  }
+
   onMount(() => {
     const configuredServer = isNativeApp()
       ? new URLSearchParams(window.location.search).get("server")
@@ -196,7 +240,11 @@
       }
     }
 
-    touchZoom = new TouchZoom(fabricEl, () => !hasActiveCanvasItem());
+    touchZoom = new TouchZoom(
+      fabricEl,
+      () => !hasActiveCanvasItem(),
+      () => activeFullscreenKey() === null,
+    );
     const initialView = pageViews[activePageId];
     center = [...initialView.center];
     zoom = initialView.zoom;
@@ -282,12 +330,31 @@
 
   /** Bound "write" method for each terminal. */
   const writers: Record<number, (data: string, replay?: boolean) => void> = {};
+  const terminalTextSenders: Record<
+    number,
+    (data: string, execute?: boolean) => void
+  > = {};
+  const fileTextSenders: Record<
+    number,
+    (data: string, position?: TextInsertPosition) => TextInsertResult
+  > = {};
+  const fileDropPreviewers: Record<
+    number,
+    (position: TextInsertPosition) => boolean
+  > = {};
+  const fileDropPreviewCancelers: Record<number, () => void> = {};
   const termWrappers: Record<number, HTMLDivElement> = {};
   const termElements: Record<number, HTMLDivElement> = {};
   const noteWrappers: Record<number, HTMLElement> = {};
+  const fileWrappers: Record<number, HTMLDivElement> = {};
   const chunknums: Record<number, number> = {};
   const locks: Record<number, any> = {};
-  const terminalHistory: Record<number, string> = {};
+  type TerminalHistoryBuffer = {
+    chunks: string[];
+    start: number;
+    length: number;
+  };
+  const terminalHistory: Record<number, TerminalHistoryBuffer> = {};
   const replayedWriters: Record<
     number,
     (data: string, replay?: boolean) => void
@@ -299,10 +366,25 @@
 
   // Browser-memory-only derived state: neither synchronized nor persisted.
   let terminalTitles: Record<number, string> = {};
+  let fullscreenItems: Record<string, boolean> = {};
+  type PendingFileRequest = {
+    stream: bigint;
+    resolve: (response: FileOperationResponse) => void;
+    reject: (error: Error) => void;
+    timer: number;
+  };
+  const pendingFileRequests = new Map<string, PendingFileRequest>();
 
   // Shared workspace state: synchronized by server and persisted by daemon.
   let shells: [number, WsWinsize][] = [];
   let notes: [number, WsNote][] = [];
+  let fileWindows: [number, WsFileWindow][] = [];
+  let fileEditorBuffers: Record<
+    number,
+    { path: string; stream: bigint; content: string }
+  > = {};
+  const fileEditorUpdateVersions: Record<number, number> = {};
+  const pendingFileEditorUpdates = new Set<number>();
   let pages: WsPage[] = [{ id: 1, name: "Page 1" }];
   let sshProfiles: WsSshProfile[] = [];
 
@@ -314,15 +396,63 @@
     1: { center: [0, 0], zoom: INITIAL_ZOOM },
   };
   let subscriptions = new Set<number>();
+  let linkingNoteId: number | null = null;
+  let focusedTerminalId: number | null = null;
+  let focusedNoteId: number | null = null;
+  let focusedFileWindowId: number | null = null;
+  type ParagraphDropTarget = {
+    kind: "terminal" | "note" | "file";
+    id: number;
+    noteInsertIndex?: number;
+    fileReady?: boolean;
+  };
+  let paragraphDrag: { text: string; sourceNoteId: number } | null = null;
+  let paragraphDropTarget: ParagraphDropTarget | null = null;
+  $: if (
+    linkingNoteId !== null &&
+    !notes.some(([noteId]) => noteId === linkingNoteId)
+  )
+    linkingNoteId = null;
+
+  function appendTerminalHistory(id: number, data: string) {
+    const history = (terminalHistory[id] ??= {
+      chunks: [],
+      start: 0,
+      length: 0,
+    });
+    history.chunks.push(data);
+    history.length += data.length;
+
+    while (history.length > MAX_TERMINAL_HISTORY) {
+      const first = history.chunks[history.start];
+      const overflow = history.length - MAX_TERMINAL_HISTORY;
+      if (overflow >= first.length) {
+        history.length -= first.length;
+        history.start += 1;
+      } else {
+        history.chunks[history.start] = first.slice(overflow);
+        history.length -= overflow;
+      }
+    }
+
+    if (history.start > 256 && history.start * 2 > history.chunks.length) {
+      history.chunks = history.chunks.slice(history.start);
+      history.start = 0;
+    }
+  }
+
+  function readTerminalHistory(id: number) {
+    const history = terminalHistory[id];
+    return history ? history.chunks.slice(history.start).join("") : "";
+  }
 
   function writeTerminalData(id: number, data: string, replay: boolean) {
-    const history = (terminalHistory[id] ?? "") + data;
-    terminalHistory[id] = history.slice(-MAX_TERMINAL_HISTORY);
+    appendTerminalHistory(id, data);
     const writer = writers[id];
     if (!writer) return;
     if (replayedWriters[id] !== writer) {
       replayedWriters[id] = writer;
-      writer(terminalHistory[id], true);
+      writer(readTerminalHistory(id), true);
     } else {
       writer(data, replay);
     }
@@ -353,6 +483,15 @@
   let resizingNoteStartState: WsNote;
   let resizingNoteState: WsNote;
   let resizingNoteDirection: ResizeDirection = "se";
+
+  let movingFile = -1;
+  let movingFileOrigin = [0, 0];
+  let movingFileState: WsFileWindow;
+  let resizingFile = -1;
+  let resizingFileStartPointer = [0, 0];
+  let resizingFileStartState: WsFileWindow;
+  let resizingFileState: WsFileWindow;
+  let resizingFileDirection: ResizeDirection = "se";
 
   let chatMessages: ChatMessage[] = [];
   let newMessages = false;
@@ -410,6 +549,8 @@
           locks[id](async () => {
             await tick();
             chunknums[id] += chunks.length;
+            const plaintextChunks: string[] = [];
+            const decoder = new TextDecoder();
             for (const data of chunks) {
               const buf = await encrypt.segment(
                 0x100000000n | BigInt(id),
@@ -417,8 +558,9 @@
                 data,
               );
               seqnum += data.length;
-              writeTerminalData(id, new TextDecoder().decode(buf), replay);
+              plaintextChunks.push(decoder.decode(buf));
             }
+            writeTerminalData(id, plaintextChunks.join(""), replay);
           });
         } else if (message.users) {
           sessionReady = true;
@@ -468,11 +610,47 @@
             noteId,
             {
               ...note,
+              paragraphs: note.paragraphs?.length
+                ? note.paragraphs
+                : note.text.split("\n"),
+              linkedShellIds: note.linkedShellIds ?? [],
+              linkedNoteIds: note.linkedNoteIds ?? [],
+              linkedFileWindowIds: note.linkedFileWindowIds ?? [],
               width: note.width ?? 384,
               height: note.height ?? 224,
               pageId: note.pageId ?? 1,
             },
           ]);
+        } else if (message.fileWindows) {
+          fileWindows = message.fileWindows.map(([windowId, window]) => [
+            windowId,
+            {
+              ...window,
+              pageId: window.pageId ?? 1,
+              path: window.path || ".",
+              title: window.title || `Terminal ${window.shellId}`,
+              width: window.width || 1_040,
+              height: window.height || 680,
+              currentPath: window.currentPath || window.path || ".",
+              expandedPaths: window.expandedPaths ?? [],
+              selectedPath: window.selectedPath ?? "",
+              selectedKind: window.selectedKind ?? "",
+              treeScrollTop: window.treeScrollTop ?? 0,
+              editorPath: window.editorPath ?? "",
+              editorStream:
+                typeof window.editorStream === "bigint"
+                  ? window.editorStream
+                  : BigInt(window.editorStream ?? 0),
+              editorData:
+                window.editorData instanceof Uint8Array
+                  ? window.editorData
+                  : new Uint8Array(),
+              editorDirty: window.editorDirty ?? false,
+            },
+          ]);
+          for (const [windowId, window] of fileWindows) {
+            void synchronizeFileEditorBuffer(windowId, window);
+          }
         } else if (message.pages) {
           pages = message.pages.length
             ? message.pages
@@ -486,7 +664,12 @@
             switchPage(pages[0].id);
           }
         } else if (message.sshProfiles) {
-          sshProfiles = message.sshProfiles;
+          sshProfiles = message.sshProfiles.map((profile) => ({
+            ...profile,
+            theme: profile.theme || $settings.theme,
+            backgroundEnabled: profile.backgroundEnabled ?? false,
+            background: profile.background || "#181818",
+          }));
         } else if (message.noteEditing) {
           const [noteId, pageId, editor] = message.noteEditing;
           noteEditors = { ...noteEditors };
@@ -496,7 +679,14 @@
           const [noteId, pageId, text] = message.noteText;
           notes = notes.map(([id, note]) =>
             id === noteId && note.pageId === pageId
-              ? [id, { ...note, text }]
+              ? [id, { ...note, text, paragraphs: text.split("\n") }]
+              : [id, note],
+          );
+        } else if (message.noteParagraphs) {
+          const [noteId, pageId, paragraphs] = message.noteParagraphs;
+          notes = notes.map(([id, note]) =>
+            id === noteId && note.pageId === pageId
+              ? [id, { ...note, paragraphs, text: paragraphs.join("\n") }]
               : [id, note],
           );
         } else if (message.hear) {
@@ -507,6 +697,26 @@
         } else if (message.shellLatency !== undefined) {
           const shellLatency = Number(message.shellLatency);
           shellLatencies = [...shellLatencies, shellLatency].slice(-10);
+        } else if (message.fileResponse) {
+          const [requestId, stream, data] = message.fileResponse;
+          const pending = pendingFileRequests.get(requestId);
+          if (!pending || BigInt(stream) !== pending.stream) return;
+          pendingFileRequests.delete(requestId);
+          window.clearTimeout(pending.timer);
+          void encrypt
+            .segment(pending.stream, 0n, data)
+            .then((plaintext) => {
+              pending.resolve(
+                JSON.parse(
+                  new TextDecoder().decode(plaintext),
+                ) as FileOperationResponse,
+              );
+            })
+            .catch((error) =>
+              pending.reject(
+                error instanceof Error ? error : new Error(String(error)),
+              ),
+            );
         } else if (message.pong !== undefined) {
           const serverLatency = Date.now() - Number(message.pong);
           serverLatencies = [...serverLatencies, serverLatency].slice(-10);
@@ -536,6 +746,15 @@
         noteEditors = {};
         serverLatencies = [];
         shellLatencies = [];
+        for (const pending of pendingFileRequests.values()) {
+          window.clearTimeout(pending.timer);
+          pending.reject(
+            new Error(
+              "Connection closed before the filesystem request completed.",
+            ),
+          );
+        }
+        pendingFileRequests.clear();
       },
 
       onClose(event) {
@@ -630,6 +849,179 @@
     return pages.find((page) => page.id === pageId)?.name ?? "Unknown page";
   }
 
+  function noteTitle(noteId: number, note: WsNote) {
+    const firstLine = (
+      note.paragraphs?.length ? note.paragraphs : note.text.split("\n")
+    )
+      .flatMap((paragraph) => paragraph.split("\n"))
+      .find((line) => line.trim());
+    return firstLine?.trim() || `Note #${noteId}`;
+  }
+
+  function terminalTitle(shellId: number, winsize: WsWinsize) {
+    return winsize.title || terminalTitles[shellId] || `Terminal #${shellId}`;
+  }
+
+  function fileWindowTitle(windowId: number, window: WsFileWindow) {
+    const path = window.editorPath || window.currentPath || window.path;
+    return path ? `${window.title} · ${path}` : `File editor #${windowId}`;
+  }
+
+  function updateNoteAssociations(
+    noteId: number,
+    update: Partial<
+      Pick<WsNote, "linkedShellIds" | "linkedNoteIds" | "linkedFileWindowIds">
+    >,
+  ) {
+    if (!hasWriteAccess) return;
+    const entry = notes.find(([id]) => id === noteId);
+    if (!entry) return;
+    const [id, note] = entry;
+    const next = { ...note, ...update };
+    notes = notes.map(([candidateId, candidate]) =>
+      candidateId === id ? [candidateId, next] : [candidateId, candidate],
+    );
+    srocket?.send({ updateNote: [id, note.pageId, next] });
+  }
+
+  function associatedNoteIds(noteId: number) {
+    const note = notes.find(([id]) => id === noteId)?.[1];
+    if (!note) return [];
+    return Array.from(
+      new Set([
+        ...note.linkedNoteIds,
+        ...notes
+          .filter(
+            ([candidateId, candidate]) =>
+              candidateId !== noteId &&
+              candidate.pageId === note.pageId &&
+              candidate.linkedNoteIds.includes(noteId),
+          )
+          .map(([candidateId]) => candidateId),
+      ]),
+    );
+  }
+
+  function toggleCanvasLinkSelection(noteId: number) {
+    if (!hasWriteAccess) return;
+    linkingNoteId = linkingNoteId === noteId ? null : noteId;
+  }
+
+  function removeCanvasRelation(noteId: number, item: CanvasRelationItem) {
+    const note = notes.find(([id]) => id === noteId)?.[1];
+    if (!note) return;
+    if (item.kind === "terminal") {
+      updateNoteAssociations(noteId, {
+        linkedShellIds: note.linkedShellIds.filter((id) => id !== item.id),
+      });
+    } else if (item.kind === "file") {
+      updateNoteAssociations(noteId, {
+        linkedFileWindowIds: note.linkedFileWindowIds.filter(
+          (id) => id !== item.id,
+        ),
+      });
+    } else if (note.linkedNoteIds.includes(item.id)) {
+      updateNoteAssociations(noteId, {
+        linkedNoteIds: note.linkedNoteIds.filter((id) => id !== item.id),
+      });
+    } else {
+      const incoming = notes.find(([id]) => id === item.id);
+      if (incoming?.[1].linkedNoteIds.includes(noteId)) {
+        updateNoteAssociations(item.id, {
+          linkedNoteIds: incoming[1].linkedNoteIds.filter(
+            (id) => id !== noteId,
+          ),
+        });
+      }
+    }
+  }
+
+  function handleCanvasLinkSelection(event: MouseEvent) {
+    if (linkingNoteId === null || !(event.target instanceof Element)) return;
+    if (event.target.closest("[data-link-toggle]")) return;
+    const terminal = event.target.closest<HTMLElement>(
+      "[data-canvas-terminal]",
+    );
+    const targetNote = event.target.closest<HTMLElement>(
+      "[data-canvas-note-id]",
+    );
+    const fileEditor = event.target.closest<HTMLElement>(
+      "[data-canvas-file-editor]",
+    );
+    const fileWindow = fileEditor?.closest<HTMLElement>(
+      "[data-canvas-file-window]",
+    );
+    if (event.button !== 0) {
+      linkingNoteId = null;
+      return;
+    }
+    if (
+      event.target.closest(
+        "button, input, select, a, [role=dialog], [role=menu]",
+      ) ||
+      (event.target.closest("textarea") &&
+        (!targetNote ||
+          Number(targetNote.dataset.canvasNoteId) === linkingNoteId))
+    ) {
+      linkingNoteId = null;
+      return;
+    }
+    if (!terminal && !targetNote && !fileWindow) {
+      linkingNoteId = null;
+      return;
+    }
+    const noteId = linkingNoteId;
+    const note = notes.find(([id]) => id === noteId)?.[1];
+    linkingNoteId = null;
+    if (!note) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (terminal) {
+      const shellId = Number(terminal.dataset.canvasTerminal);
+      const shell = shells.find(([id]) => id === shellId)?.[1];
+      if (
+        shell?.pageId === note.pageId &&
+        !note.linkedShellIds.includes(shellId)
+      ) {
+        updateNoteAssociations(noteId, {
+          linkedShellIds: [...note.linkedShellIds, shellId],
+        });
+      }
+    } else if (targetNote) {
+      const targetId = Number(targetNote.dataset.canvasNoteId);
+      const target = notes.find(([id]) => id === targetId)?.[1];
+      if (targetId === noteId) {
+        makeToast({ kind: "info", message: "A note cannot link to itself." });
+      } else if (
+        target?.pageId === note.pageId &&
+        !associatedNoteIds(noteId).includes(targetId)
+      ) {
+        updateNoteAssociations(noteId, {
+          linkedNoteIds: [...note.linkedNoteIds, targetId],
+        });
+      }
+    } else if (fileWindow) {
+      const windowId = Number(fileWindow.dataset.canvasFileWindow);
+      const target = fileWindows.find(([id]) => id === windowId)?.[1];
+      if (
+        target?.pageId === note.pageId &&
+        !note.linkedFileWindowIds.includes(windowId)
+      ) {
+        updateNoteAssociations(noteId, {
+          linkedFileWindowIds: [...note.linkedFileWindowIds, windowId],
+        });
+      }
+    }
+  }
+
+  function handleRelationshipKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && linkingNoteId !== null) {
+      event.preventDefault();
+      linkingNoteId = null;
+    }
+  }
+
   function existingCanvasItems() {
     return [
       ...shells
@@ -655,6 +1047,9 @@
           width: note.width,
           height: note.height,
         })),
+      ...fileWindows
+        .filter(([, window]) => window.pageId === activePageId)
+        .map(([, { x, y, width, height }]) => ({ x, y, width, height })),
     ];
   }
 
@@ -703,6 +1098,7 @@
       TERM_INITIAL_WIDTH,
       TERM_INITIAL_HEIGHT,
     );
+    const profile = sshProfiles.find((item) => item.id === profileId);
     srocket?.send({
       createSshWindowed: [
         profileId,
@@ -713,7 +1109,7 @@
         TERM_INITIAL_ROWS,
         TERM_INITIAL_COLS,
         activePageId,
-        $settings.theme,
+        profile?.theme || $settings.theme,
       ],
     });
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
@@ -727,6 +1123,258 @@
     );
     srocket?.send({ createNoteSized: [x, y, width, height, activePageId] });
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
+  }
+
+  function randomEncryptedStream() {
+    const bytes = crypto.getRandomValues(new Uint8Array(8));
+    bytes[0] |= 0x80;
+    return bytes.reduce((value, byte) => (value << 8n) | BigInt(byte), 0n);
+  }
+
+  async function requestFileOperation(
+    shellId: number,
+    pageId: number,
+    request: FileOperationRequest,
+  ): Promise<FileOperationResponse> {
+    if (!srocket?.connected) throw new Error("The daemon is not connected.");
+    const requestId = randomHex(16);
+    const requestStream = randomEncryptedStream();
+    let responseStream = randomEncryptedStream();
+    while (responseStream === requestStream)
+      responseStream = randomEncryptedStream();
+    const plaintext = new TextEncoder().encode(JSON.stringify(request));
+    const data = await encrypt.segment(requestStream, 0n, plaintext);
+    const response = new Promise<FileOperationResponse>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pendingFileRequests.delete(requestId);
+        reject(new Error("Filesystem request timed out."));
+      }, 35_000);
+      pendingFileRequests.set(requestId, {
+        stream: responseStream,
+        resolve,
+        reject,
+        timer,
+      });
+    });
+    srocket.send({
+      fileRequest: [
+        shellId,
+        pageId,
+        requestId,
+        requestStream,
+        responseStream,
+        data,
+      ],
+    });
+    return response;
+  }
+
+  function toggleFullscreen(
+    kind: "terminal" | "note" | "file",
+    itemId: number,
+  ) {
+    const key = `${kind}:${itemId}`;
+    const entering = !fullscreenItems[key];
+    const activeKeys = entering ? activePageFullscreenKeys() : [];
+    fullscreenItems = {
+      ...fullscreenItems,
+      ...Object.fromEntries(activeKeys.map((activeKey) => [activeKey, false])),
+      [key]: entering,
+    };
+  }
+
+  type FileWindowSharedUpdate = {
+    currentPath?: string;
+    expandedPaths?: string[];
+    selectedPath?: string;
+    selectedKind?: "" | FileTreeEntry["kind"];
+    treeScrollTop?: number;
+    editorPath?: string;
+    editorContent?: string;
+    editorDirty?: boolean;
+    sidebarWidth?: number;
+    treeRevision?: number;
+  };
+
+  async function synchronizeFileEditorBuffer(id: number, window: WsFileWindow) {
+    if (pendingFileEditorUpdates.has(id)) return;
+    if (!window.editorPath || window.editorStream === 0n) {
+      if (fileEditorBuffers[id]) {
+        fileEditorBuffers = { ...fileEditorBuffers };
+        delete fileEditorBuffers[id];
+      }
+      return;
+    }
+    const existing = fileEditorBuffers[id];
+    if (
+      existing?.path === window.editorPath &&
+      existing.stream === window.editorStream
+    )
+      return;
+    try {
+      const plaintext = await encrypt.segment(
+        window.editorStream,
+        0n,
+        window.editorData,
+      );
+      const content = new TextDecoder("utf-8", { fatal: true }).decode(
+        plaintext,
+      );
+      const current = fileWindows.find(([windowId]) => windowId === id)?.[1];
+      if (
+        !current ||
+        current.editorPath !== window.editorPath ||
+        current.editorStream !== window.editorStream ||
+        pendingFileEditorUpdates.has(id)
+      )
+        return;
+      fileEditorBuffers = {
+        ...fileEditorBuffers,
+        [id]: { path: window.editorPath, stream: window.editorStream, content },
+      };
+    } catch (cause) {
+      console.warn("Could not decrypt a shared file editor buffer.", cause);
+    }
+  }
+
+  function sameSharedValue(left: unknown, right: unknown) {
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return (
+        left.length === right.length &&
+        left.every((value, index) => value === right[index])
+      );
+    }
+    return left === right;
+  }
+
+  function updateFileWindowSharedState(
+    id: number,
+    pageId: number,
+    update: FileWindowSharedUpdate,
+  ) {
+    if (!hasWriteAccess) return;
+    const entry = fileWindows.find(([windowId]) => windowId === id);
+    if (!entry || entry[1].pageId !== pageId) return;
+    const current = entry[1];
+    const { editorContent, ...stateUpdate } = update;
+    const changed = Object.entries(stateUpdate).some(
+      ([key, value]) =>
+        !sameSharedValue(current[key as keyof WsFileWindow], value),
+    );
+    if (editorContent === undefined && !changed) return;
+
+    let next: WsFileWindow = { ...current, ...stateUpdate };
+    if (editorContent === undefined) {
+      fileWindows = fileWindows.map(([windowId, window]) =>
+        windowId === id ? [windowId, next] : [windowId, window],
+      );
+      srocket?.send({ updateFileWindow: [id, pageId, next] });
+      return;
+    }
+
+    const nextEditorPath = stateUpdate.editorPath ?? next.editorPath;
+    if (
+      !changed &&
+      fileEditorBuffers[id]?.path === nextEditorPath &&
+      fileEditorBuffers[id]?.content === editorContent
+    )
+      return;
+
+    const version = (fileEditorUpdateVersions[id] ?? 0) + 1;
+    fileEditorUpdateVersions[id] = version;
+    pendingFileEditorUpdates.add(id);
+    next = {
+      ...next,
+      editorPath: nextEditorPath,
+      editorStream: 0n,
+      editorData: new Uint8Array(),
+    };
+    if (nextEditorPath) {
+      fileEditorBuffers = {
+        ...fileEditorBuffers,
+        [id]: { path: nextEditorPath, stream: 0n, content: editorContent },
+      };
+    } else {
+      fileEditorBuffers = { ...fileEditorBuffers };
+      delete fileEditorBuffers[id];
+    }
+    fileWindows = fileWindows.map(([windowId, window]) =>
+      windowId === id ? [windowId, next] : [windowId, window],
+    );
+
+    if (!nextEditorPath) {
+      pendingFileEditorUpdates.delete(id);
+      srocket?.send({ updateFileWindow: [id, pageId, next] });
+      return;
+    }
+
+    void (async () => {
+      const stream = randomEncryptedStream();
+      const data = await encrypt.segment(
+        stream,
+        0n,
+        new TextEncoder().encode(editorContent),
+      );
+      if (fileEditorUpdateVersions[id] !== version) return;
+      const latest = fileWindows.find(([windowId]) => windowId === id)?.[1];
+      if (
+        !latest ||
+        latest.pageId !== pageId ||
+        latest.editorPath !== nextEditorPath
+      )
+        return;
+      const encrypted: WsFileWindow = {
+        ...latest,
+        editorStream: stream,
+        editorData: data,
+      };
+      pendingFileEditorUpdates.delete(id);
+      fileEditorBuffers = {
+        ...fileEditorBuffers,
+        [id]: { path: nextEditorPath, stream, content: editorContent },
+      };
+      fileWindows = fileWindows.map(([windowId, window]) =>
+        windowId === id ? [windowId, encrypted] : [windowId, window],
+      );
+      srocket?.send({ updateFileWindow: [id, pageId, encrypted] });
+    })().catch((cause) => {
+      pendingFileEditorUpdates.delete(id);
+      console.warn("Could not encrypt a shared file editor buffer.", cause);
+    });
+  }
+
+  function bringFileWindowToFront(id: number, pageId: number) {
+    if (fileWindows.at(-1)?.[0] === id) return;
+    srocket?.send({ updateFileWindow: [id, pageId, null] });
+  }
+
+  function openFileWindow(
+    shellId: number,
+    pageId: number,
+    path: string,
+    title: string,
+  ) {
+    const existing = fileWindows.find(
+      ([, window]) => window.shellId === shellId && window.pageId === pageId,
+    );
+    if (existing) {
+      bringFileWindowToFront(existing[0], pageId);
+      return;
+    }
+    const rect = nextCanvasRect(1_040, 680);
+    srocket?.send({
+      createFileWindow: [
+        shellId,
+        pageId,
+        path || ".",
+        title,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+      ],
+    });
+    touchZoom.moveTo([rect.x, rect.y], INITIAL_ZOOM);
   }
 
   function handleDuplicate(sourceId: number) {
@@ -755,6 +1403,26 @@
     touchZoom.moveTo([rect.x, rect.y], INITIAL_ZOOM);
   }
 
+  function handleCreateAt(sourceId: number, pageId: number, path: string) {
+    if (!hasWriteAccess || shells.length >= 100 || !path) return;
+    const rect = nextCanvasRect(TERM_INITIAL_WIDTH, TERM_INITIAL_HEIGHT);
+    srocket?.send({
+      createAt: [
+        sourceId,
+        path,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        TERM_INITIAL_ROWS,
+        TERM_INITIAL_COLS,
+        pageId,
+        $settings.theme,
+      ],
+    });
+    touchZoom.moveTo([rect.x, rect.y], INITIAL_ZOOM);
+  }
+
   $: canvasSearchItems = [
     ...shells.map(([shellId, winsize]): CanvasSearchItem => ({
       id: shellId,
@@ -769,8 +1437,7 @@
       kind: "note",
       pageId: note.pageId,
       pageName: pageName(note.pageId),
-      title:
-        note.text.split("\n").find((line) => line.trim()) || `Note #${noteId}`,
+      title: noteTitle(noteId, note),
       content: note.text,
     })),
   ];
@@ -783,6 +1450,7 @@
     if (!entry) return;
     searchOpen = false;
     switchPage(item.pageId);
+    await tick();
     const state = entry[1];
     await touchZoom.moveTo([state.x, state.y], INITIAL_ZOOM);
     if (item.kind === "terminal") {
@@ -797,6 +1465,283 @@
     if (textarea instanceof HTMLTextAreaElement) textarea.focus();
   }
 
+  function navigateToTerminal(shellId: number) {
+    const shell = shells.find(([id]) => id === shellId)?.[1];
+    if (!shell) return;
+    void selectCanvasItem({
+      id: shellId,
+      kind: "terminal",
+      pageId: shell.pageId,
+      pageName: pageName(shell.pageId),
+      title: terminalTitle(shellId, shell),
+      content: terminalTitles[shellId] || "",
+    });
+  }
+
+  function navigateToNote(noteId: number) {
+    const note = notes.find(([id]) => id === noteId)?.[1];
+    if (!note) return;
+    void selectCanvasItem({
+      id: noteId,
+      kind: "note",
+      pageId: note.pageId,
+      pageName: pageName(note.pageId),
+      title: noteTitle(noteId, note),
+      content: note.text,
+    });
+  }
+
+  async function navigateToFileWindow(windowId: number) {
+    const fileWindow = fileWindows.find(([id]) => id === windowId)?.[1];
+    if (!fileWindow) return;
+    switchPage(fileWindow.pageId);
+    await tick();
+    await touchZoom.moveTo([fileWindow.x, fileWindow.y], INITIAL_ZOOM);
+    bringFileWindowToFront(windowId, fileWindow.pageId);
+    fileWrappers[windowId]
+      ?.querySelector<HTMLElement>(".cm-content, [data-canvas-file-editor]")
+      ?.focus({ preventScroll: true });
+  }
+
+  function navigateCanvasRelation(item: CanvasRelationItem) {
+    if (item.kind === "terminal") navigateToTerminal(item.id);
+    else if (item.kind === "note") navigateToNote(item.id);
+    else void navigateToFileWindow(item.id);
+  }
+
+  function insertParagraphIntoNote(
+    targetNoteId: number,
+    text: string,
+    insertIndex?: number,
+  ): TextInsertResult {
+    const entry = notes.find(([id]) => id === targetNoteId);
+    if (!entry)
+      return { ok: false, message: "The target note no longer exists." };
+    if (noteEditors[targetNoteId]) {
+      return {
+        ok: false,
+        message: `${noteTitle(targetNoteId, entry[1])} is currently being edited.`,
+      };
+    }
+    const paragraphs = [...entry[1].paragraphs];
+    const index = Math.max(
+      0,
+      Math.min(insertIndex ?? paragraphs.length, paragraphs.length),
+    );
+    paragraphs.splice(index, 0, text);
+    const projectedText = paragraphs.join("\n");
+    if (paragraphs.length > 500 || projectedText.length > 10_000) {
+      return { ok: false, message: "The target note is too large." };
+    }
+    const next = { ...entry[1], paragraphs, text: projectedText };
+    notes = notes.map(([id, note]) =>
+      id === targetNoteId ? [id, next] : [id, note],
+    );
+    srocket?.send({
+      updateNote: [targetNoteId, entry[1].pageId, next],
+    });
+    return { ok: true };
+  }
+
+  function sendNoteParagraph(
+    noteId: number,
+    detail: {
+      text: string;
+      target: "all" | "notes" | "terminals" | "terminals-execute" | "files";
+    },
+  ) {
+    if (!hasWriteAccess) return;
+    const note = notes.find(([id]) => id === noteId)?.[1];
+    if (!note) return;
+    if (!detail.text) {
+      makeToast({ kind: "info", message: "This paragraph is empty." });
+      return;
+    }
+    const sendToNotes = detail.target === "all" || detail.target === "notes";
+    const sendToTerminals =
+      detail.target === "all" ||
+      detail.target === "terminals" ||
+      detail.target === "terminals-execute";
+    const sendToFiles = detail.target === "all" || detail.target === "files";
+    const targetNoteIds = sendToNotes ? associatedNoteIds(noteId) : [];
+    const shellIds = sendToTerminals ? note.linkedShellIds : [];
+    const fileWindowIds = sendToFiles ? note.linkedFileWindowIds : [];
+    const targetCount =
+      targetNoteIds.length + shellIds.length + fileWindowIds.length;
+    if (targetCount === 0) {
+      const targetName =
+        detail.target === "notes"
+          ? "notes"
+          : detail.target === "files"
+            ? "file editors"
+            : detail.target.startsWith("terminals")
+              ? "terminals"
+              : "canvas items";
+      makeToast({
+        kind: "info",
+        message: `This note has no linked ${targetName}.`,
+      });
+      return;
+    }
+
+    let sent = 0;
+    const failures: string[] = [];
+    for (const targetNoteId of targetNoteIds) {
+      const result = insertParagraphIntoNote(targetNoteId, detail.text);
+      if (result.ok) sent += 1;
+      else failures.push(result.message || "A linked note was unavailable.");
+    }
+    for (const shellId of shellIds) {
+      const sender = terminalTextSenders[shellId];
+      if (sender) {
+        sender(detail.text, detail.target === "terminals-execute");
+        sent += 1;
+      } else {
+        failures.push(`Terminal #${shellId} is unavailable.`);
+      }
+    }
+    for (const windowId of fileWindowIds) {
+      const result = fileTextSenders[windowId]?.(detail.text) ?? {
+        ok: false,
+        message: `File editor #${windowId} is unavailable.`,
+      };
+      if (result.ok) sent += 1;
+      else failures.push(result.message || "A file editor was unavailable.");
+    }
+
+    if (failures.length) {
+      makeToast({
+        kind: "error",
+        message: `${sent ? `Sent to ${sent} target${sent === 1 ? "" : "s"}; ` : ""}${failures[0]}${failures.length > 1 ? ` (+${failures.length - 1} more)` : ""}`,
+      });
+    } else {
+      makeToast({
+        kind: "success",
+        message: `Sent to ${sent} linked target${sent === 1 ? "" : "s"}.`,
+      });
+    }
+  }
+
+  function noteParagraphDropIndex(noteElement: HTMLElement, clientY: number) {
+    const rows = Array.from(
+      noteElement.querySelectorAll<HTMLElement>("[data-note-paragraph-index]"),
+    );
+    for (const row of rows) {
+      const bounds = row.getBoundingClientRect();
+      const index = Number(row.dataset.noteParagraphIndex);
+      if (clientY < bounds.top + bounds.height / 2) return index;
+    }
+    return rows.length;
+  }
+
+  function cancelParagraphDropPreview(target = paragraphDropTarget) {
+    if (target?.kind === "file") fileDropPreviewCancelers[target.id]?.();
+  }
+
+  function resolveParagraphDropTarget(event: DragEvent) {
+    if (!paragraphDrag) return null;
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    if (!(element instanceof Element)) return null;
+
+    const terminal = element.closest<HTMLElement>("[data-canvas-terminal]");
+    if (terminal) {
+      return {
+        kind: "terminal" as const,
+        id: Number(terminal.dataset.canvasTerminal),
+      };
+    }
+
+    const fileEditor = element.closest<HTMLElement>(
+      "[data-canvas-file-editor]",
+    );
+    const fileWindow = fileEditor?.closest<HTMLElement>(
+      "[data-canvas-file-window]",
+    );
+    if (fileWindow) {
+      const id = Number(fileWindow.dataset.canvasFileWindow);
+      return {
+        kind: "file" as const,
+        id,
+        fileReady:
+          fileDropPreviewers[id]?.({ x: event.clientX, y: event.clientY }) ??
+          false,
+      };
+    }
+
+    const noteElement = element.closest<HTMLElement>("[data-canvas-note-id]");
+    if (noteElement) {
+      const id = Number(noteElement.dataset.canvasNoteId);
+      if (id === paragraphDrag.sourceNoteId) return null;
+      return {
+        kind: "note" as const,
+        id,
+        noteInsertIndex: noteParagraphDropIndex(noteElement, event.clientY),
+      };
+    }
+    return null;
+  }
+
+  function handleParagraphDragOver(event: DragEvent) {
+    if (!paragraphDrag) return;
+    const next = resolveParagraphDropTarget(event);
+    if (
+      paragraphDropTarget?.kind === "file" &&
+      (next?.kind !== "file" || next.id !== paragraphDropTarget.id)
+    ) {
+      cancelParagraphDropPreview();
+    }
+    paragraphDropTarget = next;
+    if (!next) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  }
+
+  function finishParagraphDrag() {
+    cancelParagraphDropPreview();
+    paragraphDropTarget = null;
+    paragraphDrag = null;
+  }
+
+  function handleParagraphDrop(event: DragEvent) {
+    if (!paragraphDrag) return;
+    const target = resolveParagraphDropTarget(event) ?? paragraphDropTarget;
+    const text = paragraphDrag.text;
+    if (!target) {
+      finishParagraphDrag();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    let result: TextInsertResult;
+    if (target.kind === "terminal") {
+      const sender = terminalTextSenders[target.id];
+      if (sender) {
+        sender(text, false);
+        result = { ok: true };
+      } else {
+        result = { ok: false, message: "The target terminal is unavailable." };
+      }
+    } else if (target.kind === "note") {
+      result = insertParagraphIntoNote(target.id, text, target.noteInsertIndex);
+    } else {
+      result = fileTextSenders[target.id]?.(text, {
+        x: event.clientX,
+        y: event.clientY,
+      }) ?? {
+        ok: false,
+        message: "The target file editor is unavailable.",
+      };
+    }
+    finishParagraphDrag();
+    makeToast({
+      kind: result.ok ? "success" : "error",
+      message: result.ok
+        ? "Paragraph copied to the target."
+        : result.message || "Could not copy the paragraph.",
+    });
+  }
+
   async function handleInput(id: number, pageId: number, data: Uint8Array) {
     if (counter === 0n) {
       // On the first call, initialize the counter to a random 64-bit integer.
@@ -808,6 +1753,89 @@
     counter += BigInt(data.length); // Must increment before the `await`.
     const encrypted = await encrypt.segment(0x200000000n, offset, data);
     srocket?.send({ data: [id, pageId, encrypted, offset] });
+  }
+
+  let terminalInputQueue = Promise.resolve();
+  function queueTerminalInput(id: number, pageId: number, data: Uint8Array) {
+    terminalInputQueue = terminalInputQueue
+      .then(() => handleInput(id, pageId, data))
+      .catch((error) => {
+        makeToast({
+          kind: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not send terminal input.",
+        });
+      });
+  }
+
+  const imageUploadChunkBytes = 64 << 10;
+  let imageUploadQueue = Promise.resolve();
+
+  function randomHex(bytes: number) {
+    const data = new Uint8Array(bytes);
+    crypto.getRandomValues(data);
+    return Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
+  }
+
+  function randomUploadStream() {
+    const data = new Uint8Array(8);
+    crypto.getRandomValues(data);
+    return new DataView(data.buffer).getBigUint64(0) | 0x8000000000000000n;
+  }
+
+  async function uploadImage(id: number, pageId: number, file: File) {
+    if (!srocket?.connected) {
+      throw new Error("Connect to the daemon before uploading an image.");
+    }
+    const uploadId = randomHex(16);
+    const streamNum = randomUploadStream();
+    const totalSize = BigInt(file.size);
+
+    for (let offset = 0; offset < file.size; offset += imageUploadChunkBytes) {
+      if (!srocket?.connected) {
+        throw new Error("Image upload stopped because the connection closed.");
+      }
+      const plaintext = new Uint8Array(
+        await file.slice(offset, offset + imageUploadChunkBytes).arrayBuffer(),
+      );
+      const encrypted = await encrypt.segment(
+        streamNum,
+        BigInt(offset),
+        plaintext,
+      );
+      const complete = offset + plaintext.length === file.size;
+      srocket.send({
+        uploadImage: [
+          id,
+          pageId,
+          uploadId,
+          file.type,
+          totalSize,
+          streamNum,
+          BigInt(offset),
+          encrypted,
+          complete,
+        ],
+      });
+    }
+    makeToast({
+      kind: "success",
+      message: "Image sent. Its daemon cache path will be inserted here.",
+    });
+  }
+
+  function queueImageUpload(id: number, pageId: number, file: File) {
+    imageUploadQueue = imageUploadQueue
+      .then(() => uploadImage(id, pageId, file))
+      .catch((error) => {
+        const message =
+          error instanceof Error ? error.message : "Image upload failed.";
+        makeToast({ kind: "error", message });
+      });
   }
 
   // Stupid hack to preserve input focus when terminals are reordered.
@@ -825,7 +1853,7 @@
       const writer = writers[id];
       if (writer && replayedWriters[id] !== writer) {
         replayedWriters[id] = writer;
-        writer(terminalHistory[id] ?? "", true);
+        writer(readTerminalHistory(id), true);
       }
     }
   });
@@ -862,6 +1890,15 @@
         };
       }
 
+      if (movingFile !== -1) {
+        const [x, y] = normalizePosition(event);
+        movingFileState = {
+          ...movingFileState,
+          x: snapLeadingEdge(Math.round(x - movingFileOrigin[0])),
+          y: snapLeadingEdge(Math.round(y - movingFileOrigin[1])),
+        };
+      }
+
       if (resizing !== -1) {
         const [x, y] = normalizePosition(event);
         const dx = x - resizingStartPointer[0];
@@ -887,7 +1924,7 @@
         const cols = changesWidth
           ? Math.max(
               resizingStartSize.cols +
-                Math.round(
+                Math.floor(
                   (right - left - resizingStartPixels[0]) /
                     resizingCanvasCell[0],
                 ),
@@ -897,7 +1934,7 @@
         const rows = changesHeight
           ? Math.max(
               resizingStartSize.rows +
-                Math.round(
+                Math.floor(
                   (bottom - top - resizingStartPixels[1]) /
                     resizingCanvasCell[1],
                 ),
@@ -980,6 +2017,56 @@
         };
       }
 
+      if (resizingFile !== -1) {
+        const [x, y] = normalizePosition(event);
+        const dx = x - resizingFileStartPointer[0];
+        const dy = y - resizingFileStartPointer[1];
+        const startRight =
+          resizingFileStartState.x + resizingFileStartState.width;
+        const startBottom =
+          resizingFileStartState.y + resizingFileStartState.height;
+        let left = resizesWest(resizingFileDirection)
+          ? snapLeadingEdge(resizingFileStartState.x + dx)
+          : resizingFileStartState.x;
+        let top = resizesNorth(resizingFileDirection)
+          ? snapLeadingEdge(resizingFileStartState.y + dy)
+          : resizingFileStartState.y;
+        let right = resizesEast(resizingFileDirection)
+          ? snapTrailingEdge(startRight + dx)
+          : startRight;
+        let bottom = resizesSouth(resizingFileDirection)
+          ? snapTrailingEdge(startBottom + dy)
+          : startBottom;
+        if (right - left < 600) {
+          if (resizesWest(resizingFileDirection)) left = right - 600;
+          else right = left + 600;
+        }
+        if (bottom - top < 360) {
+          if (resizesNorth(resizingFileDirection)) top = bottom - 360;
+          else bottom = top + 360;
+        }
+        if (right - left > 4_000) {
+          if (resizesWest(resizingFileDirection)) left = right - 4_000;
+          else right = left + 4_000;
+        }
+        if (bottom - top > 4_000) {
+          if (resizesNorth(resizingFileDirection)) top = bottom - 4_000;
+          else bottom = top + 4_000;
+        }
+        const fileWidth = Math.round(right - left);
+        resizingFileState = {
+          ...resizingFileState,
+          x: Math.round(left),
+          y: Math.round(top),
+          width: fileWidth,
+          height: Math.round(bottom - top),
+          sidebarWidth: Math.min(
+            resizingFileState.sidebarWidth || Math.round(fileWidth * 0.32),
+            Math.max(200, fileWidth - 320),
+          ),
+        };
+      }
+
       const [cursorX, cursorY] = normalizePosition(event);
       sendCursor({ setCursor: [activePageId, [cursorX, cursorY]] });
     }
@@ -1028,6 +2115,36 @@
         });
       }
 
+      if (movingFile !== -1) {
+        const movedId = movingFile;
+        fileWindows = fileWindows.map(([id, window]) =>
+          id === movedId ? [id, movingFileState] : [id, window],
+        );
+        srocket?.send({
+          updateFileWindow: [movedId, movingFileState.pageId, movingFileState],
+        });
+        void tick().then(() => {
+          if (movingFile === movedId) movingFile = -1;
+        });
+      }
+
+      if (resizingFile !== -1) {
+        const resizedId = resizingFile;
+        fileWindows = fileWindows.map(([id, window]) =>
+          id === resizedId ? [id, resizingFileState] : [id, window],
+        );
+        srocket?.send({
+          updateFileWindow: [
+            resizedId,
+            resizingFileState.pageId,
+            resizingFileState,
+          ],
+        });
+        void tick().then(() => {
+          if (resizingFile === resizedId) resizingFile = -1;
+        });
+      }
+
       if (event.type === "mouseleave") {
         sendCursor.cancel();
         srocket?.send({ setCursor: [activePageId, null] });
@@ -1053,14 +2170,26 @@
   }, 20);
 </script>
 
+<svelte:window
+  on:mousedown|capture={handleWindowMouseDownCapture}
+  on:keydown={handleRelationshipKeydown}
+  on:dragover|capture={handleParagraphDragOver}
+  on:drop|capture={handleParagraphDrop}
+  on:dragend={finishParagraphDrag}
+/>
+
 <!-- Wheel handler stops native macOS Chrome zooming on pinch. -->
 <main
   class="p-8"
-  style:cursor={resizing !== -1
-    ? resizeCursor(resizingDirection)
-    : resizingNote !== -1
-      ? resizeCursor(resizingNoteDirection)
-      : undefined}
+  style:cursor={linkingNoteId !== null
+    ? "crosshair"
+    : resizing !== -1
+      ? resizeCursor(resizingDirection)
+      : resizingNote !== -1
+        ? resizeCursor(resizingNoteDirection)
+        : resizingFile !== -1
+          ? resizeCursor(resizingFileDirection)
+          : undefined}
   on:wheel={(event) => event.preventDefault()}
 >
   <div
@@ -1073,6 +2202,7 @@
       {newMessages}
       {hasWriteAccess}
       profiles={sshProfiles}
+      {users}
       on:create={handleCreate}
       on:createSsh={(event) => handleCreateSsh(event.detail)}
       on:saveSshProfile={(event) =>
@@ -1178,10 +2308,6 @@
         <span class="text-xs">Read-only</span>
       </div>
     {/if}
-
-    <div class="mt-4">
-      <NameList {users} />
-    </div>
   </div>
 
   <div class="absolute inset-0 overflow-hidden touch-none" bind:this={fabricEl}>
@@ -1190,6 +2316,8 @@
         id === moving ? movingSize : id === resizing ? resizingSize : winsize}
       <div
         class="absolute"
+        data-canvas-terminal={id}
+        class:canvas-fullscreen={fullscreenItems[`terminal:${id}`]}
         style:left={OFFSET_LEFT_CSS}
         style:top={OFFSET_TOP_CSS}
         style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
@@ -1212,13 +2340,47 @@
           background={ws.background}
           colorTheme={ws.theme}
           opacity={ws.opacity}
+          fullscreen={fullscreenItems[`terminal:${id}`] ?? false}
+          linkedNotes={notes
+            .filter(([, note]) => note.linkedShellIds.includes(id))
+            .map(([noteId, note]) => ({
+              id: noteId,
+              label: noteTitle(noteId, note),
+              kind: "note" as const,
+            }))}
+          linkedHighlight={focusedNoteId !== null &&
+            (notes
+              .find(([noteId]) => noteId === focusedNoteId)?.[1]
+              .linkedShellIds.includes(id) ??
+              false)}
+          paragraphDropActive={paragraphDropTarget?.kind === "terminal" &&
+            paragraphDropTarget.id === id}
           {hasWriteAccess}
           bind:write={writers[id]}
+          bind:sendText={terminalTextSenders[id]}
           bind:termEl={termElements[id]}
           on:data={({ detail: data }) =>
-            hasWriteAccess && handleInput(id, ws.pageId, data)}
+            hasWriteAccess && queueTerminalInput(id, ws.pageId, data)}
+          on:uploadImage={({ detail: file }) =>
+            hasWriteAccess && queueImageUpload(id, ws.pageId, file)}
           on:close={() => srocket?.send({ close: [id, ws.pageId] })}
           on:duplicate={() => handleDuplicate(id)}
+          on:toggleFullscreen={() => toggleFullscreen("terminal", id)}
+          on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
+          on:unlinkNote={(event) =>
+            removeCanvasRelation(event.detail.id, {
+              id,
+              kind: "terminal",
+              label: terminalTitle(id, ws),
+            })}
+          on:openFiles={(event) => {
+            openFileWindow(
+              id,
+              ws.pageId,
+              event.detail,
+              ws.title || terminalTitles[id] || `Terminal ${id}`,
+            );
+          }}
           on:appearance={(event) =>
             srocket?.send({
               move: [id, ws.pageId, { ...ws, ...event.detail }],
@@ -1232,7 +2394,7 @@
             srocket?.send({ move: [id, ws.pageId, null] });
           }}
           on:startMove={({ detail: event }) => {
-            if (!hasWriteAccess) return;
+            if (!hasWriteAccess || fullscreenItems[`terminal:${id}`]) return;
             const startingSize = ws;
             const [x, y] = normalizePosition(event);
             movingOrigin = [x - startingSize.x, y - startingSize.y];
@@ -1242,9 +2404,13 @@
           }}
           on:focus={() => {
             if (!hasWriteAccess) return;
+            focusedTerminalId = id;
+            focusedNoteId = null;
+            focusedFileWindowId = null;
             focused = [...focused, [id, ws.pageId]];
           }}
           on:blur={() => {
+            if (focusedTerminalId === id) focusedTerminalId = null;
             focused = focused.filter(([focusedId]) => focusedId !== id);
           }}
         />
@@ -1262,7 +2428,7 @@
         </div>
 
         <ResizeHandles
-          disabled={!hasWriteAccess}
+          disabled={!hasWriteAccess || fullscreenItems[`terminal:${id}`]}
           on:start={({ detail }) => {
             const canvasEl = termElements[id].querySelector(".xterm-screen");
             if (canvasEl) {
@@ -1301,6 +2467,7 @@
             : note}
       <div
         class="absolute"
+        class:canvas-fullscreen={fullscreenItems[`note:${id}`]}
         style:left={OFFSET_LEFT_CSS}
         style:top={OFFSET_TOP_CSS}
         style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
@@ -1316,6 +2483,7 @@
         bind:this={noteWrappers[id]}
       >
         <Note
+          noteId={id}
           note={displayNote}
           {hasWriteAccess}
           {userId}
@@ -1325,6 +2493,71 @@
           editingName={users.find(
             ([uid]) => uid === noteEditors[id]?.userId,
           )?.[1].name ?? ""}
+          fullscreen={fullscreenItems[`note:${id}`] ?? false}
+          linkedItems={[
+            ...displayNote.linkedShellIds.flatMap((shellId) => {
+              const shell = shells.find(([id]) => id === shellId)?.[1];
+              return shell
+                ? [
+                    {
+                      id: shellId,
+                      label: terminalTitle(shellId, shell),
+                      kind: "terminal" as const,
+                    },
+                  ]
+                : [];
+            }),
+            ...associatedNoteIds(id).flatMap((linkedNoteId) => {
+              const linkedNote = notes.find(
+                ([noteId]) => noteId === linkedNoteId,
+              )?.[1];
+              return linkedNote
+                ? [
+                    {
+                      id: linkedNoteId,
+                      label: noteTitle(linkedNoteId, linkedNote),
+                      kind: "note" as const,
+                    },
+                  ]
+                : [];
+            }),
+            ...displayNote.linkedFileWindowIds.flatMap((windowId) => {
+              const fileWindow = fileWindows.find(
+                ([id]) => id === windowId,
+              )?.[1];
+              return fileWindow
+                ? [
+                    {
+                      id: windowId,
+                      label: fileWindowTitle(windowId, fileWindow),
+                      kind: "file" as const,
+                    },
+                  ]
+                : [];
+            }),
+          ]}
+          linkSelecting={linkingNoteId === id}
+          linkedHighlight={(focusedTerminalId !== null &&
+            displayNote.linkedShellIds.includes(focusedTerminalId)) ||
+            (focusedFileWindowId !== null &&
+              displayNote.linkedFileWindowIds.includes(focusedFileWindowId)) ||
+            (focusedNoteId !== null &&
+              focusedNoteId !== id &&
+              associatedNoteIds(id).includes(focusedNoteId))}
+          paragraphDropIndex={paragraphDropTarget?.kind === "note" &&
+          paragraphDropTarget.id === id
+            ? (paragraphDropTarget.noteInsertIndex ?? null)
+            : null}
+          on:toggleFullscreen={() => toggleFullscreen("note", id)}
+          on:toggleLink={() => toggleCanvasLinkSelection(id)}
+          on:navigateRelation={(event) => navigateCanvasRelation(event.detail)}
+          on:unlinkRelation={(event) => removeCanvasRelation(id, event.detail)}
+          on:sendParagraph={(event) => sendNoteParagraph(id, event.detail)}
+          on:paragraphDragStart={(event) => {
+            linkingNoteId = null;
+            paragraphDrag = event.detail;
+          }}
+          on:paragraphDragEnd={finishParagraphDrag}
           on:close={() => srocket?.send({ closeNote: [id, note.pageId] })}
           on:update={(event) =>
             srocket?.send({
@@ -1334,19 +2567,29 @@
             srocket?.send({
               setNoteEditing: [id, note.pageId, event.detail],
             })}
-          on:text={(event) => {
+          on:paragraphs={(event) => {
+            const paragraphs = event.detail;
             notes = notes.map(([noteId, note]) =>
               noteId === id
-                ? [noteId, { ...note, text: event.detail }]
+                ? [noteId, { ...note, paragraphs, text: paragraphs.join("\n") }]
                 : [noteId, note],
             );
             srocket?.send({
-              updateNoteText: [id, note.pageId, event.detail],
+              updateNoteParagraphs: [id, note.pageId, paragraphs],
             });
+          }}
+          on:focus={() => {
+            focusedNoteId = id;
+            focusedTerminalId = null;
+            focusedFileWindowId = null;
+          }}
+          on:blur={() => {
+            if (focusedNoteId === id) focusedNoteId = null;
           }}
           on:bringToFront={() =>
             srocket?.send({ updateNote: [id, note.pageId, null] })}
           on:startMove={({ detail: event }) => {
+            if (fullscreenItems[`note:${id}`]) return;
             const startingNote = displayNote;
             const [x, y] = normalizePosition(event);
             movingNoteOrigin = [x - startingNote.x, y - startingNote.y];
@@ -1354,6 +2597,7 @@
             movingNote = id;
           }}
           on:startResize={({ detail }) => {
+            if (fullscreenItems[`note:${id}`]) return;
             const startingNote = displayNote;
             resizingNoteStartPointer = normalizePosition(detail.event);
             resizingNoteStartState = startingNote;
@@ -1361,6 +2605,133 @@
             resizingNoteDirection = detail.direction;
             srocket?.send({ updateNote: [id, note.pageId, null] });
             resizingNote = id;
+          }}
+        />
+      </div>
+    {/each}
+
+    {#each fileWindows.filter(([, window]) => window.pageId === activePageId) as [id, fileWindow] (id)}
+      {@const displayFileWindow =
+        id === movingFile
+          ? movingFileState
+          : id === resizingFile
+            ? resizingFileState
+            : fileWindow}
+      <div
+        class="absolute"
+        data-canvas-file-window={id}
+        class:canvas-fullscreen={fullscreenItems[`file:${id}`]}
+        style:left={OFFSET_LEFT_CSS}
+        style:top={OFFSET_TOP_CSS}
+        style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
+        transition:fade|local
+        use:slide={{
+          x: displayFileWindow.x,
+          y: displayFileWindow.y,
+          center,
+          zoom,
+          immediate: id === movingFile || id === resizingFile,
+        }}
+        bind:this={fileWrappers[id]}
+      >
+        <FileExplorer
+          title={displayFileWindow.title}
+          initialPath={displayFileWindow.path}
+          currentPath={displayFileWindow.currentPath}
+          expandedPaths={displayFileWindow.expandedPaths}
+          selectedPath={displayFileWindow.selectedPath}
+          selectedKind={displayFileWindow.selectedKind}
+          treeScrollTop={displayFileWindow.treeScrollTop}
+          editorPath={displayFileWindow.editorPath}
+          sharedEditorContent={fileEditorBuffers[id]?.path ===
+          displayFileWindow.editorPath
+            ? fileEditorBuffers[id].content
+            : null}
+          sharedEditorDirty={displayFileWindow.editorDirty}
+          width={displayFileWindow.width}
+          height={displayFileWindow.height}
+          sidebarWidth={displayFileWindow.sidebarWidth}
+          treeRevision={displayFileWindow.treeRevision}
+          linkedNotes={notes
+            .filter(([, note]) => note.linkedFileWindowIds.includes(id))
+            .map(([noteId, note]) => ({
+              id: noteId,
+              label: noteTitle(noteId, note),
+              kind: "note" as const,
+            }))}
+          linkedHighlight={focusedNoteId !== null &&
+            (notes
+              .find(([noteId]) => noteId === focusedNoteId)?.[1]
+              .linkedFileWindowIds.includes(id) ??
+              false)}
+          paragraphDropState={paragraphDropTarget?.kind === "file" &&
+          paragraphDropTarget.id === id
+            ? paragraphDropTarget.fileReady
+              ? "ready"
+              : "blocked"
+            : "none"}
+          fullscreen={fullscreenItems[`file:${id}`] ?? false}
+          {hasWriteAccess}
+          bind:insertText={fileTextSenders[id]}
+          bind:previewTextDrop={fileDropPreviewers[id]}
+          bind:cancelTextDropPreview={fileDropPreviewCancelers[id]}
+          updateSharedState={(update) =>
+            updateFileWindowSharedState(id, displayFileWindow.pageId, update)}
+          request={(request) =>
+            requestFileOperation(
+              displayFileWindow.shellId,
+              displayFileWindow.pageId,
+              request,
+            )}
+          on:close={() =>
+            hasWriteAccess &&
+            srocket?.send({
+              closeFileWindow: [id, fileWindow.pageId],
+            })}
+          on:toggleFullscreen={() => toggleFullscreen("file", id)}
+          on:openTerminal={(event) =>
+            handleCreateAt(
+              displayFileWindow.shellId,
+              displayFileWindow.pageId,
+              event.detail,
+            )}
+          on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
+          on:unlinkNote={(event) =>
+            removeCanvasRelation(event.detail.id, {
+              id,
+              kind: "file",
+              label: fileWindowTitle(id, displayFileWindow),
+            })}
+          on:focus={() => {
+            focusedFileWindowId = id;
+            focusedTerminalId = null;
+            focusedNoteId = null;
+          }}
+          on:blur={() => {
+            if (focusedFileWindowId === id) focusedFileWindowId = null;
+          }}
+          on:bringToFront={() => bringFileWindowToFront(id, fileWindow.pageId)}
+          on:startMove={({ detail: event }) => {
+            if (!hasWriteAccess || fullscreenItems[`file:${id}`]) return;
+            const [x, y] = normalizePosition(event);
+            movingFileOrigin = [
+              x - displayFileWindow.x,
+              y - displayFileWindow.y,
+            ];
+            movingFileState = displayFileWindow;
+            bringFileWindowToFront(id, fileWindow.pageId);
+            movingFile = id;
+          }}
+        />
+        <ResizeHandles
+          disabled={!hasWriteAccess || fullscreenItems[`file:${id}`]}
+          on:start={({ detail }) => {
+            resizingFileStartPointer = normalizePosition(detail.event);
+            resizingFileStartState = displayFileWindow;
+            resizingFileState = displayFileWindow;
+            resizingFileDirection = detail.direction;
+            bringFileWindowToFront(id, fileWindow.pageId);
+            resizingFile = id;
           }}
         />
       </div>
@@ -1380,8 +2751,20 @@
           zoom,
         }}
       >
-        <LiveCursor {user} />
+        <LiveCursor userId={id} {user} />
       </div>
     {/each}
   </div>
 </main>
+
+<style>
+  :global(.canvas-fullscreen) {
+    position: fixed !important;
+    left: 24px !important;
+    right: 24px !important;
+    top: 88px !important;
+    bottom: 68px !important;
+    z-index: 35 !important;
+    transform: none !important;
+  }
+</style>

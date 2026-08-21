@@ -23,9 +23,40 @@ export type WsNote = {
   width: number;
   height: number;
   text: string;
+  /** Structured paragraph blocks. `text` remains as a legacy/search projection. */
+  paragraphs: string[];
+  /** Terminals associated with this note. The relation is stored only here. */
+  linkedShellIds: Sid[];
+  /** Other notes associated with this note. Incoming links are derived. */
+  linkedNoteIds: Sid[];
+  /** File editor windows associated with this note. */
+  linkedFileWindowIds: Sid[];
   background: string;
   opacity: number;
   pageId: number;
+};
+
+/** Shared state for a filesystem browser attached to a terminal. */
+export type WsFileWindow = {
+  shellId: Sid;
+  pageId: number;
+  path: string;
+  title: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  currentPath: string;
+  expandedPaths: string[];
+  selectedPath: string;
+  selectedKind: "" | FileTreeEntry["kind"];
+  treeScrollTop: number;
+  editorPath: string;
+  editorStream: bigint;
+  editorData: Uint8Array;
+  editorDirty: boolean;
+  sidebarWidth: number;
+  treeRevision: number;
 };
 
 /** A named canvas page shared by every viewer. */
@@ -46,6 +77,44 @@ export type WsSshProfile = {
   authMethod: WsSshAuthMethod;
   keyPath: string;
   acceptNewHostKey: boolean;
+  theme: string;
+  backgroundEnabled: boolean;
+  background: string;
+};
+
+export type FileTreeEntry = {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | "symlink" | "other";
+  size: number;
+};
+
+export type FileOperationRequest = {
+  operation:
+    | "list"
+    | "read"
+    | "write"
+    | "createFile"
+    | "createDirectory"
+    | "rename"
+    | "move"
+    | "delete";
+  path: string;
+  destination?: string;
+  content?: string;
+  encoding?: "utf8" | "base64";
+  recursive?: boolean;
+};
+
+export type FileOperationResponse = {
+  ok: boolean;
+  operation: FileOperationRequest["operation"];
+  path: string;
+  error?: string;
+  entries?: FileTreeEntry[];
+  content?: string;
+  encoding?: "utf8" | "base64";
+  size?: number;
 };
 
 /** Information about a user, see the Rust version */
@@ -65,13 +134,16 @@ export type WsServer = {
   userDiff?: [Uid, WsUser | null];
   shells?: [Sid, WsWinsize][];
   notes?: [Sid, WsNote][];
+  fileWindows?: [Sid, WsFileWindow][];
   pages?: WsPage[];
   sshProfiles?: WsSshProfile[];
   noteEditing?: [Sid, number, Uid | null];
   noteText?: [Sid, number, string];
+  noteParagraphs?: [Sid, number, string[]];
   chunks?: [Sid, number, boolean, number, Uint8Array[]];
   hear?: [Uid, string, string];
   shellLatency?: number | bigint;
+  fileResponse?: [string, bigint, Uint8Array];
   pong?: number | bigint;
   error?: string;
 };
@@ -122,6 +194,18 @@ export type WsClient = {
     number,
     string,
   ];
+  createAt?: [
+    Sid,
+    string,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    string,
+  ];
   close?: [Sid, number];
   move?: [Sid, number, WsWinsize | null];
   createNote?: [number, number, number];
@@ -130,11 +214,36 @@ export type WsClient = {
   updateNote?: [Sid, number, WsNote | null];
   setNoteEditing?: [Sid, number, boolean];
   updateNoteText?: [Sid, number, string];
+  updateNoteParagraphs?: [Sid, number, string[]];
+  createFileWindow?: [
+    Sid,
+    number,
+    string,
+    string,
+    number,
+    number,
+    number,
+    number,
+  ];
+  closeFileWindow?: [Sid, number];
+  updateFileWindow?: [Sid, number, WsFileWindow | null];
   createPage?: string;
   renamePage?: [number, string];
   upsertSshProfile?: WsSshProfile;
   deleteSshProfile?: string;
   data?: [Sid, number, Uint8Array, bigint];
+  uploadImage?: [
+    Sid,
+    number,
+    string,
+    string,
+    bigint,
+    bigint,
+    bigint,
+    Uint8Array,
+    boolean,
+  ];
+  fileRequest?: [Sid, number, string, bigint, bigint, Uint8Array];
   subscribe?: [Sid, number, number];
   chat?: string;
   ping?: bigint;

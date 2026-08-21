@@ -12,7 +12,9 @@
     WifiIcon,
   } from "svelte-feather-icons";
   import logo from "$lib/assets/logo.svg";
-  import type { WsSshProfile } from "$lib/protocol";
+  import { settings } from "$lib/settings";
+  import type { WsSshProfile, WsUser } from "$lib/protocol";
+  import NameList from "./NameList.svelte";
   import SshProfileEditor from "./SshProfileEditor.svelte";
 
   export let connected: boolean;
@@ -21,6 +23,7 @@
   export let hasWriteAccess: boolean | undefined;
   export let newMessages: boolean;
   export let profiles: WsSshProfile[];
+  export let users: [number, WsUser][];
 
   const dispatch = createEventDispatcher<{
     create: void;
@@ -63,6 +66,9 @@
       authMethod: "default",
       keyPath: "",
       acceptNewHostKey: true,
+      theme: $settings.theme,
+      backgroundEnabled: false,
+      background: "#181818",
     };
   }
 
@@ -227,6 +233,10 @@
       on:click={() => dispatch("networkInfo")}
       ><WifiIcon strokeWidth={1.5} /></button
     >
+    {#if users.length > 0}
+      <div class="v-divider"></div>
+      <NameList {users} />
+    {/if}
   </div>
 </div>
 
@@ -252,6 +262,9 @@
   .icon-button :global(svg) {
     @apply h-5 w-5;
   }
+  .network-status :global(svg) {
+    @apply h-[22px] w-[22px];
+  }
   .split-main,
   .split-arrow {
     @apply inline-flex h-8 items-center justify-center border border-zinc-700 bg-zinc-800/60 hover:bg-zinc-700 active:bg-indigo-700 transition-colors disabled:opacity-50 disabled:bg-zinc-800/30;
@@ -275,7 +288,10 @@
     @apply mx-1 flex cursor-pointer items-center gap-1 rounded-md px-2 py-2 hover:bg-zinc-800 outline-none focus:bg-zinc-800;
   }
   .item-action {
-    @apply h-7 w-7 shrink-0 rounded p-1.5 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100;
+    @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded p-0 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100;
+  }
+  .item-action :global(svg) {
+    @apply h-3.5 w-3.5;
   }
   .item-action.danger {
     @apply hover:bg-red-950 hover:text-red-300;

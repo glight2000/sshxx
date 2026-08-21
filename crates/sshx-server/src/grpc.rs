@@ -232,6 +232,7 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
             }
         }
         Some(ClientMessage::CreatedShell(new_shell)) => {
+            let new_shell = *new_shell;
             let id = Sid(new_shell.id);
             let center = (new_shell.x, new_shell.y);
             let rows = u16::try_from(new_shell.rows).unwrap_or(0);
@@ -244,7 +245,7 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
                 new_shell.page_id.max(1),
                 (rows, cols),
                 (width, height),
-                new_shell.theme,
+                (new_shell.theme, new_shell.background),
             ) {
                 Ok(Some(winsize)) => {
                     let resize = TerminalSize {
@@ -265,13 +266,16 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
                 return send_err(tx, format!("close shell: {:?}", err)).await;
             }
         }
+        Some(ClientMessage::FileResponse(response)) => {
+            session.send_file_response(response.request_id, response.stream_num, response.data);
+        }
         Some(ClientMessage::Pong(ts)) => {
             let latency = get_time_ms().saturating_sub(ts);
             session.send_latency_measurement(latency);
         }
         Some(ClientMessage::Error(err)) => {
-            // TODO: Propagate these errors to listeners on the web interface?
             error!(?err, "error received from client");
+            session.send_error(err);
         }
         None => (), // Heartbeat message, ignored.
     }

@@ -11,12 +11,18 @@
     hash = (hash * 16777619) ^ -1;
     return 360 * (hash / (1 << 31));
   }
+
+  /** Keep each live connection visually distinct, even when names collide. */
+  export function userToHue(id: number, name: string): number {
+    return nameToHue(`${id}:${name}`);
+  }
 </script>
 
 <script lang="ts">
   import { fade } from "svelte/transition";
 
   export let user: WsUser;
+  export let userId: number;
   export let showName = false;
 
   let hovering = false;
@@ -46,7 +52,7 @@
   <svg width="23" height="23" viewBox="0 0 23 23">
     <path
       d="M11 22L2 2L22 11L14 14Z"
-      fill="hsl({nameToHue(user.name)}, 100%, 50%)"
+      fill="hsl({userToHue(userId, user.name)}, 100%, 50%)"
       stroke="white"
     />
   </svg>

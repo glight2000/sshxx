@@ -55,6 +55,10 @@ fn default_note_height() -> u16 {
     224
 }
 
+fn default_file_sidebar_width() -> u16 {
+    332
+}
+
 impl Default for WsWinsize {
     fn default() -> Self {
         WsWinsize {
@@ -89,6 +93,18 @@ pub struct WsNote {
     pub height: u16,
     /// Editable note contents.
     pub text: String,
+    /// Structured block contents. Empty means legacy newline-delimited text.
+    #[serde(default)]
+    pub paragraphs: Vec<String>,
+    /// Terminal IDs associated with this note.
+    #[serde(default)]
+    pub linked_shell_ids: Vec<Sid>,
+    /// Other note IDs associated with this note. Incoming links are derived.
+    #[serde(default)]
+    pub linked_note_ids: Vec<Sid>,
+    /// File editor window IDs associated with this note.
+    #[serde(default)]
+    pub linked_file_window_ids: Vec<Sid>,
     /// Note background color as a CSS hex value.
     pub background: String,
     /// Note opacity as a percentage.
@@ -96,6 +112,61 @@ pub struct WsNote {
     /// Canvas page containing this note.
     #[serde(default = "default_page_id")]
     pub page_id: u32,
+}
+
+/// Shared state for a filesystem browser attached to a terminal.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WsFileWindow {
+    /// Terminal whose local or SSH filesystem this window browses.
+    pub shell_id: Sid,
+    /// Canvas page containing this window.
+    pub page_id: u32,
+    /// Initial directory shown when a client creates the browser view.
+    pub path: String,
+    /// User-visible terminal-derived label.
+    pub title: String,
+    /// Top-left canvas coordinates.
+    pub x: i32,
+    /// Top-left vertical canvas coordinate.
+    pub y: i32,
+    /// Canvas width.
+    pub width: u16,
+    /// Canvas height.
+    pub height: u16,
+    /// Directory currently used as the browser's working location.
+    #[serde(default)]
+    pub current_path: String,
+    /// Expanded directory paths in the shared tree.
+    #[serde(default)]
+    pub expanded_paths: Vec<String>,
+    /// Currently selected file or directory path.
+    #[serde(default)]
+    pub selected_path: String,
+    /// Kind of the selected tree entry, or empty when nothing is selected.
+    #[serde(default)]
+    pub selected_kind: String,
+    /// Shared vertical scroll offset for the filesystem tree.
+    #[serde(default)]
+    pub tree_scroll_top: u32,
+    /// Text file whose shared editor buffer is active.
+    #[serde(default)]
+    pub editor_path: String,
+    /// Unique AES-CTR stream used for the current encrypted editor buffer.
+    #[serde(default)]
+    pub editor_stream: u64,
+    /// End-to-end encrypted UTF-8 editor contents.
+    #[serde(default)]
+    pub editor_data: Bytes,
+    /// Whether the shared editor buffer differs from the file on disk.
+    #[serde(default)]
+    pub editor_dirty: bool,
+    /// Shared width of the file-tree pane within the browser window.
+    #[serde(default = "default_file_sidebar_width")]
+    pub sidebar_width: u16,
+    /// Change token replaced after filesystem mutations.
+    #[serde(default)]
+    pub tree_revision: u32,
 }
 
 /// A named page in the shared workspace.
@@ -143,6 +214,15 @@ pub struct WsSshProfile {
     pub key_path: String,
     /// Whether OpenSSH may accept a new host key on first use.
     pub accept_new_host_key: bool,
+    /// Default terminal color theme for this connection.
+    #[serde(default)]
+    pub theme: String,
+    /// Whether the profile's background overrides its theme.
+    #[serde(default)]
+    pub background_enabled: bool,
+    /// Default terminal background color when the override is enabled.
+    #[serde(default)]
+    pub background: String,
 }
 
 /// Real-time message providing information about a user.
@@ -178,6 +258,8 @@ pub enum WsServer {
     Shells(Vec<(Sid, WsWinsize)>),
     /// Snapshot of notes on the shared canvas.
     Notes(Vec<(Sid, WsNote)>),
+    /// Shared filesystem browser window layouts.
+    FileWindows(Vec<(Sid, WsFileWindow)>),
     /// Snapshot of named canvas pages.
     Pages(Vec<WsPage>),
     /// Snapshot of reusable SSH connection profiles.
@@ -186,12 +268,16 @@ pub enum WsServer {
     NoteEditing(Sid, u32, Option<Uid>),
     /// Character-level live text update for a note.
     NoteText(Sid, u32, String),
+    /// Character-level live structured paragraph update for a note.
+    NoteParagraphs(Sid, u32, Vec<String>),
     /// Subscription results, in the form of terminal data chunks.
     Chunks(Sid, u32, bool, u64, Vec<Bytes>),
     /// Get a chat message tuple `(uid, name, text)` from the room.
     Hear(Uid, String, String),
     /// Forward a latency measurement between the server and backend shell.
     ShellLatency(u64),
+    /// End-to-end encrypted filesystem response from sshxx-daemon.
+    FileResponse(String, u64, Bytes),
     /// Echo back a timestamp, for the the client's own latency measurement.
     Pong(u64),
     /// Alert the client of an application error.
@@ -233,6 +319,8 @@ pub enum WsClient {
     CloneStyled(Sid, i32, i32, u16, u16, u32, String),
     /// Clone a shell with exact canvas and PTY dimensions.
     CloneWindowed(Sid, i32, i32, u16, u16, u16, u16, u32, String),
+    /// Clone a shell at an explicit local or remote working directory.
+    CreateAt(Sid, String, i32, i32, u16, u16, u16, u16, u32, String),
     /// Close a specific shell.
     Close(Sid, u32),
     /// Move a shell window to a new position and focus it.
@@ -249,6 +337,14 @@ pub enum WsClient {
     SetNoteEditing(Sid, u32, bool),
     /// Update note text immediately as the user types.
     UpdateNoteText(Sid, u32, String),
+    /// Update structured note paragraphs immediately as the user types.
+    UpdateNoteParagraphs(Sid, u32, Vec<String>),
+    /// Open a shared filesystem browser for a terminal.
+    CreateFileWindow(Sid, u32, String, String, i32, i32, u16, u16),
+    /// Close a shared filesystem browser.
+    CloseFileWindow(Sid, u32),
+    /// Update a filesystem browser, or bring it to the top when absent.
+    UpdateFileWindow(Sid, u32, Option<WsFileWindow>),
     /// Create a named canvas page.
     CreatePage(String),
     /// Rename an existing canvas page.
@@ -259,6 +355,10 @@ pub enum WsClient {
     DeleteSshProfile(String),
     /// Add user data to a given shell.
     Data(Sid, u32, Bytes, u64),
+    /// Upload one encrypted image chunk for a local daemon shell.
+    UploadImage(Sid, u32, String, String, u64, u64, u64, Bytes, bool),
+    /// End-to-end encrypted filesystem request for a terminal's host.
+    FileRequest(Sid, u32, String, u64, u64, Bytes),
     /// Subscribe to a shell, starting at a given chunk index.
     Subscribe(Sid, u32, u64),
     /// Send a a chat message to the room.

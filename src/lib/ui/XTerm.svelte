@@ -38,9 +38,12 @@
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import type { Terminal } from "@xterm/xterm";
   import { Buffer } from "buffer";
-  import { SettingsIcon } from "svelte-feather-icons";
+  import { FolderIcon, SettingsIcon } from "svelte-feather-icons";
 
   import themes, { isThemeName, type ThemeName } from "./themes";
+  import CanvasRelations, {
+    type CanvasRelationItem,
+  } from "./CanvasRelations.svelte";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
   import { settings } from "$lib/settings";
@@ -51,8 +54,11 @@
 
   const dispatch = createEventDispatcher<{
     data: Uint8Array;
+    uploadImage: File;
     close: void;
     duplicate: void;
+    toggleFullscreen: void;
+    openFiles: string;
     appearance: {
       title: string;
       background: string;
@@ -64,6 +70,8 @@
     startMove: MouseEvent;
     focus: void;
     blur: void;
+    navigateNote: CanvasRelationItem;
+    unlinkNote: CanvasRelationItem;
   }>();
 
   const typeahead = new TypeAheadAddon();
@@ -76,7 +84,12 @@
   export let colorTheme = "";
   export let opacity = 80;
   export let hasWriteAccess: boolean | undefined;
+  export let fullscreen = false;
+  export let linkedNotes: CanvasRelationItem[] = [];
+  export let linkedHighlight = false;
+  export let paragraphDropActive = false;
   export let write: (data: string, replay?: boolean) => void; // bound function prop
+  export let sendText: (data: string, execute?: boolean) => void;
 
   export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
   let term: Terminal | null = null;
@@ -107,7 +120,9 @@
   let appearanceButton: HTMLButtonElement;
   let appearancePanel: HTMLDivElement;
   let attention = false;
+  let imageDragging = false;
   let suppressAttention = 0;
+  let workingDirectory = ".";
   $: displayTitle = title || currentTitle;
 
   function requestAttention() {
@@ -132,21 +147,21 @@
 
   function openThemeMenu() {
     draftTheme = activeThemeName;
-    previewTheme = draftTheme;
+    previewTheme = null;
     themeMenuOpen = true;
   }
 
-  function cancelThemeMenu() {
+  function closeThemeMenu() {
     previewTheme = null;
-    draftTheme = persistedTheme;
+    draftTheme = pendingTheme ?? persistedTheme;
     themeMenuOpen = false;
   }
 
-  function applyTheme() {
-    pendingTheme = draftTheme;
-    previewTheme = null;
-    themeMenuOpen = false;
-    updateAppearance({ theme: draftTheme });
+  function selectTheme(themeName: ThemeName) {
+    draftTheme = themeName;
+    pendingTheme = themeName;
+    previewTheme = themeName;
+    updateAppearance({ theme: themeName });
   }
 
   function closeAppearanceOnOutsideClick(event: MouseEvent) {
@@ -157,51 +172,148 @@
     ) {
       return;
     }
-    cancelThemeMenu();
+    closeThemeMenu();
     appearanceOpen = false;
   }
 
-  function handleWheelSkipXTerm(event: WheelEvent) {
-    event.preventDefault(); // Stop native macOS Chrome zooming on pinch.
-
-    // We stop the event from propagating to the main `.xterm` terminal element,
-    // so the xterm.js's event handlers do not fire and scroll the buffer.
-    event.stopPropagation();
-
-    // However, we still want it to propagate upward to our pan/zoom handlers,
-    // so we re-dispatch the event higher up, skipping xterm.
-    termEl?.dispatchEvent(new WheelEvent(event.type, event));
-  }
-
-  function setFocused(isFocused: boolean, cursorLayer: HTMLDivElement) {
+  function setFocused(isFocused: boolean) {
     if (isFocused && !focused) {
       focused = isFocused;
       attention = false;
-      cursorLayer.removeEventListener("wheel", handleWheelSkipXTerm);
       dispatch("focus");
     } else if (!isFocused && focused) {
       focused = isFocused;
-      cursorLayer.addEventListener("wheel", handleWheelSkipXTerm);
       dispatch("blur");
     }
   }
 
-  const preloadBuffer: [string, boolean][] = [];
+  const supportedImageTypes = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+  ]);
+  const maxImageBytes = 20 << 20;
+
+  function uploadImage(file: File) {
+    if (!hasWriteAccess) {
+      makeToast({ kind: "error", message: "No write permission." });
+      return;
+    }
+    if (!supportedImageTypes.has(file.type)) {
+      makeToast({
+        kind: "error",
+        message: "Paste a PNG, JPEG, WebP, or GIF image.",
+      });
+      return;
+    }
+    if (file.size === 0 || file.size > maxImageBytes) {
+      makeToast({
+        kind: "error",
+        message: "Images must be between 1 byte and 20 MiB.",
+      });
+      return;
+    }
+    dispatch("uploadImage", file);
+  }
+
+  function handlePaste(event: ClipboardEvent) {
+    const file = Array.from(event.clipboardData?.items ?? [])
+      .find(
+        (item) => item.kind === "file" && supportedImageTypes.has(item.type),
+      )
+      ?.getAsFile();
+    if (!file) return;
+    event.preventDefault();
+    event.stopPropagation();
+    uploadImage(file);
+  }
+
+  function handleDragOver(event: DragEvent) {
+    if (
+      !Array.from(event.dataTransfer?.items ?? []).some((item) =>
+        supportedImageTypes.has(item.type),
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+    imageDragging = true;
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragLeave(event: DragEvent) {
+    if (
+      event.relatedTarget instanceof Node &&
+      event.currentTarget instanceof Node &&
+      event.currentTarget.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+    imageDragging = false;
+  }
+
+  function handleDrop(event: DragEvent) {
+    imageDragging = false;
+    const file = Array.from(event.dataTransfer?.files ?? []).find((candidate) =>
+      supportedImageTypes.has(candidate.type),
+    );
+    if (!file) return;
+    event.preventDefault();
+    event.stopPropagation();
+    uploadImage(file);
+  }
+
+  type PendingWrite = {
+    parts: string[];
+    length: number;
+    replay: boolean;
+  };
+  const pendingWrites: PendingWrite[] = [];
+  const maxCombinedWriteBytes = 256 << 10;
+  let writeInProgress = false;
+
+  function flushPendingWrites() {
+    if (!term || writeInProgress || pendingWrites.length === 0) return;
+    const next = pendingWrites.shift()!;
+    let data = next.parts.length === 1 ? next.parts[0] : next.parts.join("");
+    if (!next.replay) data = typeahead.onBeforeProcessData(data);
+    if (!data) {
+      flushPendingWrites();
+      return;
+    }
+
+    writeInProgress = true;
+    if (next.replay) suppressAttention += 1;
+    const complete = () => {
+      if (next.replay) suppressAttention -= 1;
+      writeInProgress = false;
+      flushPendingWrites();
+    };
+    try {
+      // Wait for xterm's public write callback before feeding the next batch.
+      // This keeps full-screen TUIs from overwhelming its internal write queue.
+      term.write(data, complete);
+    } catch (error) {
+      console.error("Could not write terminal output.", error);
+      complete();
+    }
+  }
 
   write = (data: string, replay = false) => {
     if (!data) return;
-    if (!term) {
-      // Before the terminal is loaded, push data into a buffer.
-      preloadBuffer.push([data, replay]);
+    const pending = pendingWrites.at(-1);
+    if (
+      pending &&
+      pending.replay === replay &&
+      pending.length + data.length <= maxCombinedWriteBytes
+    ) {
+      pending.parts.push(data);
+      pending.length += data.length;
     } else {
-      if (data && !replay) data = typeahead.onBeforeProcessData(data);
-      if (replay) {
-        suppressAttention += 1;
-        term.write(data, () => (suppressAttention -= 1));
-      } else {
-        term.write(data);
-      }
+      pendingWrites.push({ parts: [data], length: data.length, replay });
     }
+    flushPendingWrites();
   };
 
   $: term?.resize(cols, rows);
@@ -248,6 +360,12 @@
       if (event.type !== "keydown") return true;
 
       const copyModifier = isMac ? event.metaKey : event.ctrlKey;
+      if (copyModifier && !event.altKey && event.key.toLowerCase() === "v") {
+        // Let the browser emit a ClipboardEvent instead of forwarding Ctrl+V
+        // to the remote PTY. The container's capture handler routes images to
+        // daemon storage, while xterm handles ordinary bracketed text paste.
+        return false;
+      }
       if (
         copyModifier &&
         !event.altKey &&
@@ -296,6 +414,16 @@
     term.parser.registerOscHandler(9, requestAttention);
     term.parser.registerOscHandler(99, requestAttention);
     term.parser.registerOscHandler(777, requestAttention);
+    term.parser.registerOscHandler(7, (value) => {
+      try {
+        const url = new URL(value);
+        if (url.protocol === "file:")
+          workingDirectory = decodeURIComponent(url.pathname) || ".";
+      } catch {
+        // Shells are not required to emit a valid OSC 7 URI.
+      }
+      return true;
+    });
     term.onBell(requestAttention);
     try {
       term.loadAddon(new WebglAddon());
@@ -307,15 +435,14 @@
     }
 
     term.resize(cols, rows);
+    sendText = (data: string, execute = false) => {
+      term?.paste(data);
+      if (execute) dispatch("data", new Uint8Array([13]));
+    };
     term.onTitleChange((title) => {
       currentTitle = title;
       dispatch("title", title);
     });
-
-    // Hack: We artificially disable scrolling when the terminal is not focused.
-    // ("termEl" > div.terminal.xterm > div.xterm-screen)
-    const screenEl = termEl.querySelector(".xterm-screen")! as HTMLDivElement;
-    screenEl.addEventListener("wheel", handleWheelSkipXTerm);
 
     const focusObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -326,16 +453,14 @@
           // The "focus" class is set directly by xterm.js, but there isn't any way to listen for it.
           const target = mutation.target as HTMLElement;
           const isFocused = target.classList.contains("focus");
-          setFocused(isFocused, screenEl);
+          setFocused(isFocused);
         }
       }
     });
     focusObserver.observe(term.element!, { attributeFilter: ["class"] });
 
     loaded = true;
-    for (const [data, replay] of preloadBuffer) {
-      write(data, replay);
-    }
+    flushPendingWrites();
 
     typeahead.reset();
     term.loadAddon(typeahead);
@@ -358,18 +483,36 @@
   role="presentation"
   class="term-container"
   class:focused
-  class:terminal-attention={attention && !focused}
+  class:windowed={windowHeight > 0}
+  class:fullscreen
+  class:linked-highlight={linkedHighlight}
+  class:paragraph-drop-active={paragraphDropActive}
   style:background={terminalTheme.background}
   style:opacity={opacity / 100}
   style:width={windowWidth > 0 ? `${windowWidth}px` : undefined}
   style:height={windowHeight > 0 ? `${windowHeight}px` : undefined}
   on:mousedown={() => dispatch("bringToFront")}
   on:pointerdown={(event) => event.stopPropagation()}
+  on:paste|capture={handlePaste}
+  on:dragover={handleDragOver}
+  on:dragleave={handleDragLeave}
+  on:drop={handleDrop}
+  on:wheel={(event) => {
+    if (!event.ctrlKey) event.stopPropagation();
+  }}
 >
+  {#if imageDragging}
+    <div
+      class="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border-2 border-dashed border-indigo-300 bg-zinc-950/85 text-sm font-medium text-indigo-100"
+    >
+      Drop image into terminal
+    </div>
+  {/if}
   <div
     role="presentation"
-    class="flex h-9 select-none items-center"
-    on:mousedown={(event) => dispatch("startMove", event)}
+    class="terminal-titlebar flex h-9 shrink-0 select-none items-center"
+    class:terminal-attention={attention && !focused}
+    on:mousedown={(event) => !fullscreen && dispatch("startMove", event)}
   >
     <div class="flex h-full flex-1 items-center px-3">
       <CircleButtons>
@@ -382,6 +525,13 @@
           disabled={!hasWriteAccess}
           ariaLabel="Close terminal"
           on:mousedown={(event) => event.button === 0 && dispatch("close")}
+        />
+        <CircleButton
+          kind="purple"
+          active={fullscreen}
+          ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
+          on:mousedown={(event) =>
+            event.button === 0 && dispatch("toggleFullscreen")}
         />
         <CircleButton
           kind="blue"
@@ -398,13 +548,27 @@
     </div>
     <div class="relative flex h-full flex-1 items-center justify-end pr-2">
       <button
+        type="button"
+        class="rounded p-1 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
+        class:opacity-40={!hasWriteAccess}
+        disabled={!hasWriteAccess}
+        aria-label="Browse files"
+        title="Browse files"
+        on:mousedown|stopPropagation={(event) => {
+          if (event.button === 0 && hasWriteAccess)
+            dispatch("openFiles", workingDirectory);
+        }}
+      >
+        <FolderIcon class="h-4 w-4" />
+      </button>
+      <button
         bind:this={appearanceButton}
         type="button"
         class="rounded p-1 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
         aria-label="Terminal appearance"
         on:mousedown|stopPropagation={(event) => {
           if (event.button === 0) {
-            if (appearanceOpen) cancelThemeMenu();
+            if (appearanceOpen) closeThemeMenu();
             appearanceOpen = !appearanceOpen;
           }
         }}
@@ -425,7 +589,7 @@
                 type="button"
                 class="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
                 on:mousedown|stopPropagation={(event) => {
-                  if (event.button === 0) cancelThemeMenu();
+                  if (event.button === 0) closeThemeMenu();
                 }}>Back</button
               >
             </div>
@@ -435,7 +599,7 @@
               on:wheel={(event) => {
                 if (!event.ctrlKey) event.stopPropagation();
               }}
-              on:mouseleave={() => (previewTheme = draftTheme)}
+              on:mouseleave={() => (previewTheme = null)}
             >
               {#each Object.entries(themes) as [themeName, candidate] (themeName)}
                 <button
@@ -447,8 +611,7 @@
                   on:focus={() => (previewTheme = themeName as ThemeName)}
                   on:mousedown|stopPropagation={(event) => {
                     if (event.button === 0 && hasWriteAccess) {
-                      draftTheme = themeName as ThemeName;
-                      previewTheme = draftTheme;
+                      selectTheme(themeName as ThemeName);
                     }
                   }}
                 >
@@ -463,23 +626,6 @@
                 </button>
               {/each}
             </div>
-            <div class="flex justify-end gap-2 border-t border-zinc-700 pt-2">
-              <button
-                type="button"
-                class="menu-button"
-                on:mousedown|stopPropagation={(event) => {
-                  if (event.button === 0) cancelThemeMenu();
-                }}>Cancel</button
-              >
-              <button
-                type="button"
-                class="menu-button bg-indigo-500/20 text-indigo-200 hover:bg-indigo-500/30"
-                disabled={!hasWriteAccess}
-                on:mousedown|stopPropagation={(event) => {
-                  if (event.button === 0 && hasWriteAccess) applyTheme();
-                }}>Confirm</button
-              >
-            </div>
           {:else}
             <label class="block">
               <span class="mb-1 block text-zinc-400">Title</span>
@@ -489,7 +635,7 @@
                 placeholder={currentTitle}
                 disabled={!hasWriteAccess}
                 class="w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500/50"
-                on:change={(event) =>
+                on:input={(event) =>
                   updateAppearance({ title: event.currentTarget.value })}
               />
             </label>
@@ -563,17 +709,20 @@
   </div>
   <div
     role="presentation"
-    class="inline-block px-4 py-2 transition-opacity duration-500"
+    class="terminal-host inline-block w-full py-2 pl-4 pr-0 transition-opacity duration-500"
     bind:this={termEl}
     style:opacity={loaded ? 1.0 : 0.0}
-    on:wheel={(event) => {
-      if (focused && !event.ctrlKey) {
-        // Don't pan the page when scrolling while the terminal is selected.
-        // Conversely, we manually disable terminal scrolling unless it is currently selected.
-        event.stopPropagation();
-      }
-    }}
   ></div>
+  {#if linkedNotes.length}
+    <div class="terminal-relations">
+      <CanvasRelations
+        items={linkedNotes}
+        disabled={!hasWriteAccess}
+        on:navigate={(event) => dispatch("navigateNote", event.detail)}
+        on:remove={(event) => dispatch("unlinkNote", event.detail)}
+      />
+    </div>
+  {/if}
 </div>
 
 <style lang="postcss">
@@ -586,14 +735,56 @@
       opacity 200ms;
   }
 
-  .term-container.terminal-attention::before {
+  .term-container.windowed {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .term-container.windowed .terminal-host {
+    position: relative;
+    z-index: 0;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .term-container.fullscreen {
+    display: flex;
+    width: 100% !important;
+    height: 100% !important;
+    flex-direction: column;
+  }
+
+  .term-container.fullscreen > :global(.xterm) {
+    flex: 1;
+  }
+
+  .term-container.fullscreen .terminal-host {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .terminal-titlebar {
+    position: relative;
+    z-index: 10;
+    isolation: isolate;
+    border-radius: 0.45rem 0.45rem 0 0;
+  }
+
+  .terminal-titlebar > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .terminal-titlebar.terminal-attention::before {
     content: "";
     position: absolute;
-    z-index: -1;
-    inset: -2.5px;
-    border-radius: 0.75rem;
-    background: conic-gradient(
-      from 0deg,
+    z-index: 0;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(
+      110deg,
       #ff4d6d,
       #ffb703,
       #5eead4,
@@ -601,20 +792,20 @@
       #c084fc,
       #ff4d6d
     );
-    filter: blur(5px);
-    animation: terminal-attention 2.2s ease-in-out infinite;
+    background-size: 250% 100%;
+    animation: terminal-attention 2.4s ease-in-out infinite;
     pointer-events: none;
   }
 
   @keyframes terminal-attention {
     0%,
     100% {
-      opacity: 0.3;
-      transform: scale(0.9975);
+      opacity: 0.18;
+      background-position: 0% 50%;
     }
     50% {
-      opacity: 0.95;
-      transform: scale(1.0075);
+      opacity: 0.58;
+      background-position: 100% 50%;
     }
   }
 
@@ -624,18 +815,57 @@
     outline-offset: -1px;
   }
 
+  .term-container.linked-highlight {
+    outline: 2px solid rgb(228 228 231 / 82%);
+    outline-offset: 1px;
+    animation: linked-terminal-pulse 1.8s ease-in-out infinite;
+  }
+
+  .term-container.paragraph-drop-active {
+    outline: 2px solid rgb(125 211 252 / 85%);
+    outline-offset: 2px;
+    box-shadow: 0 0 12px rgb(125 211 252 / 38%);
+  }
+  .term-container.paragraph-drop-active::after {
+    content: "Release to paste at the terminal cursor";
+    @apply pointer-events-none absolute bottom-3 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md border border-sky-300/40 bg-zinc-950/90 px-2 py-1 text-[11px] font-medium text-sky-100 shadow-lg;
+  }
+
+  .terminal-relations {
+    @apply absolute bottom-1.5 right-2 z-20 max-w-[65%];
+  }
+
+  @keyframes linked-terminal-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 4px rgb(228 228 231 / 16%);
+    }
+    50% {
+      box-shadow: 0 0 10px rgb(228 228 231 / 42%);
+    }
+  }
+
   .term-container:not(.focused) :global(.xterm) {
     @apply cursor-default;
+  }
+
+  .term-container :global(.xterm-viewport) {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(113 113 122 / 65%) transparent;
+  }
+
+  .term-container :global(.xterm-viewport::-webkit-scrollbar) {
+    width: 6px;
+  }
+
+  .term-container :global(.xterm-viewport::-webkit-scrollbar-thumb) {
+    border-radius: 999px;
+    background: rgb(113 113 122 / 65%);
   }
 
   .menu-row {
     @apply flex w-full items-center justify-between rounded px-2 py-1.5 text-left;
     @apply hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50;
-  }
-
-  .menu-button {
-    @apply rounded px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700;
-    @apply disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .theme-list {

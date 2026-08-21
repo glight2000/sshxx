@@ -6,18 +6,23 @@ use anyhow::{ensure, Context, Result};
 use prost::Message;
 use sshx_core::{
     proto::{
-        SerializedNote, SerializedPage, SerializedSession, SerializedShell, SshProfileCollection,
+        SerializedFileWindow, SerializedNote, SerializedPage, SerializedSession, SerializedShell,
+        SshProfileCollection,
     },
     Sid, Uid, SSH_PROFILE_FORMAT_VERSION,
 };
 
-use super::{validate_page_name, validate_terminal_window_size, Metadata, Session, State};
-use crate::web::protocol::{WsNote, WsPage, WsWinsize};
+use super::{
+    normalize_linked_shell_ids, normalize_note_canvas_links, normalize_note_paragraphs,
+    validate_file_editor_total, validate_file_window, validate_note_content, validate_page_name,
+    validate_terminal_window_size, Metadata, Session, State,
+};
+use crate::web::protocol::{WsFileWindow, WsNote, WsPage, WsWinsize};
 
 /// Persist at most this many bytes of output in storage, per shell.
 const SHELL_SNAPSHOT_BYTES: u64 = 1 << 15; // 32 KiB
 
-const MAX_SNAPSHOT_SIZE: usize = 1 << 22; // 4 MiB
+const MAX_SNAPSHOT_SIZE: usize = 1 << 26; // 64 MiB
 
 impl Session {
     /// Snapshot the session, returning a compressed representation.
@@ -86,6 +91,14 @@ impl Session {
                             width: note.width.into(),
                             height: note.height.into(),
                             text: note.text.clone(),
+                            paragraphs: note.paragraphs.clone(),
+                            linked_shell_ids: note.linked_shell_ids.iter().map(|id| id.0).collect(),
+                            linked_note_ids: note.linked_note_ids.iter().map(|id| id.0).collect(),
+                            linked_file_window_ids: note
+                                .linked_file_window_ids
+                                .iter()
+                                .map(|id| id.0)
+                                .collect(),
                             background: note.background.clone(),
                             opacity: note.opacity.into(),
                             page_id: note.page_id,
@@ -103,6 +116,33 @@ impl Session {
                 })
                 .collect(),
             ssh_profiles: self.ssh_profile_collection().profiles,
+            file_windows: self
+                .file_windows
+                .borrow()
+                .iter()
+                .map(|(id, window)| SerializedFileWindow {
+                    id: id.0,
+                    shell_id: window.shell_id.0,
+                    page_id: window.page_id,
+                    path: window.path.clone(),
+                    title: window.title.clone(),
+                    x: window.x,
+                    y: window.y,
+                    width: window.width.into(),
+                    height: window.height.into(),
+                    current_path: window.current_path.clone(),
+                    expanded_paths: window.expanded_paths.clone(),
+                    selected_path: window.selected_path.clone(),
+                    selected_kind: window.selected_kind.clone(),
+                    tree_scroll_top: window.tree_scroll_top,
+                    editor_path: window.editor_path.clone(),
+                    editor_stream: window.editor_stream,
+                    editor_data: window.editor_data.clone(),
+                    editor_dirty: window.editor_dirty,
+                    sidebar_width: window.sidebar_width.into(),
+                    tree_revision: window.tree_revision,
+                })
+                .collect(),
         };
         let data = message.encode_to_vec();
         ensure!(data.len() < MAX_SNAPSHOT_SIZE, "snapshot too large");
@@ -184,47 +224,117 @@ impl Session {
         }
         drop(shells);
         session.source.send_replace(winsizes);
-        session.notes.send_replace(
-            message
-                .notes
-                .into_iter()
-                .map(|(id, note)| -> Result<(Sid, WsNote)> {
-                    Ok((
-                        Sid(id),
-                        WsNote {
-                            x: note.x,
-                            y: note.y,
-                            width: if note.width == 0 {
-                                384
-                            } else {
-                                note.width.try_into().context("note width overflow")?
-                            },
-                            height: if note.height == 0 {
-                                224
-                            } else {
-                                note.height.try_into().context("note height overflow")?
-                            },
-                            text: note.text,
-                            background: note.background,
-                            opacity: if note.opacity == 0 {
-                                80
-                            } else {
-                                note.opacity.try_into().context("note opacity overflow")?
-                            },
-                            page_id: note.page_id.max(1),
-                        },
-                    ))
-                })
-                .map(|result| {
-                    let (id, note) = result?;
-                    ensure!(
-                        page_ids.contains(&note.page_id),
-                        "note references a missing page"
-                    );
-                    Ok((id, note))
-                })
-                .collect::<Result<Vec<_>>>()?,
-        );
+        let shell_layout = session.source.borrow();
+        let mut restored_notes = message
+            .notes
+            .into_iter()
+            .map(|(id, note)| -> Result<(Sid, WsNote)> {
+                let page_id = note.page_id.max(1);
+                let paragraphs = normalize_note_paragraphs(&note.text, note.paragraphs);
+                let note = WsNote {
+                    x: note.x,
+                    y: note.y,
+                    width: if note.width == 0 {
+                        384
+                    } else {
+                        note.width.try_into().context("note width overflow")?
+                    },
+                    height: if note.height == 0 {
+                        224
+                    } else {
+                        note.height.try_into().context("note height overflow")?
+                    },
+                    text: paragraphs.join("\n"),
+                    paragraphs,
+                    linked_shell_ids: normalize_linked_shell_ids(
+                        note.linked_shell_ids,
+                        page_id,
+                        &shell_layout,
+                    ),
+                    linked_note_ids: note.linked_note_ids.into_iter().map(Sid).collect(),
+                    linked_file_window_ids: note
+                        .linked_file_window_ids
+                        .into_iter()
+                        .map(Sid)
+                        .collect(),
+                    background: note.background,
+                    opacity: if note.opacity == 0 {
+                        80
+                    } else {
+                        note.opacity.try_into().context("note opacity overflow")?
+                    },
+                    page_id,
+                };
+                ensure!(
+                    page_ids.contains(&note.page_id),
+                    "note references a missing page"
+                );
+                validate_note_content(&note)?;
+                Ok((Sid(id), note))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        drop(shell_layout);
+        let mut seen_file_shells = HashSet::new();
+        let file_windows = message
+            .file_windows
+            .into_iter()
+            .map(|window| -> Result<(Sid, WsFileWindow)> {
+                let state = WsFileWindow {
+                    shell_id: Sid(window.shell_id),
+                    page_id: window.page_id.max(1),
+                    path: window.path,
+                    title: window.title,
+                    x: window.x,
+                    y: window.y,
+                    width: window
+                        .width
+                        .try_into()
+                        .context("file browser width overflow")?,
+                    height: window
+                        .height
+                        .try_into()
+                        .context("file browser height overflow")?,
+                    current_path: window.current_path,
+                    expanded_paths: window.expanded_paths,
+                    selected_path: window.selected_path,
+                    selected_kind: window.selected_kind,
+                    tree_scroll_top: window.tree_scroll_top,
+                    editor_path: window.editor_path,
+                    editor_stream: window.editor_stream,
+                    editor_data: window.editor_data,
+                    editor_dirty: window.editor_dirty,
+                    sidebar_width: if window.sidebar_width == 0 {
+                        332
+                    } else {
+                        window
+                            .sidebar_width
+                            .try_into()
+                            .context("file browser sidebar width overflow")?
+                    },
+                    tree_revision: window.tree_revision,
+                };
+                validate_file_window(&state)?;
+                ensure!(
+                    page_ids.contains(&state.page_id),
+                    "file browser references a missing page"
+                );
+                ensure!(
+                    session.source.borrow().iter().any(|(id, shell)| {
+                        *id == state.shell_id && shell.page_id == state.page_id
+                    }),
+                    "file browser references a missing terminal"
+                );
+                ensure!(
+                    seen_file_shells.insert((state.shell_id, state.page_id)),
+                    "duplicate file browser for terminal"
+                );
+                Ok((Sid(window.id), state))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        validate_file_editor_total(&file_windows)?;
+        normalize_note_canvas_links(&mut restored_notes, &file_windows);
+        session.notes.send_replace(restored_notes);
+        session.file_windows.send_replace(file_windows);
         session.pages.send_replace(pages);
         session.restore_ssh_profiles(SshProfileCollection {
             format_version: SSH_PROFILE_FORMAT_VERSION,

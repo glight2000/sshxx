@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{ensure, Context, Result};
 use prost::Message;
 use sshx_core::proto::WorkspaceState;
-use sshx_core::WORKSPACE_FORMAT_VERSION;
+use sshx_core::{rand_alphanumeric, WORKSPACE_FORMAT_VERSION};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
@@ -64,6 +64,16 @@ pub async fn save(path: &Path, workspace: &WorkspaceState) -> Result<()> {
     Ok(())
 }
 
+/// Preserve an unreadable or future-format workspace for manual recovery.
+pub async fn quarantine(path: &Path) -> Result<PathBuf> {
+    let destination =
+        path.with_file_name(format!("{}.invalid-{}", FILE_NAME, rand_alphanumeric(8)));
+    tokio::fs::rename(path, &destination)
+        .await
+        .with_context(|| format!("failed to quarantine {}", path.display()))?;
+    Ok(destination)
+}
+
 pub async fn writer(path: PathBuf, mut receiver: watch::Receiver<WorkspaceState>) {
     while receiver.changed().await.is_ok() {
         sleep(SAVE_DEBOUNCE).await;
@@ -79,7 +89,7 @@ pub async fn writer(path: PathBuf, mut receiver: watch::Receiver<WorkspaceState>
 
 #[cfg(test)]
 mod tests {
-    use sshx_core::proto::{WorkspaceNote, WorkspacePage, WorkspaceShell};
+    use sshx_core::proto::{WorkspaceFileWindow, WorkspaceNote, WorkspacePage, WorkspaceShell};
 
     use super::*;
 
@@ -114,9 +124,35 @@ mod tests {
                 width: 400,
                 height: 240,
                 text: "Deploy".into(),
+                paragraphs: vec!["Deploy".into()],
+                linked_shell_ids: vec![7],
+                linked_note_ids: Vec::new(),
+                linked_file_window_ids: vec![9],
                 background: "#445566".into(),
                 opacity: 80,
                 page_id: 2,
+            }],
+            file_windows: vec![WorkspaceFileWindow {
+                id: 9,
+                shell_id: 7,
+                page_id: 2,
+                path: "/tmp".into(),
+                title: "Logs".into(),
+                x: 48,
+                y: 60,
+                width: 1040,
+                height: 680,
+                current_path: "/tmp/project".into(),
+                expanded_paths: vec!["/".into(), "/tmp".into(), "/tmp/project".into()],
+                selected_path: "/tmp/project/config.toml".into(),
+                selected_kind: "file".into(),
+                tree_scroll_top: 96,
+                editor_path: "/tmp/project/config.toml".into(),
+                editor_stream: 1 << 63,
+                editor_data: b"encrypted editor".as_slice().into(),
+                editor_dirty: true,
+                sidebar_width: 360,
+                tree_revision: 4,
             }],
             pages: vec![
                 WorkspacePage {
@@ -132,6 +168,25 @@ mod tests {
 
         save(&path, &workspace).await?;
         assert_eq!(load(&path).await?, Some(workspace));
+        tokio::fs::remove_dir_all(directory).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn quarantine_preserves_invalid_workspace() -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "sshxx-workspace-invalid-test-{}",
+            rand_alphanumeric(12)
+        ));
+        tokio::fs::create_dir(&directory).await?;
+        let path = directory.join(FILE_NAME);
+        tokio::fs::write(&path, b"invalid workspace").await?;
+
+        assert!(load(&path).await.is_err());
+        let destination = quarantine(&path).await?;
+        assert!(!tokio::fs::try_exists(&path).await?);
+        assert_eq!(tokio::fs::read(&destination).await?, b"invalid workspace");
+
         tokio::fs::remove_dir_all(directory).await?;
         Ok(())
     }

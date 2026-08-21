@@ -12,7 +12,7 @@ contributor for the original architecture and implementation. sshxx keeps that
 foundation while adding features and interaction changes for a different set of
 personal workflows.
 
-![sshxx workspace with a terminal, synchronized note, and canvas pages](docs/images/sshxx-workspace.png)
+![sshxx workspace with a persistent terminal, synchronized note, and canvas pages](docs/images/sshxx-workspace.png)
 
 ## Upstream relationship
 
@@ -38,12 +38,50 @@ git remote add upstream https://github.com/ekzhang/sshx.git
   or note palettes.
 - A split terminal launcher with daemon-persisted OpenSSH connection profiles
   for default/config, agent, private-key, and interactive password workflows.
-- Character-level note synchronization and page-aware collaboration events.
+- Character-level note synchronization, page-aware collaboration events, and
+  links between notes, terminals, and file editors.
+- A synchronized canvas file explorer with a folder tree, directory grid,
+  CodeMirror editor, upload/create/rename/move/delete actions, and “open
+  terminal here”. Local and key/agent-based SSH terminals are supported.
+- Local terminals accept pasted or dropped images, transfer them with end-to-end
+  encryption into the daemon's `cache/uploads/`, and insert the absolute path.
 - Browser-local page/view restoration is kept separate from synchronized
   workspace data, while the toolbar connection indicator reports session state.
 - Updated terminal rendering and frontend/backend dependencies.
 - Product binaries are named `sshxx-daemon`, `sshxx-server`, and `sshxx-client`
   to distinguish them from upstream sshx.
+
+## Feature tour
+
+### Reusable SSH connections
+
+Connection profiles are configured from the terminal split button and stored in
+authenticated encrypted form by the daemon. Each profile can define its default
+terminal theme and optional background override.
+
+![SSH connection profile with authentication and terminal appearance settings](docs/images/sshxx-ssh-profile.png)
+
+### Structured, connected notes
+
+Notes use visible paragraphs with drag handles. A paragraph can be copied by
+dragging, or sent to linked notes, terminals, executing terminals, and open file
+editors. Focusing a note highlights its linked canvas items without changing
+their saved appearance.
+
+![A structured note linked to a terminal with paragraph send actions](docs/images/sshxx-notes.png)
+
+### Files beside terminals
+
+The file explorer is a first-class synchronized canvas window rather than a
+modal. It combines a resizable folder tree with directory browsing, previews,
+and a syntax-aware text editor.
+
+![Synchronized file explorer and text editor on the sshxx canvas](docs/images/sshxx-file-explorer.png)
+
+The versioned source for the detailed feature guide is in
+[`docs/wiki`](docs/wiki/Home.md). It is ready to publish to the repository's
+GitHub Wiki after the first Wiki page initializes the separate Wiki Git
+repository.
 
 ## Architecture
 
@@ -84,7 +122,8 @@ The daemon stores workspace metadata in `.sshx-workspace` in its current
 directory. This compatibility filename is intentionally retained from sshx so
 existing workspaces continue to load. Start the daemon from the same directory
 to restore the saved pages, notes, layout, and terminal configuration. Shell
-processes themselves are recreated.
+processes themselves are recreated. Unreadable or future-format workspaces are
+preserved with an `.invalid-*` suffix before a clean workspace is created.
 
 Reusable SSH connection profiles are stored beside the workspace as an
 authenticated encrypted `.sshx-connections` file. Its local key is created with
@@ -98,17 +137,28 @@ prevent the daemon from starting.
 - Drag empty canvas space to pan. Middle-button drag always pans the canvas,
   including while the pointer is over a terminal or note.
 - `Ctrl` + wheel always zooms the canvas and overrides browser zoom. Plain wheel
-  zooms when no terminal or note is active; focused terminals and scrollable
-  menus retain their normal scrolling behavior.
+  scrolls a hovered terminal or note regardless of focus; outside windows it
+  zooms when no terminal or note is active. Scrollable menus also retain their
+  normal scrolling behavior.
 - With grid snapping enabled, moving and resizing align window edges to visible
   grid points with a small, consistent inset. New windows use the same grid.
 - Click a note to edit it; press `Escape` or click outside to leave editing.
+- `Ctrl`/`Cmd` + `Enter` creates a new note paragraph; plain Enter inserts a
+  line break inside the current paragraph. Paragraph handles expose send and
+  delete actions and can be dragged to compatible canvas targets.
 - When terminal text is selected, `Ctrl+C` copies and clears the selection.
   Otherwise it is sent to the shell. `Shift+Enter` sends LF for applications
   that support multiline input.
+- Paste or drop a PNG, JPEG, WebP, or GIF into a local terminal to upload an
+  image up to 20 MiB and insert its daemon cache path at the current input
+  position. Cache files are owner-only and images older than 24 hours are
+  removed when the daemon starts.
 - Terminal and note state belongs to its canvas page. Page switching and view
   position are browser-local; page content and edits remain page-aware when
   synchronized with other viewers.
+- File explorer layout, folder selection, tree expansion/scroll, and editor
+  state are synchronized and persisted with the workspace. Full-screen state,
+  active page, pan, and zoom remain local to each viewer.
 
 ## Build
 
@@ -185,6 +235,10 @@ instances.
 - [ ] Add versioned workspace migration, backup, and recovery tooling.
 - [ ] Add end-to-end browser tests for pages, notes, snapping, search, and
       terminal shortcuts.
+- [ ] Use those end-to-end tests as a safety net for splitting session
+      orchestration and file-explorer state into smaller focused modules.
+- [ ] Lazy-load the file explorer/editor and reduce the language registry in the
+      initial Web route bundle.
 - [ ] Design an explicit daemon-to-client process-status protocol before adding
       AI-agent icons or semantic completion notifications.
 - [ ] Add a capability-checked xterm compatibility adapter that disables
@@ -199,6 +253,9 @@ instances.
 - On Windows, ConPTY does not expose a child process working directory through
   the current implementation. Duplicated terminals may therefore fall back to
   the daemon working directory instead of the source terminal directory.
+- Image paste currently targets local daemon shells only. SSH terminals reject
+  it because their remote host cannot access the daemon cache; SFTP/SCP
+  forwarding needs a separate implementation.
 - `Shift+Enter` sends LF for multiline input. Foreground applications decide how
   to interpret it, so ordinary shells or applications without multiline support
   may still treat it as submission.

@@ -6,6 +6,12 @@
   cursor: grabbing !important;
 }
 
+.canvas-panning,
+.canvas-panning * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
 @font-face {
   font-family: "Fira Code VF";
   src:

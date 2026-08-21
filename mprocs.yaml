@@ -10,7 +10,7 @@ procs:
   daemon:
     shell: >-
       cargo run --bin sshxx-daemon --
-      --server http://localhost:8051
+      --server http://[::1]:8051
       --test-encryption-key localdevkey
   web:
     shell: npm run dev

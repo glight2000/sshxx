@@ -10,7 +10,8 @@ use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 use sshx_core::{
     proto::{
         server_update::ServerMessage, NewShell, SequenceNumbers, SshAuthMethod, SshProfile,
-        SshProfileCollection, WorkspaceNote, WorkspacePage, WorkspaceShell, WorkspaceState,
+        SshProfileCollection, WorkspaceFileWindow, WorkspaceNote, WorkspacePage, WorkspaceShell,
+        WorkspaceState,
     },
     IdCounter, Sid, Uid, SSH_PROFILE_FORMAT_VERSION, WORKSPACE_FORMAT_VERSION,
 };
@@ -22,7 +23,7 @@ use tracing::{debug, warn};
 
 use crate::utils::Shutdown;
 use crate::web::protocol::{
-    WsNote, WsPage, WsServer, WsSshAuthMethod, WsSshProfile, WsUser, WsWinsize,
+    WsFileWindow, WsNote, WsPage, WsServer, WsSshAuthMethod, WsSshProfile, WsUser, WsWinsize,
 };
 
 mod snapshot;
@@ -69,6 +70,9 @@ pub struct Session {
 
     /// Watch channel source for the ordered list of notes on the canvas.
     notes: watch::Sender<Vec<(Sid, WsNote)>>,
+
+    /// Watch channel source for shared filesystem browser layouts.
+    file_windows: watch::Sender<Vec<(Sid, WsFileWindow)>>,
 
     /// Watch channel source for the ordered list of named canvas pages.
     pages: watch::Sender<Vec<WsPage>>,
@@ -140,6 +144,7 @@ impl Session {
             last_accessed: Mutex::new(now),
             source: watch::channel(Vec::new()).0,
             notes: watch::channel(Vec::new()).0,
+            file_windows: watch::channel(Vec::new()).0,
             pages: watch::channel(vec![WsPage {
                 id: 1,
                 name: "Page 1".into(),
@@ -195,6 +200,11 @@ impl Session {
     /// Receive a notification every time the set of notes is changed.
     pub fn subscribe_notes(&self) -> impl Stream<Item = Vec<(Sid, WsNote)>> + Unpin {
         WatchStream::new(self.notes.subscribe())
+    }
+
+    /// Receive every shared filesystem browser layout update.
+    pub fn subscribe_file_windows(&self) -> impl Stream<Item = Vec<(Sid, WsFileWindow)>> + Unpin {
+        WatchStream::new(self.file_windows.subscribe())
     }
 
     /// Receive a notification every time the named pages change.
@@ -352,9 +362,44 @@ impl Session {
                     width: note.width.into(),
                     height: note.height.into(),
                     text: note.text.clone(),
+                    paragraphs: note.paragraphs.clone(),
+                    linked_shell_ids: note.linked_shell_ids.iter().map(|id| id.0).collect(),
+                    linked_note_ids: note.linked_note_ids.iter().map(|id| id.0).collect(),
+                    linked_file_window_ids: note
+                        .linked_file_window_ids
+                        .iter()
+                        .map(|id| id.0)
+                        .collect(),
                     background: note.background.clone(),
                     opacity: note.opacity.into(),
                     page_id: note.page_id,
+                })
+                .collect(),
+            file_windows: self
+                .file_windows
+                .borrow()
+                .iter()
+                .map(|(id, window)| WorkspaceFileWindow {
+                    id: id.0,
+                    shell_id: window.shell_id.0,
+                    page_id: window.page_id,
+                    path: window.path.clone(),
+                    title: window.title.clone(),
+                    x: window.x,
+                    y: window.y,
+                    width: window.width.into(),
+                    height: window.height.into(),
+                    current_path: window.current_path.clone(),
+                    expanded_paths: window.expanded_paths.clone(),
+                    selected_path: window.selected_path.clone(),
+                    selected_kind: window.selected_kind.clone(),
+                    tree_scroll_top: window.tree_scroll_top,
+                    editor_path: window.editor_path.clone(),
+                    editor_stream: window.editor_stream,
+                    editor_data: window.editor_data.clone(),
+                    editor_dirty: window.editor_dirty,
+                    sidebar_width: window.sidebar_width.into(),
+                    tree_revision: window.tree_revision,
                 })
                 .collect(),
             pages: self
@@ -377,7 +422,10 @@ impl Session {
                 workspace.format_version
             );
         }
-        if workspace.shells.len() > 100 || workspace.notes.len() > 100 || workspace.pages.len() > 50
+        if workspace.shells.len() > 100
+            || workspace.notes.len() > 100
+            || workspace.file_windows.len() > 100
+            || workspace.pages.len() > 50
         {
             bail!("workspace contains too many items");
         }
@@ -451,6 +499,7 @@ impl Session {
             let rows = winsize.rows;
             let cols = winsize.cols;
             let theme = winsize.theme.clone();
+            let background = winsize.background.clone();
             let width = winsize.width;
             let height = winsize.height;
             max_id = max_id.max(shell.id);
@@ -468,6 +517,8 @@ impl Session {
                 theme,
                 width: width.into(),
                 height: height.into(),
+                background,
+                working_directory: String::new(),
             });
         }
 
@@ -476,19 +527,25 @@ impl Session {
             if note.id == 0 || !ids.insert(note.id) {
                 bail!("workspace contains an invalid or duplicate item ID");
             }
+            let page_id = if note.page_id == 0 { 1 } else { note.page_id };
+            let paragraphs = normalize_note_paragraphs(&note.text, note.paragraphs);
+            let linked_shell_ids =
+                normalize_linked_shell_ids(note.linked_shell_ids, page_id, &source);
             let note_state = WsNote {
                 x: note.x,
                 y: note.y,
                 width: note.width.try_into().context("note width overflow")?,
                 height: note.height.try_into().context("note height overflow")?,
-                text: note.text,
+                text: paragraphs.join("\n"),
+                paragraphs,
+                linked_shell_ids,
+                linked_note_ids: note.linked_note_ids.into_iter().map(Sid).collect(),
+                linked_file_window_ids: note.linked_file_window_ids.into_iter().map(Sid).collect(),
                 background: note.background,
                 opacity: note.opacity.try_into().context("note opacity overflow")?,
-                page_id: if note.page_id == 0 { 1 } else { note.page_id },
+                page_id,
             };
-            if note_state.text.len() > 10_000 {
-                bail!("note text is too long");
-            }
+            validate_note_content(&note_state)?;
             if !(240..=2_000).contains(&note_state.width)
                 || !(160..=2_000).contains(&note_state.height)
             {
@@ -504,12 +561,80 @@ impl Session {
             notes.push((Sid(note.id), note_state));
         }
 
+        let mut file_windows = Vec::with_capacity(workspace.file_windows.len());
+        for window in workspace.file_windows {
+            if window.id == 0 || !ids.insert(window.id) {
+                bail!("workspace contains an invalid or duplicate item ID");
+            }
+            let state = WsFileWindow {
+                shell_id: Sid(window.shell_id),
+                page_id: if window.page_id == 0 {
+                    1
+                } else {
+                    window.page_id
+                },
+                path: window.path,
+                title: window.title,
+                x: window.x,
+                y: window.y,
+                width: window
+                    .width
+                    .try_into()
+                    .context("file browser width overflow")?,
+                height: window
+                    .height
+                    .try_into()
+                    .context("file browser height overflow")?,
+                current_path: window.current_path,
+                expanded_paths: window.expanded_paths,
+                selected_path: window.selected_path,
+                selected_kind: window.selected_kind,
+                tree_scroll_top: window.tree_scroll_top,
+                editor_path: window.editor_path,
+                editor_stream: window.editor_stream,
+                editor_data: window.editor_data,
+                editor_dirty: window.editor_dirty,
+                sidebar_width: if window.sidebar_width == 0 {
+                    332
+                } else {
+                    window
+                        .sidebar_width
+                        .try_into()
+                        .context("file browser sidebar width overflow")?
+                },
+                tree_revision: window.tree_revision,
+            };
+            validate_file_window(&state)?;
+            if !page_ids.contains(&state.page_id) {
+                bail!("file browser references a missing page");
+            }
+            if !source
+                .iter()
+                .any(|(id, shell)| *id == state.shell_id && shell.page_id == state.page_id)
+            {
+                bail!("file browser references a missing terminal");
+            }
+            if file_windows
+                .iter()
+                .any(|(_, existing): &(Sid, WsFileWindow)| {
+                    existing.shell_id == state.shell_id && existing.page_id == state.page_id
+                })
+            {
+                bail!("workspace contains duplicate file browsers for a terminal");
+            }
+            max_id = max_id.max(window.id);
+            file_windows.push((Sid(window.id), state));
+        }
+        validate_file_editor_total(&file_windows)?;
+        normalize_note_canvas_links(&mut notes, &file_windows);
+
         let next_id = max_id
             .checked_add(1)
             .context("workspace item ID overflow")?;
         *self.shells.write() = shells;
         self.source.send_replace(source);
         self.notes.send_replace(notes);
+        self.file_windows.send_replace(file_windows);
         self.pages.send_replace(pages);
         *self.pending_restored_shells.lock() = requests
             .iter()
@@ -527,6 +652,11 @@ impl Session {
     /// Number of notes in the session.
     pub fn note_count(&self) -> usize {
         self.notes.borrow().len()
+    }
+
+    /// Number of shared filesystem browser windows in the session.
+    pub fn file_window_count(&self) -> usize {
+        self.file_windows.borrow().len()
     }
 
     /// Create a named canvas page and return its stable identifier.
@@ -614,6 +744,20 @@ impl Session {
         }
     }
 
+    /// Ensure a filesystem browser exists on the page claimed by an event.
+    pub fn check_file_window_page(&self, id: Sid, page_id: u32) -> Result<()> {
+        match self
+            .file_windows
+            .borrow()
+            .iter()
+            .find(|(window_id, _)| *window_id == id)
+        {
+            Some((_, window)) if window.page_id == page_id => Ok(()),
+            Some(_) => bail!("file browser does not belong to the active page"),
+            None => bail!("file browser with id={id} does not exist"),
+        }
+    }
+
     /// Subscribe for chunks from a shell, until it is closed.
     pub fn subscribe_chunks(
         &self,
@@ -665,7 +809,7 @@ impl Session {
         page_id: u32,
         requested_terminal_size: (u16, u16),
         requested_window_size: (u16, u16),
-        requested_theme: String,
+        requested_style: (String, String),
     ) -> Result<Option<WsWinsize>> {
         use std::collections::hash_map::Entry::*;
         let restored = self.pending_restored_shells.lock().remove(&id);
@@ -686,6 +830,7 @@ impl Session {
         }
         let (requested_rows, requested_cols) = requested_terminal_size;
         let (requested_width, requested_height) = requested_window_size;
+        let (requested_theme, requested_background) = requested_style;
         let rows = if requested_rows == 0 {
             24
         } else {
@@ -705,6 +850,7 @@ impl Session {
             bail!("terminal window dimensions are out of range");
         }
         validate_theme(&requested_theme)?;
+        validate_color(&requested_background)?;
 
         let _guard = match self.shells.write().entry(id) {
             Occupied(_) => bail!("shell already exists with id={id}"),
@@ -720,6 +866,7 @@ impl Session {
                 width: requested_width,
                 height: requested_height,
                 theme: requested_theme,
+                background: requested_background,
                 ..Default::default()
             };
             source.push((id, winsize));
@@ -740,6 +887,23 @@ impl Session {
         }
         self.source.send_modify(|source| {
             source.retain(|(x, _)| *x != id);
+        });
+        let removed_file_window_ids = self
+            .file_windows
+            .borrow()
+            .iter()
+            .filter(|(_, window)| window.shell_id == id)
+            .map(|(window_id, _)| *window_id)
+            .collect::<HashSet<_>>();
+        self.file_windows.send_modify(|windows| {
+            windows.retain(|(_, window)| window.shell_id != id);
+        });
+        self.notes.send_modify(|notes| {
+            for (_, note) in notes {
+                note.linked_shell_ids.retain(|shell_id| *shell_id != id);
+                note.linked_file_window_ids
+                    .retain(|window_id| !removed_file_window_ids.contains(window_id));
+            }
         });
         self.pending_restored_shells.lock().remove(&id);
         self.workspace_changed();
@@ -805,6 +969,10 @@ impl Session {
                     width,
                     height,
                     text: String::new(),
+                    paragraphs: vec![String::new()],
+                    linked_shell_ids: Vec::new(),
+                    linked_note_ids: Vec::new(),
+                    linked_file_window_ids: Vec::new(),
                     background: "#3f3f46".into(),
                     opacity: 80,
                     page_id,
@@ -822,6 +990,9 @@ impl Session {
         self.notes.send_modify(|notes| {
             let len = notes.len();
             notes.retain(|(note_id, _)| *note_id != id);
+            for (_, note) in notes.iter_mut() {
+                note.linked_note_ids.retain(|note_id| *note_id != id);
+            }
             found = notes.len() != len;
         });
         if !found {
@@ -837,12 +1008,13 @@ impl Session {
     }
 
     /// Update a note, or move it to the top of the stacking order.
-    pub fn update_note(&self, id: Sid, page_id: u32, note: Option<WsNote>) -> Result<()> {
+    pub fn update_note(&self, id: Sid, page_id: u32, mut note: Option<WsNote>) -> Result<()> {
         self.check_note_page(id, page_id)?;
-        if let Some(note) = &note {
-            if note.text.len() > 10_000 {
-                bail!("note text is too long");
-            }
+        if let Some(note) = &mut note {
+            note.paragraphs =
+                normalize_note_paragraphs(&note.text, std::mem::take(&mut note.paragraphs));
+            note.text = note.paragraphs.join("\n");
+            validate_note_content(note)?;
             validate_color(&note.background)?;
             validate_opacity(note.opacity)?;
             if note.page_id != page_id {
@@ -851,6 +1023,13 @@ impl Session {
             if !(240..=2_000).contains(&note.width) || !(160..=2_000).contains(&note.height) {
                 bail!("note dimensions are out of range");
             }
+            validate_linked_shell_ids(&note.linked_shell_ids, page_id, &self.source.borrow())?;
+            validate_linked_note_ids(&note.linked_note_ids, id, page_id, &self.notes.borrow())?;
+            validate_linked_file_window_ids(
+                &note.linked_file_window_ids,
+                page_id,
+                &self.file_windows.borrow(),
+            )?;
         }
         let preserve_live_text = self.note_editors.read().contains_key(&id);
         let mut found = false;
@@ -860,6 +1039,7 @@ impl Session {
                 let mut next_note = note.unwrap_or_else(|| old_note.clone());
                 if preserve_live_text {
                     next_note.text = old_note.text;
+                    next_note.paragraphs = old_note.paragraphs;
                 }
                 notes.push((id, next_note));
                 found = true;
@@ -867,6 +1047,129 @@ impl Session {
         });
         if !found {
             bail!("cannot update note with id={id}, does not exist");
+        }
+        self.workspace_changed();
+        Ok(())
+    }
+
+    /// Open one shared filesystem browser per terminal, or bring the existing one forward.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_file_window(
+        &self,
+        id: Sid,
+        shell_id: Sid,
+        page_id: u32,
+        path: String,
+        title: String,
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+    ) -> Result<()> {
+        self.check_shell_page(shell_id, page_id)?;
+        {
+            let windows = self.file_windows.borrow();
+            let existing = windows
+                .iter()
+                .any(|(_, window)| window.shell_id == shell_id && window.page_id == page_id);
+            if !existing && windows.len() >= 100 {
+                bail!("you can only create up to 100 file browsers");
+            }
+        }
+        let window = WsFileWindow {
+            shell_id,
+            page_id,
+            path,
+            title,
+            x,
+            y,
+            width,
+            height,
+            current_path: String::new(),
+            expanded_paths: Vec::new(),
+            selected_path: String::new(),
+            selected_kind: String::new(),
+            tree_scroll_top: 0,
+            editor_path: String::new(),
+            editor_stream: 0,
+            editor_data: Bytes::new(),
+            editor_dirty: false,
+            sidebar_width: 332,
+            tree_revision: 0,
+        };
+        validate_file_window(&window)?;
+        self.file_windows.send_modify(|windows| {
+            if let Some(index) = windows.iter().position(|(_, existing)| {
+                existing.shell_id == shell_id && existing.page_id == page_id
+            }) {
+                let existing = windows.remove(index);
+                windows.push(existing);
+            } else {
+                windows.push((id, window));
+            }
+        });
+        self.workspace_changed();
+        Ok(())
+    }
+
+    /// Close a shared filesystem browser window.
+    pub fn close_file_window(&self, id: Sid, page_id: u32) -> Result<()> {
+        self.check_file_window_page(id, page_id)?;
+        self.file_windows.send_modify(|windows| {
+            windows.retain(|(window_id, _)| *window_id != id);
+        });
+        self.notes.send_modify(|notes| {
+            for (_, note) in notes {
+                note.linked_file_window_ids
+                    .retain(|window_id| *window_id != id);
+            }
+        });
+        self.workspace_changed();
+        Ok(())
+    }
+
+    /// Update a filesystem browser layout, or bring it to the stacking front.
+    pub fn update_file_window(
+        &self,
+        id: Sid,
+        page_id: u32,
+        window: Option<WsFileWindow>,
+    ) -> Result<()> {
+        self.check_file_window_page(id, page_id)?;
+        if let Some(window) = &window {
+            validate_file_window(window)?;
+            if window.page_id != page_id {
+                bail!("file browser update cannot move between pages");
+            }
+            self.check_shell_page(window.shell_id, page_id)?;
+            let windows = self.file_windows.borrow();
+            let projected = windows
+                .iter()
+                .filter(|(window_id, _)| *window_id != id)
+                .map(|(_, state)| state.editor_data.len())
+                .sum::<usize>()
+                .saturating_add(window.editor_data.len());
+            if projected > 48 << 20 {
+                bail!("shared file editor buffers exceed the session limit");
+            }
+        }
+        let mut found = false;
+        self.file_windows.send_modify(|windows| {
+            if let Some(index) = windows.iter().position(|(window_id, _)| *window_id == id) {
+                let (_, old_window) = windows.remove(index);
+                if window
+                    .as_ref()
+                    .is_some_and(|next| next.shell_id != old_window.shell_id)
+                {
+                    windows.insert(index, (id, old_window));
+                    return;
+                }
+                windows.push((id, window.unwrap_or(old_window)));
+                found = true;
+            }
+        });
+        if !found {
+            bail!("cannot update file browser with id={id}");
         }
         self.workspace_changed();
         Ok(())
@@ -925,9 +1228,11 @@ impl Session {
             bail!("note text can only be changed by its current editor");
         }
         let mut found = false;
+        let paragraphs = normalize_note_paragraphs(&text, Vec::new());
         self.notes.send_if_modified(|notes| {
             if let Some((_, note)) = notes.iter_mut().find(|(note_id, _)| *note_id == id) {
                 note.text = text.clone();
+                note.paragraphs = paragraphs.clone();
                 found = true;
             }
             false
@@ -937,6 +1242,40 @@ impl Session {
         }
         self.broadcast
             .send(WsServer::NoteText(id, page_id, text))
+            .ok();
+        self.workspace_changed_deferred();
+        Ok(())
+    }
+
+    /// Apply a live structured paragraph update from the note's current editor.
+    pub fn update_note_paragraphs(
+        &self,
+        id: Sid,
+        page_id: u32,
+        user_id: Uid,
+        paragraphs: Vec<String>,
+    ) -> Result<()> {
+        self.check_note_page(id, page_id)?;
+        let paragraphs = normalize_note_paragraphs("", paragraphs);
+        validate_paragraphs(&paragraphs)?;
+        if self.note_editors.read().get(&id) != Some(&user_id) {
+            bail!("note paragraphs can only be changed by its current editor");
+        }
+        let text = paragraphs.join("\n");
+        let mut found = false;
+        self.notes.send_if_modified(|notes| {
+            if let Some((_, note)) = notes.iter_mut().find(|(note_id, _)| *note_id == id) {
+                note.text = text;
+                note.paragraphs = paragraphs.clone();
+                found = true;
+            }
+            false
+        });
+        if !found {
+            bail!("cannot update note with id={id}, does not exist");
+        }
+        self.broadcast
+            .send(WsServer::NoteParagraphs(id, page_id, paragraphs))
             .ok();
         self.workspace_changed_deferred();
         Ok(())
@@ -1077,6 +1416,18 @@ impl Session {
         self.broadcast.send(WsServer::ShellLatency(latency)).ok();
     }
 
+    /// Forward an opaque, end-to-end encrypted filesystem response.
+    pub fn send_file_response(&self, request_id: String, stream_num: u64, data: Bytes) {
+        self.broadcast
+            .send(WsServer::FileResponse(request_id, stream_num, data))
+            .ok();
+    }
+
+    /// Show a daemon-side operational error to connected browser clients.
+    pub fn send_error(&self, message: String) {
+        self.broadcast.send(WsServer::Error(message)).ok();
+    }
+
     /// Register a backend client heartbeat, refreshing the timestamp.
     pub fn access(&self) {
         *self.last_accessed.lock() = Instant::now();
@@ -1142,6 +1493,186 @@ fn validate_title(title: &str) -> Result<()> {
         bail!("terminal title is too long");
     }
     Ok(())
+}
+
+pub(super) fn validate_file_window(window: &WsFileWindow) -> Result<()> {
+    if window.path.is_empty()
+        || window.path.len() > 16_384
+        || window.path.contains('\0')
+        || window.title.len() > 100
+        || window.title.chars().any(char::is_control)
+        || !(600..=4_000).contains(&window.width)
+        || !(360..=4_000).contains(&window.height)
+    {
+        bail!("file browser state is invalid");
+    }
+    for path in std::iter::once(&window.current_path)
+        .chain(window.expanded_paths.iter())
+        .chain([&window.selected_path, &window.editor_path])
+    {
+        if path.len() > 16_384 || path.contains('\0') {
+            bail!("file browser path state is invalid");
+        }
+    }
+    if window.expanded_paths.len() > 512
+        || window.expanded_paths.iter().map(String::len).sum::<usize>() > 256 << 10
+        || !matches!(
+            window.selected_kind.as_str(),
+            "" | "directory" | "file" | "symlink" | "other"
+        )
+        || window.editor_data.len() > 8 << 20
+        || !(200..=1_600).contains(&window.sidebar_width)
+        || window.sidebar_width.saturating_add(320) > window.width
+        || (!window.editor_data.is_empty() && window.editor_stream & (1 << 63) == 0)
+        || (window.editor_path.is_empty()
+            && (!window.editor_data.is_empty() || window.editor_dirty))
+    {
+        bail!("file browser shared view state is invalid");
+    }
+    Ok(())
+}
+
+pub(super) fn validate_file_editor_total(windows: &[(Sid, WsFileWindow)]) -> Result<()> {
+    if windows
+        .iter()
+        .map(|(_, window)| window.editor_data.len())
+        .sum::<usize>()
+        > 48 << 20
+    {
+        bail!("shared file editor buffers exceed the session limit");
+    }
+    Ok(())
+}
+
+pub(super) fn normalize_note_paragraphs(text: &str, paragraphs: Vec<String>) -> Vec<String> {
+    if paragraphs.is_empty() {
+        text.split('\n').map(str::to_owned).collect()
+    } else {
+        paragraphs
+    }
+}
+
+fn validate_paragraphs(paragraphs: &[String]) -> Result<()> {
+    let text_bytes = paragraphs.iter().map(String::len).sum::<usize>();
+    let separators = paragraphs.len().saturating_sub(1);
+    if paragraphs.is_empty() || paragraphs.len() > 500 || text_bytes + separators > 10_000 {
+        bail!("note contents are too long");
+    }
+    Ok(())
+}
+
+pub(super) fn validate_note_content(note: &WsNote) -> Result<()> {
+    validate_paragraphs(&note.paragraphs)?;
+    if note.text != note.paragraphs.join("\n") {
+        bail!("note text projection is inconsistent");
+    }
+    Ok(())
+}
+
+fn validate_linked_shell_ids(
+    linked_shell_ids: &[Sid],
+    page_id: u32,
+    shells: &[(Sid, WsWinsize)],
+) -> Result<()> {
+    let mut unique = HashSet::new();
+    if linked_shell_ids.len() > 100
+        || linked_shell_ids.iter().any(|id| {
+            !unique.insert(*id)
+                || !shells
+                    .iter()
+                    .any(|(shell_id, shell)| shell_id == id && shell.page_id == page_id)
+        })
+    {
+        bail!("note references an invalid terminal");
+    }
+    Ok(())
+}
+
+fn validate_linked_note_ids(
+    linked_note_ids: &[Sid],
+    source_id: Sid,
+    page_id: u32,
+    notes: &[(Sid, WsNote)],
+) -> Result<()> {
+    let mut unique = HashSet::new();
+    if linked_note_ids.len() > 100
+        || linked_note_ids.iter().any(|id| {
+            *id == source_id
+                || !unique.insert(*id)
+                || !notes
+                    .iter()
+                    .any(|(note_id, note)| note_id == id && note.page_id == page_id)
+        })
+    {
+        bail!("note references an invalid note");
+    }
+    Ok(())
+}
+
+fn validate_linked_file_window_ids(
+    linked_file_window_ids: &[Sid],
+    page_id: u32,
+    windows: &[(Sid, WsFileWindow)],
+) -> Result<()> {
+    let mut unique = HashSet::new();
+    if linked_file_window_ids.len() > 100
+        || linked_file_window_ids.iter().any(|id| {
+            !unique.insert(*id)
+                || !windows
+                    .iter()
+                    .any(|(window_id, window)| window_id == id && window.page_id == page_id)
+        })
+    {
+        bail!("note references an invalid file editor");
+    }
+    Ok(())
+}
+
+pub(super) fn normalize_note_canvas_links(
+    notes: &mut [(Sid, WsNote)],
+    windows: &[(Sid, WsFileWindow)],
+) {
+    let note_pages = notes
+        .iter()
+        .map(|(id, note)| (*id, note.page_id))
+        .collect::<HashMap<_, _>>();
+    let window_pages = windows
+        .iter()
+        .map(|(id, window)| (*id, window.page_id))
+        .collect::<HashMap<_, _>>();
+    for (source_id, note) in notes {
+        let mut unique_notes = HashSet::new();
+        note.linked_note_ids.retain(|id| {
+            *id != *source_id
+                && unique_notes.insert(*id)
+                && note_pages.get(id) == Some(&note.page_id)
+        });
+        note.linked_note_ids.truncate(100);
+
+        let mut unique_windows = HashSet::new();
+        note.linked_file_window_ids
+            .retain(|id| unique_windows.insert(*id) && window_pages.get(id) == Some(&note.page_id));
+        note.linked_file_window_ids.truncate(100);
+    }
+}
+
+pub(super) fn normalize_linked_shell_ids(
+    linked_shell_ids: Vec<u32>,
+    page_id: u32,
+    shells: &[(Sid, WsWinsize)],
+) -> Vec<Sid> {
+    let mut unique = HashSet::new();
+    linked_shell_ids
+        .into_iter()
+        .map(Sid)
+        .filter(|id| {
+            unique.insert(*id)
+                && shells
+                    .iter()
+                    .any(|(shell_id, shell)| shell_id == id && shell.page_id == page_id)
+        })
+        .take(100)
+        .collect()
 }
 
 fn validate_color(color: &str) -> Result<()> {
@@ -1233,6 +1764,13 @@ fn validate_ssh_profile(profile: &WsSshProfile, others: &[WsSshProfile]) -> Resu
     if profile.auth_method == WsSshAuthMethod::KeyFile && profile.key_path.trim().is_empty() {
         bail!("SSH private key path is required");
     }
+    validate_theme(&profile.theme)?;
+    if profile.background_enabled {
+        validate_color(&profile.background)?;
+        if profile.background.is_empty() {
+            bail!("SSH background override requires a color");
+        }
+    }
     Ok(())
 }
 
@@ -1257,6 +1795,9 @@ fn ws_profile_from_proto(profile: SshProfile) -> Result<WsSshProfile> {
         auth_method,
         key_path: profile.key_path,
         accept_new_host_key: profile.accept_new_host_key,
+        theme: profile.theme,
+        background_enabled: profile.background_enabled,
+        background: profile.background,
     })
 }
 
@@ -1276,5 +1817,8 @@ fn proto_profile_from_ws(profile: WsSshProfile) -> SshProfile {
         auth_method: auth_method.into(),
         key_path: profile.key_path,
         accept_new_host_key: profile.accept_new_host_key,
+        theme: profile.theme,
+        background_enabled: profile.background_enabled,
+        background: profile.background,
     }
 }

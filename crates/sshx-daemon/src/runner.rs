@@ -34,6 +34,7 @@ pub(crate) struct ShellOptions {
     pub rows: u16,
     pub cols: u16,
     pub theme: String,
+    pub background: String,
     pub width: u16,
     pub height: u16,
 }
@@ -58,12 +59,23 @@ impl Runner {
         encrypt: Encrypt,
         shell_rx: mpsc::Receiver<ShellData>,
         output_tx: mpsc::Sender<ClientMessage>,
-        options: ShellOptions,
+        mut options: ShellOptions,
     ) -> Result<()> {
         match self {
             Self::Shell(shell) => {
                 let (program, args) = match &options.ssh_profile {
-                    Some(profile) => ssh_command(profile)?,
+                    Some(profile) => {
+                        let (program, mut args) = ssh_command(profile)?;
+                        if let Some(directory) = options.working_directory.take() {
+                            let host_index = args.len().saturating_sub(1);
+                            args.insert(host_index, "-t".into());
+                            args.push(format!(
+                                "cd -- {} && exec \"${{SHELL:-/bin/sh}}\" -l",
+                                shell_quote(&directory.to_string_lossy())
+                            ));
+                        }
+                        (program, args)
+                    }
                     None => (shell.clone(), Vec::new()),
                 };
                 shell_task(id, encrypt, &program, &args, shell_rx, output_tx, options).await
@@ -71,6 +83,10 @@ impl Runner {
             Self::Echo => echo_task(id, encrypt, shell_rx, output_tx).await,
         }
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 /// Asynchronous task handling a single shell within the session.
@@ -165,7 +181,7 @@ async fn shell_task(
     Ok(())
 }
 
-fn ssh_command(profile: &SshProfile) -> Result<(String, Vec<String>)> {
+pub(crate) fn ssh_command(profile: &SshProfile) -> Result<(String, Vec<String>)> {
     let host = profile.host.trim();
     if host.is_empty()
         || host.starts_with('-')
@@ -279,7 +295,15 @@ async fn echo_task(
 mod tests {
     use sshx_core::proto::{SshAuthMethod, SshProfile};
 
-    use super::ssh_command;
+    use super::{shell_quote, ssh_command};
+
+    #[test]
+    fn quotes_remote_working_directories_for_the_shell() {
+        assert_eq!(
+            shell_quote("/srv/team's files"),
+            "'/srv/team'\"'\"'s files'"
+        );
+    }
 
     #[test]
     fn builds_open_ssh_arguments_without_a_shell_command() -> anyhow::Result<()> {
@@ -292,6 +316,9 @@ mod tests {
             auth_method: SshAuthMethod::SshAuthKeyFile.into(),
             key_path: "/home/deploy/.ssh/id key".into(),
             accept_new_host_key: true,
+            theme: String::new(),
+            background_enabled: false,
+            background: String::new(),
         };
         let (program, args) = ssh_command(&profile)?;
         assert_eq!(program, "ssh");

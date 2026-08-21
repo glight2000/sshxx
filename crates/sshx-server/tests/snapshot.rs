@@ -51,7 +51,11 @@ async fn test_basic_restore() -> Result<()> {
         y: 240,
         width: 512,
         height: 320,
-        text: "Remember to deploy".into(),
+        text: "Remember\nto deploy\nCheck logs".into(),
+        paragraphs: vec!["Remember\nto deploy".into(), "Check logs".into()],
+        linked_shell_ids: vec![Sid(1)],
+        linked_note_ids: Vec::new(),
+        linked_file_window_ids: vec![Sid(3)],
         background: "#654321".into(),
         opacity: 65,
         page_id,
@@ -63,8 +67,37 @@ async fn test_basic_restore() -> Result<()> {
         .await;
     s.send(WsClient::CreateNote(note.x, note.y, page_id)).await;
     s.flush().await;
+    s.send(WsClient::CreateFileWindow(
+        Sid(1),
+        page_id,
+        "/tmp".into(),
+        "Build logs".into(),
+        300,
+        360,
+        1040,
+        680,
+    ))
+    .await;
+    s.flush().await;
     s.send(WsClient::UpdateNote(Sid(2), page_id, Some(note.clone())))
         .await;
+    s.flush().await;
+    let mut file_window = s.file_windows.get(&Sid(3)).unwrap().clone();
+    file_window.current_path = "/tmp/project".into();
+    file_window.expanded_paths = vec!["/".into(), "/tmp".into(), "/tmp/project".into()];
+    file_window.selected_path = "/tmp/project/Cargo.toml".into();
+    file_window.selected_kind = "file".into();
+    file_window.tree_scroll_top = 128;
+    file_window.editor_path = file_window.selected_path.clone();
+    file_window.editor_stream = 1 << 63;
+    file_window.editor_data = b"encrypted editor buffer".as_slice().into();
+    file_window.editor_dirty = true;
+    s.send(WsClient::UpdateFileWindow(
+        Sid(3),
+        page_id,
+        Some(file_window.clone()),
+    ))
+    .await;
     s.flush().await;
     assert!(s.shells.contains_key(&Sid(1)));
 
@@ -81,6 +114,7 @@ async fn test_basic_restore() -> Result<()> {
     assert_eq!(s.read(Sid(1)), "hello there! - another message");
     assert_eq!(s.shells.get(&Sid(1)).unwrap(), &new_size);
     assert_eq!(s.notes.get(&Sid(2)).unwrap(), &note);
+    assert_eq!(s.file_windows.get(&Sid(3)), Some(&file_window));
     assert_eq!(s.pages.last().unwrap().name, "Work");
     assert_eq!(s.daemon_version, env!("CARGO_PKG_VERSION"));
 

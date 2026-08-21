@@ -2,7 +2,7 @@
   import { fade } from "svelte/transition";
 
   import type { WsUser } from "$lib/protocol";
-  import { nameToHue } from "./LiveCursor.svelte";
+  import { userToHue } from "./LiveCursor.svelte";
 
   export let users: [number, WsUser][];
 
@@ -22,7 +22,7 @@
   {#each users as [id, user] (id)}
     <div
       class="avatar"
-      style:background="hsla({nameToHue(user.name)}, 80%, 30%, 90%)"
+      style:background="hsla({userToHue(id, user.name)}, 80%, 30%, 90%)"
       transition:fade|local={{ duration: 200 }}
     >
       {nameToInitials(user.name)}

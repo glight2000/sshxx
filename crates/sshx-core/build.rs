@@ -5,6 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .file_descriptor_set_path(descriptor_path)
         .bytes(".")
+        .boxed(".sshx.ClientUpdate.client_message.created_shell")
         .compile_protos(&["proto/sshx.proto"], &["proto/"])?;
     Ok(())
 }

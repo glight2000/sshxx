@@ -15,7 +15,7 @@ const SALT: &str =
 /// Encrypts byte streams using the Argon2 hash of a random key.
 #[derive(Clone)]
 pub struct Encrypt {
-    aes_key: [u8; 16], // 16-bit
+    aes_key: [u8; 16], // 128-bit
 }
 
 impl Encrypt {

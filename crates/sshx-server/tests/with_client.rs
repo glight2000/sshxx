@@ -59,8 +59,10 @@ async fn test_command() -> Result<()> {
         cols: 80,
         width: 0,
         height: 0,
+        background: String::new(),
         ssh_profile: None,
         theme: String::new(),
+        working_directory: String::new(),
     };
     updates.send(ServerMessage::CreateShell(new_shell)).await?;
 
@@ -203,6 +205,48 @@ async fn test_pages_and_live_note_editing() -> Result<()> {
     assert_eq!(viewer.shells.get(&Sid(1)).unwrap().page_id, page_id);
     assert_eq!(viewer.notes.get(&Sid(2)).unwrap().page_id, page_id);
 
+    writer
+        .send(WsClient::CreateFileWindow(
+            Sid(1),
+            page_id,
+            "/tmp".into(),
+            "Review shell".into(),
+            120,
+            160,
+            1040,
+            680,
+        ))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    let mut file_window = writer.file_windows.get(&Sid(3)).unwrap().clone();
+    assert_eq!(viewer.file_windows, writer.file_windows);
+    file_window.x = 240;
+    file_window.width = 1200;
+    file_window.current_path = "/tmp/project".into();
+    file_window.expanded_paths = vec!["/".into(), "/tmp".into(), "/tmp/project".into()];
+    file_window.selected_path = "/tmp/project/Cargo.toml".into();
+    file_window.selected_kind = "file".into();
+    file_window.tree_scroll_top = 128;
+    file_window.editor_path = file_window.selected_path.clone();
+    file_window.editor_stream = 1 << 63;
+    file_window.editor_data = b"encrypted editor buffer".as_slice().into();
+    file_window.editor_dirty = true;
+    writer
+        .send(WsClient::UpdateFileWindow(
+            Sid(3),
+            page_id,
+            Some(file_window.clone()),
+        ))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert_eq!(viewer.file_windows.get(&Sid(3)), Some(&file_window));
+    writer.send(WsClient::CreateNote(720, 80, page_id)).await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert!(viewer.notes.contains_key(&Sid(4)));
+
     let previous_errors = writer.errors.len();
     writer.send(WsClient::Move(Sid(1), 1, None)).await;
     writer.send(WsClient::UpdateNote(Sid(2), 1, None)).await;
@@ -223,24 +267,98 @@ async fn test_pages_and_live_note_editing() -> Result<()> {
     writer
         .send(WsClient::UpdateNoteText(Sid(2), page_id, "ab".into()))
         .await;
+    writer
+        .send(WsClient::UpdateNoteParagraphs(
+            Sid(2),
+            page_id,
+            vec!["first line\nsecond line".into(), "next block".into()],
+        ))
+        .await;
     writer.flush().await;
     viewer.flush().await;
     assert_eq!(
         viewer.note_editors.get(&Sid(2)),
         Some(&(page_id, writer.user_id))
     );
-    assert_eq!(viewer.notes.get(&Sid(2)).unwrap().text, "ab");
+    let mut linked_note = writer.notes.get(&Sid(2)).unwrap().clone();
+    assert_eq!(
+        linked_note.paragraphs,
+        ["first line\nsecond line", "next block"]
+    );
+    linked_note.linked_shell_ids = vec![Sid(1)];
+    linked_note.linked_note_ids = vec![Sid(4)];
+    linked_note.linked_file_window_ids = vec![Sid(3)];
+    writer
+        .send(WsClient::UpdateNote(
+            Sid(2),
+            page_id,
+            Some(linked_note.clone()),
+        ))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert_eq!(viewer.notes.get(&Sid(2)), Some(&linked_note));
     let workspace = server.state().lookup(&name).unwrap().workspace_state();
     assert_eq!(workspace.pages.last().unwrap().name, "Review");
     assert_eq!(workspace.shells[0].page_id, page_id);
-    assert_eq!(workspace.notes[0].page_id, page_id);
-    assert_eq!(workspace.notes[0].text, "ab");
+    let workspace_note = workspace.notes.iter().find(|note| note.id == 2).unwrap();
+    assert_eq!(workspace_note.page_id, page_id);
+    assert_eq!(workspace_note.paragraphs, linked_note.paragraphs);
+    assert_eq!(workspace_note.linked_shell_ids, [1]);
+    assert_eq!(workspace_note.linked_note_ids, [4]);
+    assert_eq!(workspace_note.linked_file_window_ids, [3]);
+    assert_eq!(workspace.file_windows[0].shell_id, 1);
+    assert_eq!(workspace.file_windows[0].x, 240);
+    assert_eq!(workspace.file_windows[0].current_path, "/tmp/project");
+    assert_eq!(workspace.file_windows[0].tree_scroll_top, 128);
+    assert!(workspace.file_windows[0].editor_dirty);
 
     writer
         .send(WsClient::SetNoteEditing(Sid(2), page_id, false))
         .await;
     viewer.flush().await;
     assert!(!viewer.note_editors.contains_key(&Sid(2)));
+
+    writer
+        .send(WsClient::CloseFileWindow(Sid(3), page_id))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert!(writer.file_windows.is_empty());
+    assert!(viewer.file_windows.is_empty());
+    assert!(viewer
+        .notes
+        .get(&Sid(2))
+        .unwrap()
+        .linked_file_window_ids
+        .is_empty());
+    assert!(server
+        .state()
+        .lookup(&name)
+        .unwrap()
+        .workspace_state()
+        .file_windows
+        .is_empty());
+
+    writer.send(WsClient::CloseNote(Sid(4), page_id)).await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert!(viewer
+        .notes
+        .get(&Sid(2))
+        .unwrap()
+        .linked_note_ids
+        .is_empty());
+
+    writer.send(WsClient::Close(Sid(1), page_id)).await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert!(viewer
+        .notes
+        .get(&Sid(2))
+        .unwrap()
+        .linked_shell_ids
+        .is_empty());
     Ok(())
 }
 
