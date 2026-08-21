@@ -2,233 +2,126 @@
 
 [English](README.md) | 简体中文
 
-sshxx 是一个可自建、可持久化的协作终端，支持浏览器访问，并提供基于 Tauri 的跨平台客户端工程。终端进程由 daemon 持有，而不是由浏览器页面维持，因此关闭或刷新浏览端不会结束 Shell。
+可自建的持久化协作终端：在多页面画布中组织终端、便利贴和文件窗口，通过浏览器或 Tauri 客户端访问同一个工作区；Shell 由
+`sshxx-daemon` 持有，不依赖任何浏览端持续在线。
 
-本项目派生自 Eric Zhang 创建的
-[sshx](https://github.com/ekzhang/sshx)。感谢 Eric
-Zhang 和所有上游贡献者完成了原始架构与实现。sshxx 保留了这一基础，并针对个人工作流增加功能、调整交互习惯。
+![包含终端、结构化便利贴、文件编辑器、页面和在线协作者的 sshxx 发布工作区](docs/images/sshxx-workspace.png)
 
-![包含持久终端、同步便利贴和画布页面的 sshxx 工作区](docs/images/sshxx-workspace.png)
+sshxx 派生自 [ekzhang/sshx](https://github.com/ekzhang/sshx)。感谢 Eric
+Zhang 和所有上游贡献者完成了原始架构与实现。本仓库保留上游 Git 历史和 MIT 许可证，并针对另一套个人工作流继续扩展。
 
-## 与上游的关系
+## 项目概览
 
-sshxx 以独立仓库发布，而不是 GitHub Fork，因此 GitHub 页面可能不会显示“forked
-from” 标识。仓库仍保留完整的上游 Git 历史和 MIT 许可证。如需检查或合并上游更新，可以添加
-`upstream` remote：
+| 领域             | sshxx 提供的能力                                                |
+| ---------------- | --------------------------------------------------------------- |
+| 持久终端         | 由 daemon 而非浏览器持有的本地与 OpenSSH Shell                  |
+| 共享画布         | 携带页面标识的终端、便利贴、文件窗口、布局、关联关系和在线状态  |
+| 结构化便利贴     | 支持段内换行、目标关联、拖拽复制、发送及发送后执行              |
+| 终端旁的文件能力 | 同步文件夹导航、预览、CodeMirror 编辑、上传和文件操作           |
+| 多种浏览端       | Web 与 Tauri 打包客户端共用同一套 Svelte 界面                   |
+| 本地视图控制     | 当前页面、视口、全屏、界面模式、焦点及撤销/重做仅属于当前浏览端 |
 
-```shell
-git remote add upstream https://github.com/ekzhang/sshx.git
-```
+![关联终端和文件编辑器的 sshxx 便利贴段落操作](docs/images/sshxx-notes.png)
 
-## 主要变化
-
-- 浏览器和 Tauri 桌面/移动客户端共用同一套 Svelte 前端。
-- daemon 将页面、终端布局、外观和便利贴保存在其当前工作目录。
-- 支持多个独立画布页面、带页面定位的全局搜索、可编辑便利贴、终端复制、八方向缩放和可选的网格吸附。
-- 每个终端可独立设置配色、背景覆盖、透明度和标题；便利贴使用独立的中性配色及外观设置。
-- 应用界面支持白天、夜晚和跟随系统模式，不会改变终端或便利贴自身配色。
-- 终端分体按钮支持保存 OpenSSH 连接，可选择默认配置、SSH
-  Agent、私钥文件或交互式密码认证。
-- 支持便利贴字符级同步、携带页面标识的协作事件，以及便利贴、终端与文件编辑器之间的关联。
-- 提供可同步的画布文件浏览器，包含文件夹树、目录网格、CodeMirror编辑器、上传/新建/改名/移动/删除和“在此处打开终端”。本地终端及使用密钥或Agent 的 SSH 终端均可使用。
-- 本地终端支持粘贴或拖入图片；图片端到端加密传输后存入 daemon 工作目录的
-  `cache/uploads/`，并将绝对路径插入终端。
-- 浏览器本地的页面和视图恢复与共享工作区数据严格分离；工具栏连接图标显示当前会话状态。
-- 升级了终端渲染组件和前后端依赖。
-- 对外程序分别命名为 `sshxx-daemon`、`sshxx-server` 和
-  `sshxx-client`，以便与上游 sshx 区分。
-
-## 功能展示
-
-### 可复用的 SSH 连接
-
-通过新建终端分体按钮管理连接配置，daemon 使用带认证的加密格式保存。每个连接可以预设终端配色，也可以选择覆盖背景色。
-
-![包含认证方式和终端外观设置的 SSH 连接配置](docs/images/sshxx-ssh-profile.png)
-
-### 结构化、可关联的便利贴
-
-便利贴以可识别的段落组织文本。段落可以拖拽复制，也可以发送到关联便利贴、终端、执行终端和已打开的文件编辑器。聚焦便利贴时会高亮关联组件，但不会改变其持久化外观。
-
-![与终端关联并打开段落发送菜单的便利贴](docs/images/sshxx-notes.png)
-
-### 与终端并列的文件浏览器
-
-文件浏览器是可同步、可持久化的画布窗口，而不是弹窗。它将可调宽度的文件夹树、目录浏览、预览和支持语法高亮的文本编辑器组合在一起。
-
-![sshxx 画布中的同步文件浏览器和文本编辑器](docs/images/sshxx-file-explorer.png)
-
-详细功能文档的版本化源文件位于
-[`docs/wiki`](docs/wiki/Home.md)。仓库的第一个 Wiki 页面创建后，即可将这些页面发布到独立的 GitHub
-Wiki Git 仓库。
+README 只保留项目级介绍。完整功能和全量截图请查看
+**[功能指南](https://github.com/glight2000/sshxx/wiki/Features)**，或从
+**[sshxx Wiki 首页](https://github.com/glight2000/sshxx/wiki)** 开始阅读。
 
 ## 架构
 
-| 组件           | 源码位置             | 职责                                  |
-| -------------- | -------------------- | ------------------------------------- |
-| `sshxx-daemon` | `crates/sshx-daemon` | 持有 Shell 进程并在本地持久化工作区。 |
-| `sshxx-server` | `crates/sshx-server` | 协调会话并提供 Web 客户端和 API。     |
-| `sshxx-client` | `src/`、`src-tauri/` | 通过浏览器或打包应用显示会话。        |
+| 组件           | 源码位置             | 职责                                              |
+| -------------- | -------------------- | ------------------------------------------------- |
+| `sshxx-daemon` | `crates/sshx-daemon` | 持有 Shell/SSH 进程、执行文件操作并保存持久工作区 |
+| `sshxx-server` | `crates/sshx-server` | 鉴权并协调加密、页面感知的会话                    |
+| `sshxx-client` | `src/`、`src-tauri/` | 通过浏览器或打包应用渲染和操作会话                |
 
-server 负责协调加密后的终端数据，但不持有 Shell 进程。即使所有浏览端都断开，daemon 仍会继续运行终端。
+关闭或刷新浏览端不会结束终端。daemon 重启后会恢复工作区元数据，但会重新创建 Shell 进程，不能接续之前的进程内存状态。
 
-## 状态、同步与安全边界
+## 状态与信任边界
 
-sshxx 明确区分共享工作区状态和各浏览端的本地界面状态。下表作为后续功能开发时需要维持的兼容约定：
+| 状态                                           | 持有者与生命周期                                     | 范围                                                   |
+| ---------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------ |
+| 页面、画布组件、便利贴/关联、文件浏览/编辑状态 | daemon 的 `.sshx-workspace`                          | 同一会话共享；每项画布变更都保留页面 ID                |
+| Shell 与 SSH 进程                              | daemon 内存                                          | 输入输出流共享；浏览端断开后继续，daemon 重启后重建    |
+| 可复用 SSH 配置                                | `.sshx-connections` 带认证加密，密钥仅本机所有者可读 | 配置元数据在会话内可见；仅写入用户可修改；从不保存密码 |
+| 当前页面、各页面平移/缩放、用户设置            | 浏览器 `localStorage`                                | 仅当前浏览器配置使用，不同步                           |
+| 焦点、菜单、拖拽、全屏、撤销/重做              | 浏览器内存                                           | 仅本地临时存在                                         |
+| 在线用户和编辑权                               | server 内存                                          | 会话内临时状态                                         |
 
-| 数据                                                          | 持久化主体                                                                 | 同步范围                                                                   |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| 页面、画布窗口、布局/外观、便利贴/关联关系、文件浏览/编辑状态 | daemon 的 `.sshx-workspace`                                                | 同一会话；每个画布变更都携带页面 ID                                        |
-| Shell/SSH 进程                                                | daemon 内存                                                                | 终端输入输出在会话内共享；浏览端断开不影响进程，daemon 重启会重建进程      |
-| 可复用 SSH 配置                                               | daemon 的 `.sshx-connections`，使用 `.sshx-connections.key` 进行带认证加密 | 配置元数据在会话内可见，只有写入用户可以修改                               |
-| 实际文件和目录                                                | daemon 或 SSH 目标文件系统                                                 | 操作使用 daemon 系统账号或 SSH 账号权限；相关浏览状态会同步                |
-| 当前页面及各页面平移/缩放                                     | 按 server/会话隔离的浏览器 `localStorage`                                  | 只属于当前浏览器配置，不同步                                               |
-| 用户设置                                                      | 浏览器 `localStorage`                                                      | 只属于当前浏览器配置，不在 daemon 持久化                                   |
-| 焦点、全屏、菜单、拖拽/关联选择、撤销/重做                    | 浏览器内存                                                                 | 仅本地、临时存在                                                           |
-| 在线用户、光标、终端焦点、便利贴编辑权                        | server 内存                                                                | 会话内实时同步，不在 daemon 持久化                                         |
-| 粘贴图片                                                      | daemon 的 `cache/uploads/`                                                 | 完成后的文件为仅所有者可读写的本地明文缓存，daemon 启动时清理过期内容      |
-| 会话连续性快照                                                | server 内存及可选 Redis                                                    | 短期故障切换数据（最长约 20 秒同步一次、5 分钟过期），不是持久工作区或备份 |
+终端流、文件系统载荷、图片分块和活动编辑器内容加密后经 server 转发；协作所需元数据对 server 可见。拥有写入权限的参与者可以使用 daemon 或 SSH 账号所拥有的终端及文件系统权限；sshxx 不是文件系统沙箱。
 
-页面切换有意保持为本地行为；所有共享变更均保留页面标识，避免页面 A 上的操作误应用到页面 B。全局搜索在已接收的全页面快照上本地执行，搜索词和定位动作不会同步给其他浏览端。
-
-除 localhost 或可信隔离局域网外，浏览端与 server 之间应使用 HTTPS/WSS。URL
-Fragment 中包含会话/写入权限的 Bearer
-Secret：它不会随 HTTP 请求发送，但仍可能通过浏览历史、截图、扩展或误分享泄露。终端流、文件系统请求/响应正文、图片分块和活动编辑器内容使用会话密钥加密后经 server 转发；页面/布局状态、便利贴文本、显示名称、标题、文件路径及 SSH 配置的主机/用户/密钥路径等协作元数据对 server 可见，也可能进入可选的 Redis 快照。
-
-持有写入权限的参与者被视为可信协作者，可以使用 daemon 系统账号或 SSH 账号具有的终端和文件权限；sshxx 不提供文件系统沙箱。server 会校验写入权限及页面/对象关系，但写入 URL 只能分享给允许使用这些账号权限的用户。完整的数据可见性矩阵、通信链路、Redis 生命周期、本地文件名，以及新增有状态功能时必须回答的规则，见
-[`Architecture-and-State.md`](docs/wiki/Architecture-and-State.md)。
+除 localhost 或可信隔离局域网外，应使用 HTTPS/WSS，并将 URL Fragment 视为 Bearer
+Secret。完整的持久化、同步、通信、Redis、鉴权和数据可见性约定见
+**[架构与状态边界](https://github.com/glight2000/sshxx/wiki/Architecture-and-State)**。
 
 ## 开发
 
-项目遵循仓库锁文件，并优先使用 `mise`
-管理的运行时。安装 JavaScript 依赖并启动开发用 Redis：
+项目遵循仓库锁文件，并使用 `mise` 管理的运行时：
 
 ```shell
 mise install
 npm ci
 docker compose up -d
-```
-
-同时启动 server、daemon 和 Web 前端：
-
-```shell
 mprocs
 ```
 
-默认开发会话地址：
+默认开发会话：
 
 ```text
 http://localhost:5173/s/dev#localdevkey
 ```
 
-daemon 会在当前目录写入
-`.sshx-workspace`。为了兼容已有工作区，这个继承自 sshx 的文件名被有意保留。每次从同一目录启动 daemon，可以恢复页面、便利贴、布局和终端配置；Shell 进程本身会重新创建。无法读取或属于未来版本的工作区会先以
-`.invalid-*` 后缀隔离保留，再创建新的空工作区。
-
-可复用的 SSH 连接配置保存在同目录的
-`.sshx-connections`，文件使用带完整性校验的加密格式；本地密钥保存在仅文件所有者可读写的
-`.sshx-connections.key`。密码认证始终在 OpenSSH 终端内交互输入，不会保存密码。无法读取或属于未来版本的配置文件会以
-`.invalid-*` 后缀隔离保留，不会阻止 daemon 启动。
-
-## 画布和终端操作
-
-- 在画布空白处拖拽可以平移。鼠标中键拖拽始终移动画布，即使鼠标位于终端或便利贴上。
-- `Ctrl` + 滚轮始终缩放画布并覆盖浏览器缩放。普通滚轮位于终端或便利贴上时，无论是否聚焦都滚动对应窗口；位于窗口外且没有激活项时用于缩放画布。可滚动菜单也保留自身滚动行为。
-- 开启网格吸附后，窗口移动和八方向缩放会按照统一的小幅内缩规则对齐可见网格点；新建窗口也使用同一网格。
-- 单击便利贴进入编辑，按 `Escape` 或点击外部退出编辑。
-- `Ctrl`/`Cmd` + `Enter`
-  新建便利贴段落，普通 Enter 在当前段落内换行。段落手柄提供发送、删除操作，也可以拖拽到兼容的画布目标。
-- 终端存在文本选区时，`Ctrl+C`
-  会复制并清除选区；没有选区时仍发送给 Shell。`Shift+Enter`
-  会向支持多行输入的程序发送 LF。
-- 向本地终端粘贴或拖入 PNG、JPEG、WebP、GIF 图片，会上传不超过 20
-  MiB 的图片并在当前输入位置插入 daemon 缓存路径。缓存文件仅所有者可读写，daemon 启动时会清理超过 24 小时的图片。
-- 终端和便利贴状态属于各自页面。页面切换和视图位置仅保存在当前浏览器；页面内容及编辑操作在多端同步时始终携带页面标识。
-- 文件浏览器的布局、文件夹选择、树展开/滚动和编辑器状态会随工作区同步并持久化。全屏状态、当前页面、平移和缩放仍只属于当前浏览端。
+daemon 会相对于当前工作目录保存应用数据；从同一目录启动即可恢复同一工作区。
+`.sshx-workspace`、`.sshx-connections`、`.sshx-connections.key`、`cache/`
+及其恢复文件都属于本地应用数据，并已明确加入 Git 忽略规则。
 
 ## 构建
 
-构建 daemon 和 server：
-
 ```shell
 cargo build --release -p sshxx-daemon -p sshxx-server
-```
-
-构建静态 Web 客户端：
-
-```shell
 npm run build
-```
-
-安装对应平台的 Tauri 系统依赖后，构建打包客户端：
-
-```shell
 npm run app:build
 ```
 
-Ubuntu 原生依赖：
+打包客户端还需要对应平台的 Tauri 系统依赖。Ubuntu 使用：
 
 ```shell
 sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 ```
 
-打包客户端允许连接局域网 HTTP/WebSocket 服务。在不可信网络中应使用 HTTPS 和 WSS。
+生产环境应在 server 前提供 TLS，使用强 secret；多 server 实例需要 Redis 参与协调。
 
-## 分别运行
+## 文档
 
-启动本地 server：
+- [完整功能说明与全量截图](https://github.com/glight2000/sshxx/wiki/Features)
+- [键盘和鼠标操作](https://github.com/glight2000/sshxx/wiki/Keyboard-and-Mouse)
+- [架构、持久化、同步和安全](https://github.com/glight2000/sshxx/wiki/Architecture-and-State)
+- Wiki 的版本化源文件：[`docs/wiki`](docs/wiki/Home.md)
 
-```shell
-./target/release/sshxx-server \
-  --listen :: \
-  --secret replace-this-secret
-```
+<details>
+<summary><strong>路线图与已知限制</strong></summary>
 
-在需要保存工作区的目录中启动 daemon：
+### TODO
 
-```shell
-./target/release/sshxx-daemon --server http://localhost:8051
-```
-
-生产环境应在 server 前配置反向代理和 TLS，使用足够强的 secret；运行多个 server 实例时还需要配置 Redis。
-
-## 尚未完成的工作
-
-- Tauri 客户端外壳和平台图标已经加入工程并通过编译检查，但尚未在 Windows、macOS、Linux、Android 和 iOS 上完整验证签名安装包及发布流程。
-- 缺少长期维护的生产部署参考配置，包括 TLS、反向代理、secret、Redis、升级和备份。
-- 尚未实现 AI Agent 进程识别，以及 Codex、Claude
-  Code 等工具的专属图标。当前提醒效果依赖终端响铃或 OSC 通知。
-- 跨浏览器、跨平台 UI 自动化测试尚未覆盖拖拽/缩放吸附、页面持久化、终端键盘行为和多人同时编辑便利贴。
-- TypeAhead 本地回显仍需读取 xterm 私有的当前 SGR 状态，因为公开 API 没有等价能力。访问点已经隔离，但在后续升级 xterm 前仍需增加兼容保护。
-
-## TODO
-
-- [ ] 在 CI 中构建并测试带签名的桌面端安装包。
-- [ ] 初始化、构建并测试 Android 和 iOS 目标。
-- [ ] 增加包含 TLS 和升级说明的生产自建部署示例。
-- [ ] 增加带版本迁移的工作区格式、备份及恢复工具。
-- [ ] 为页面、便利贴、吸附、搜索和终端快捷键增加端到端浏览器测试。
-- [ ] 以上述端到端测试为安全网，将会话编排和文件浏览器状态逐步拆分为更小、职责更明确的模块。
-- [ ] 按需加载文件浏览器/编辑器，并缩小 Web 首屏包中的语言注册表。
+- [ ] 在 CI 中验证带签名的桌面安装包及 Android/iOS 目标。
+- [ ] 发布包含 TLS、升级、备份与恢复的长期维护生产部署参考。
+- [ ] 增加版本化工作区迁移，并为页面、便利贴、吸附、搜索、终端输入和多人编辑补充端到端测试。
+- [ ] 按需加载文件编辑器，缩小 Web 首屏语言注册表。
+- [ ] 为 TypeAhead 隔离使用的 xterm 私有 SGR 状态增加能力检测兼容层。
 - [ ] 在增加 AI
-      Agent 图标或语义化完成提醒之前，设计明确的 daemon-to-client 进程状态协议。
-- [ ] 增加带能力检测的 xterm 薄兼容层；所需私有 SGR
-      API 变化时，应安全关闭 TypeAhead，而不是影响终端工作。
-- [ ] 完成目前暂缓的光标样式设置。
+      Agent 识别或语义化完成提醒前，设计明确的 daemon-to-client 进程状态协议。
 
-## 已知问题与限制
+### 已知限制
 
-- `.sshx-workspace`
-  只持久化元数据。daemon 重启后会恢复页面、便利贴、布局和终端配置，但 Shell 进程会重新创建，不能接续原来的进程状态。
-- Windows 下，当前 ConPTY 实现无法取得子进程的工作目录。复制终端时可能回退到 daemon 的工作目录，而不是源终端所在目录。
-- 图片粘贴目前只支持 daemon 上的本地终端。SSH 终端的目标主机无法访问 daemon 缓存，因此会明确拒绝上传；后续需要独立的 SFTP/SCP 转发能力。
-- `Shift+Enter`
-  会发送 LF 以支持多行输入，最终行为由前台应用决定；普通 Shell 或不支持多行输入的程序仍可能将其视为提交。
-- 彩虹提醒依赖前台程序发出响铃或受支持的 OSC 通知，不能自行判断 AI
-  Agent 是否正在运行、等待用户输入或已经结束。
-- WebGL 不可用或被禁用时，终端会回退到 DOM 渲染器；大型终端的性能可能因此下降。
-- TypeAhead 为了在本地回显回滚时准确恢复样式，依赖一个 xterm 私有 API。升级到不兼容的 xterm 版本前必须审计这一边界。
-- 明文 HTTP/WebSocket 只适合可信局域网。面向互联网部署时，必须通过代理或网络层提供 HTTPS/WSS 和适当的访问控制。
+- daemon 重启会恢复元数据，但会重新创建 Shell 进程。
+- Windows ConPTY 当前无法报告子进程工作目录，复制终端可能回退到 daemon 目录。
+- 图片粘贴目前只支持 daemon 本地 Shell；SSH 目标仍需单独的 SFTP/SCP 转发流程。
+- `Shift+Enter` 发送 LF，最终是换行还是提交由前台程序决定。
+- 提醒效果依赖终端 Bell 或受支持的 OSC 通知，不能推断 AI Agent 状态。
+- WebGL 不可用时会回退到 DOM 终端渲染，大型终端性能会下降。
+- 明文 HTTP/WebSocket 只适合可信局域网。
+
+</details>
 
 ## 验证
 
@@ -241,8 +134,13 @@ npm run test:runtime
 npm run build
 ```
 
-## 许可证
+## 上游与许可证
 
-sshxx 继承上游的
-[MIT License](LICENSE)，并原样保留原始版权和许可证声明。原项目和历史请参阅
-[sshx 仓库](https://github.com/ekzhang/sshx)。
+sshxx 以独立仓库发布，因此 GitHub 可能不会显示 “forked
+from” 标识。需要时可以添加原项目为 `upstream` remote：
+
+```shell
+git remote add upstream https://github.com/ekzhang/sshx.git
+```
+
+sshxx 继承上游的 [MIT License](LICENSE)，并保留其原始版权与许可证声明。

@@ -5,13 +5,13 @@ sshxx is a self-hosted collaborative terminal workspace derived from
 processes, the server coordinates encrypted sessions, and browser/Tauri viewers
 render the same canvas.
 
-![sshxx workspace](https://raw.githubusercontent.com/glight2000/sshxx/main/docs/images/sshxx-workspace.png)
+![A complete sshxx workspace with terminal, note, file editor, pages, and collaborators](https://raw.githubusercontent.com/glight2000/sshxx/main/docs/images/sshxx-workspace.png)
 
 ## Guides
 
-- [Feature guide](Features.md)
-- [Keyboard and mouse controls](Keyboard-and-Mouse.md)
-- [Architecture, synchronization, persistence, and security](Architecture-and-State.md)
+- [Complete feature guide and screenshots](Features)
+- [Keyboard and mouse controls](Keyboard-and-Mouse)
+- [Architecture, synchronization, persistence, and security](Architecture-and-State)
 
 ## Important limitations
 
