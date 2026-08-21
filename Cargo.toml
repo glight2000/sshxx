@@ -4,7 +4,7 @@ default-members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 authors = ["sshxx contributors"]
 license = "MIT"
 description = "A self-hosted, persistent, collaborative terminal."
@@ -18,7 +18,7 @@ clap = { version = "4.6.6", features = ["derive", "env"] }
 prost = "0.14.4"
 rand = "0.10.2"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
-sshx-core = { package = "sshxx-core", version = "0.4.1", path = "crates/sshx-core" }
+sshx-core = { package = "sshxx-core", version = "0.5.0", path = "crates/sshx-core" }
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"] }
