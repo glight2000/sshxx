@@ -28,8 +28,9 @@
 
     <h1 class="text-2xl font-medium mb-3">Connect to a terminal</h1>
     <p class="text-zinc-400 mb-8">
-      Paste a session link from any sshxx server. The terminal continues running
-      on its host when this application is closed.
+      Paste a session link from your self-hosted sshxx-server. The upstream
+      public sshx service is intentionally unsupported. The terminal continues
+      running on its host when this application is closed.
     </p>
 
     <form on:submit|preventDefault={connect}>

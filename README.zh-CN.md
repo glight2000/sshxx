@@ -16,6 +16,10 @@
 sshxx 派生自 [ekzhang/sshx](https://github.com/ekzhang/sshx)。感谢 Eric
 Zhang 和所有上游贡献者完成了原始架构与实现。本仓库保留上游 Git 历史和 MIT 许可证，并针对另一套个人工作流继续扩展。
 
+> **仅支持自建服务：** sshxx 不使用、也不支持 `sshx.io` 公共服务。当前 sshxx
+> client 与 daemon 会主动拒绝上游 sshx server/service；请部署并连接自己的
+> `sshxx-server`。
+
 ## 项目概览
 
 | 领域             | sshxx 提供的能力                                                |

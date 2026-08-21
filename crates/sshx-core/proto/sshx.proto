@@ -64,6 +64,7 @@ message OpenResponse {
   string name = 1;  // Name of the session.
   string token = 2; // Signed verification token for the client.
   string url = 3;   // Public web URL to view the session.
+  string product = 4; // Product identity used to require an sshxx server.
 }
 
 // Sequence numbers for all active shells, used for synchronization.

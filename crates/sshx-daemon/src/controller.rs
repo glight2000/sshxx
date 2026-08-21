@@ -11,7 +11,7 @@ use sshx_core::proto::{
     sshx_service_client::SshxServiceClient, ClientUpdate, CloseRequest, FileResponse, NewShell,
     OpenRequest, WorkspacePage, WorkspaceState,
 };
-use sshx_core::{rand_alphanumeric, Sid, WORKSPACE_FORMAT_VERSION};
+use sshx_core::{rand_alphanumeric, Sid, PRODUCT_ID, WORKSPACE_FORMAT_VERSION};
 use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task;
 use tokio::time::{self, Duration, Instant, MissedTickBehavior};
@@ -28,6 +28,29 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Interval to automatically reestablish connections.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Returns the host portion of an HTTP(S) origin without adding a URL parser
+/// dependency to the daemon. Tonic performs the full URI validation when it
+/// creates the channel.
+fn server_hostname(origin: &str) -> Option<&str> {
+    let (_, remainder) = origin.split_once("://")?;
+    let authority = remainder.split(['/', '?', '#']).next()?;
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, hostname)| hostname);
+    if let Some(ipv6) = authority.strip_prefix('[') {
+        return ipv6.split_once(']').map(|(hostname, _)| hostname);
+    }
+    Some(authority.split(':').next().unwrap_or(authority))
+}
+
+fn is_upstream_sshx_origin(origin: &str) -> bool {
+    let Some(hostname) = server_hostname(origin) else {
+        return false;
+    };
+    let hostname = hostname.trim_end_matches('.').to_ascii_lowercase();
+    hostname == "sshx.io" || hostname.ends_with(".sshx.io")
+}
 
 struct PersistencePaths {
     workspace: std::path::PathBuf,
@@ -122,6 +145,10 @@ impl Controller {
         encryption_key: Option<&str>,
         persistence: Option<PersistencePaths>,
     ) -> Result<Self> {
+        anyhow::ensure!(
+            !is_upstream_sshx_origin(origin),
+            "the public sshx.io service is not supported; use a self-hosted sshxx-server"
+        );
         let (workspace_path, ssh_profiles_path, uploads_path) = match persistence {
             Some(paths) => (
                 Some(paths.workspace),
@@ -232,6 +259,10 @@ impl Controller {
             ssh_profiles: ssh_profile_state,
         };
         let mut resp = client.open(req).await?.into_inner();
+        anyhow::ensure!(
+            resp.product == PRODUCT_ID,
+            "the selected server is not sshxx-server; upstream sshx services are not supported"
+        );
         resp.url = resp.url + "#" + &encryption_key;
 
         let write_url = if let Some(write_password) = write_password {
@@ -729,4 +760,44 @@ async fn send_msg(tx: &mpsc::Sender<ClientUpdate>, message: ClientMessage) -> Re
     tx.send(update)
         .await
         .context("failed to send message to server")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_upstream_sshx_origin, server_hostname};
+
+    #[test]
+    fn extracts_server_hostnames() {
+        assert_eq!(
+            server_hostname("https://example.com:8051/path"),
+            Some("example.com")
+        );
+        assert_eq!(server_hostname("http://[fd00::25]:8051"), Some("fd00::25"));
+        assert_eq!(server_hostname("not-an-origin"), None);
+    }
+
+    #[test]
+    fn rejects_upstream_public_service_origins() {
+        for origin in [
+            "https://sshx.io",
+            "https://SSHX.IO.",
+            "https://sshx.io:443/path",
+            "https://edge.sshx.io",
+        ] {
+            assert!(is_upstream_sshx_origin(origin), "accepted {origin}");
+        }
+    }
+
+    #[test]
+    fn allows_self_hosted_origins() {
+        for origin in [
+            "http://localhost:8051",
+            "http://192.168.1.25:8051",
+            "http://[fd00::25]:8051",
+            "https://sshxx.example",
+            "https://sshx.io.example",
+        ] {
+            assert!(!is_upstream_sshx_origin(origin), "rejected {origin}");
+        }
+    }
 }

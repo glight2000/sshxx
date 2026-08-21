@@ -19,6 +19,10 @@ to Eric Zhang and all upstream contributors for the original architecture and
 implementation. This repository preserves the upstream Git history and MIT
 license, then extends the project for a different set of personal workflows.
 
+> **Self-hosted only:** sshxx does not use or support the public service at
+> `sshx.io`. Current sshxx clients and daemons intentionally reject upstream
+> sshx servers and services. Deploy and connect to your own `sshxx-server`.
+
 ## At a glance
 
 | Area                 | What sshxx provides                                                                        |

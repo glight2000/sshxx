@@ -183,7 +183,8 @@ impl ClientSocket {
         let flush_task = async {
             while let Some(msg) = self.recv().await {
                 match msg {
-                    WsServer::Hello(user_id, _, server_version, daemon_version) => {
+                    WsServer::Hello(user_id, _, server_version, daemon_version, product) => {
+                        assert_eq!(product, sshx_core::PRODUCT_ID);
                         self.user_id = user_id;
                         self.server_version = server_version;
                         self.daemon_version = daemon_version;

@@ -248,9 +248,9 @@ pub struct WsUser {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum WsServer {
-    /// Initial message with user ID, session name, server version, and daemon
-    /// version.
-    Hello(Uid, String, String, String),
+    /// Initial message with user ID, session name, server version, daemon
+    /// version, and product identity.
+    Hello(Uid, String, String, String, String),
     /// The user's authentication was invalid.
     InvalidAuth(),
     /// A snapshot of all current users in the session.

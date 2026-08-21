@@ -85,3 +85,31 @@ test("rejects non-HTTP links and malformed session paths", () => {
     /must contain \/s\/<session-id>/,
   );
 });
+
+test("rejects upstream sshx public-service links", () => {
+  for (const origin of [
+    "https://sshx.io",
+    "https://SSHX.IO.",
+    "https://edge.sshx.io",
+  ]) {
+    assert.throws(
+      () => viewerRouteFromShareUrl(`${origin}/s/demo#secret`),
+      /public sshx\.io service is not supported/,
+    );
+  }
+});
+
+test("rejects the upstream service selected in the packaged app", () => {
+  globalThis.window = {
+    __TAURI_INTERNALS__: {},
+    location: {
+      href: "http://tauri.localhost/s/demo",
+      search: "?server=https%3A%2F%2Fsshx.io",
+    },
+  };
+
+  assert.throws(
+    () => resolveWebSocketUrl("/api/s/demo"),
+    /public sshx\.io service is not supported/,
+  );
+});

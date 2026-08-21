@@ -128,7 +128,7 @@ export type WsUser = {
 
 /** Server message type, see the Rust version. */
 export type WsServer = {
-  hello?: [Uid, string, string, string];
+  hello?: [Uid, string, string, string, string];
   invalidAuth?: [];
   users?: [Uid, WsUser][];
   userDiff?: [Uid, WsUser | null];
