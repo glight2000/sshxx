@@ -156,7 +156,8 @@ impl Terminal {
         Ok(())
     }
 
-    /// Return the current working directory of the shell process when available.
+    /// Return the current working directory of the shell process when
+    /// available.
     pub async fn working_directory(&self) -> Option<PathBuf> {
         fs::read_link(format!("/proc/{}/cwd", self.child.as_raw()))
             .await

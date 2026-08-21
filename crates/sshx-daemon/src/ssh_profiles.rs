@@ -68,7 +68,8 @@ pub async fn load_or_create_encryptor(profile_path: &Path) -> Result<Encrypt> {
     }
 }
 
-/// Preserve an invalid key and its now-unreadable data, then create a fresh key.
+/// Preserve an invalid key and its now-unreadable data, then create a fresh
+/// key.
 pub async fn replace_invalid_encryptor(profile_path: &Path) -> Result<Encrypt> {
     let key_path = profile_path.with_file_name(KEY_FILE_NAME);
     if tokio::fs::try_exists(&key_path).await? {

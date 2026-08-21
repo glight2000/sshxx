@@ -62,7 +62,8 @@ impl UploadManager {
         })
     }
 
-    /// Accept one ordered encrypted chunk and return the completed absolute path.
+    /// Accept one ordered encrypted chunk and return the completed absolute
+    /// path.
     pub(crate) async fn accept(
         &mut self,
         encrypt: &Encrypt,

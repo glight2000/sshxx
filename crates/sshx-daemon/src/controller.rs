@@ -74,7 +74,8 @@ impl Controller {
         Self::new_inner(origin, name, runner, enable_readers, None, None).await
     }
 
-    /// Construct a controller with an optional fixed encryption key for local testing.
+    /// Construct a controller with an optional fixed encryption key for local
+    /// testing.
     pub async fn new_with_encryption_key(
         origin: &str,
         name: &str,
@@ -376,7 +377,8 @@ impl Controller {
                             send_msg(
                                 &tx,
                                 ClientMessage::Error(format!(
-                                    "Terminal {id} is an SSH connection; browser images can only be uploaded to local terminals."
+                                    "Terminal {id} is an SSH connection; browser images can only \
+                                     be uploaded to local terminals."
                                 )),
                             )
                             .await?;

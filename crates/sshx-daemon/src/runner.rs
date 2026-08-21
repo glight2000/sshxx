@@ -1,10 +1,11 @@
 //! Defines tasks that control the behavior of a single shell in the client.
 
+use std::path::PathBuf;
+
 use anyhow::{bail, Context, Result};
 use encoding_rs::{CoderResult, UTF_8};
 use sshx_core::proto::{client_update::ClientMessage, SshAuthMethod, SshProfile, TerminalData};
 use sshx_core::Sid;
-use std::path::PathBuf;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},

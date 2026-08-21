@@ -22,10 +22,12 @@ pub struct WsWinsize {
     /// Exact canvas window height, or zero for legacy content sizing.
     #[serde(default)]
     pub height: u16,
-    /// User-defined title override, or an empty string to use the terminal title.
+    /// User-defined title override, or an empty string to use the terminal
+    /// title.
     #[serde(default)]
     pub title: String,
-    /// User-defined terminal background color, or an empty string to use the theme.
+    /// User-defined terminal background color, or an empty string to use the
+    /// theme.
     #[serde(default)]
     pub background: String,
     /// Window opacity as a percentage.
@@ -246,7 +248,8 @@ pub struct WsUser {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum WsServer {
-    /// Initial message with user ID, session name, server version, and daemon version.
+    /// Initial message with user ID, session name, server version, and daemon
+    /// version.
     Hello(Uid, String, String, String),
     /// The user's authentication was invalid.
     InvalidAuth(),

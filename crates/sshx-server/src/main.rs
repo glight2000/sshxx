@@ -37,7 +37,8 @@ struct Args {
     #[clap(long)]
     host: Option<String>,
 
-    /// Fixed session name used instead of a random value (unsafe for production).
+    /// Fixed session name used instead of a random value (unsafe for
+    /// production).
     #[clap(long, env = "SSHXX_SESSION_NAME")]
     session_name: Option<String>,
 }

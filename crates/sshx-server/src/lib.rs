@@ -45,7 +45,8 @@ pub struct ServerOptions {
     /// Hostname of this server, if running multiple servers.
     pub host: Option<String>,
 
-    /// Fixed session name used instead of a random value, intended for local testing.
+    /// Fixed session name used instead of a random value, intended for local
+    /// testing.
     pub session_name: Option<String>,
 }
 

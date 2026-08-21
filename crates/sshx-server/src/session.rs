@@ -323,7 +323,8 @@ impl Session {
             .collect()
     }
 
-    /// Receive a notification whenever locally persistable workspace state changes.
+    /// Receive a notification whenever locally persistable workspace state
+    /// changes.
     pub fn subscribe_workspace(&self) -> impl Stream<Item = u64> + Unpin {
         WatchStream::new(self.workspace_revision.subscribe())
     }
@@ -1052,7 +1053,8 @@ impl Session {
         Ok(())
     }
 
-    /// Open one shared filesystem browser per terminal, or bring the existing one forward.
+    /// Open one shared filesystem browser per terminal, or bring the existing
+    /// one forward.
     #[allow(clippy::too_many_arguments)]
     pub fn open_file_window(
         &self,

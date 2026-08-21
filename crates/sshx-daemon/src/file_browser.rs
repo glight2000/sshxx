@@ -270,7 +270,10 @@ async fn execute_remote(
     profile: &SshProfile,
 ) -> Result<FileOperationResponse> {
     if SshAuthMethod::try_from(profile.auth_method).ok() == Some(SshAuthMethod::SshAuthPassword) {
-        bail!("remote file browsing cannot reuse an interactive SSH password; use an SSH key or agent profile");
+        bail!(
+            "remote file browsing cannot reuse an interactive SSH password; use an SSH key or \
+             agent profile"
+        );
     }
     let (program, mut args) = ssh_command(profile)?;
     let host = args.pop().context("SSH destination is missing")?;
