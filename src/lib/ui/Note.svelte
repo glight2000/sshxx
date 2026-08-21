@@ -588,6 +588,9 @@
           on:keydown={(event) => handleParagraphKey(event, index)}></textarea>
       </div>
     {/each}
+    <div class="paragraph-hint" aria-hidden="true">
+      Drag a handle · Ctrl/Cmd+Enter adds a paragraph
+    </div>
     {#if paragraphDropIndex === paragraphs.length}<div
         class="paragraph-drop-end"
         aria-hidden="true"
@@ -596,9 +599,6 @@
       </div>{/if}
   </div>
   <footer class="note-relations">
-    <span class="relation-hint"
-      >Drag a handle · Ctrl/Cmd+Enter adds a paragraph</span
-    >
     <CanvasRelations
       items={linkedItems}
       allowAdd
@@ -670,6 +670,10 @@
   .paragraph-row + .paragraph-row {
     @apply mt-1.5;
   }
+  .paragraph-hint {
+    @apply pointer-events-none mx-3 mt-2 select-none text-[10px] text-zinc-300/35;
+    user-select: none;
+  }
   .paragraph-row:hover .paragraph-marker,
   .paragraph-marker.active {
     @apply opacity-100;
@@ -711,10 +715,7 @@
     @apply absolute -left-1 -top-[3px] h-2 w-2 rounded-full bg-sky-200;
   }
   .note-relations {
-    @apply flex h-9 shrink-0 items-center justify-between gap-2 rounded-b-lg border-t border-white/10 bg-black/15 px-2;
-  }
-  .relation-hint {
-    @apply min-w-0 truncate text-[10px] text-zinc-300/35;
+    @apply flex h-9 shrink-0 items-center justify-end gap-2 rounded-b-lg border-t border-white/10 bg-black/15 px-2;
   }
   @keyframes linked-note-pulse {
     0%,

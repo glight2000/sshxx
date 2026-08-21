@@ -94,6 +94,47 @@ repository.
 The server coordinates encrypted terminal data but does not own the shell
 process. The daemon continues running terminals when all viewers disconnect.
 
+## State, synchronization, and security boundaries
+
+sshxx keeps shared workspace state separate from each viewer's local UI state.
+The following table is the compatibility contract for feature development:
+
+| Data                                                                                 | Persistence owner                                                                | Synchronization scope                                                                          |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Pages, canvas windows, layout/appearance, notes/links, and file-browser/editor state | Daemon `.sshx-workspace`                                                         | Same session, with a page ID on every canvas mutation                                          |
+| Shell/SSH processes                                                                  | Daemon memory                                                                    | Terminal stream/input is shared; processes survive viewer disconnects, not daemon restarts     |
+| Reusable SSH profiles                                                                | Daemon `.sshx-connections`, authenticated-encrypted with `.sshx-connections.key` | Profile metadata is visible in the session; only writers can modify it                         |
+| Actual files and directories                                                         | Daemon or SSH target filesystem                                                  | Operations use the daemon OS account or SSH account; the related browser state is shared       |
+| Active page and per-page pan/zoom                                                    | Browser `localStorage`, scoped by server/session                                 | Local to one browser profile; never synchronized                                               |
+| User settings                                                                        | Browser `localStorage`                                                           | Local to one browser profile; never daemon-persisted                                           |
+| Focus, full-screen, menus, drag/link selection, undo/redo                            | Browser memory                                                                   | Local and temporary                                                                            |
+| Users, cursors, focus presence, note editing ownership                               | Server memory                                                                    | Transient within the session; not daemon-persisted                                             |
+| Pasted images                                                                        | Daemon `cache/uploads/`                                                          | Completed files are local plaintext with owner-only permissions and startup expiry cleanup     |
+| Session continuity snapshot                                                          | Server memory and optional Redis                                                 | Short-lived failover data (20-second sync, 5-minute expiry), not a durable workspace or backup |
+
+Page switching is intentionally local. Shared mutations always retain their page
+identity, preventing an action on page A from being applied to page B. Global
+search runs locally over the received all-page snapshot; its query and
+navigation are not synchronized.
+
+Viewer/server traffic should use HTTPS/WSS outside localhost or a trusted,
+isolated LAN. The URL fragment contains bearer session/write secrets: it is not
+sent as part of an HTTP request, but can still be exposed through browser
+history, screenshots, extensions, or accidental sharing. Terminal streams,
+filesystem request/response bodies, image chunks, and active editor contents are
+session-key encrypted through the server. Coordination metadata—including
+page/layout state, note text, display names, titles, filesystem paths, and SSH
+profile host/user/key-path fields—is server-visible and may appear in optional
+Redis snapshots.
+
+A write-capable participant is trusted to use the daemon or SSH account's
+terminal and filesystem permissions; sshxx is not a filesystem sandbox. The
+server enforces write access and page/object validation, but write URLs should
+only be shared with users who may exercise those account privileges. The full
+data-visibility matrix, communication links, Redis lifetime, local filenames,
+and rules for future stateful features are documented in
+[`Architecture-and-State.md`](docs/wiki/Architecture-and-State.md).
+
 ## Development
 
 The repository follows its lockfiles and is intended to use the runtimes managed
