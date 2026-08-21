@@ -49,6 +49,7 @@ impl SshxService for GrpcServer {
         if origin.is_empty() {
             return Err(Status::invalid_argument("origin is empty"));
         }
+        let fixed_session = self.0.session_name().is_some();
         let name = self
             .0
             .session_name()
@@ -56,37 +57,38 @@ impl SshxService for GrpcServer {
             .unwrap_or_else(|| rand_alphanumeric(10));
         info!(%name, "creating new session");
 
-        match self.0.lookup(&name) {
-            Some(_) => return Err(Status::already_exists("generated duplicate ID")),
-            None => {
-                let metadata = Metadata {
-                    encrypted_zeros: request.encrypted_zeros,
-                    name: request.name,
-                    write_password_hash: request.write_password_hash,
-                    daemon_version: request.daemon_version,
-                };
-                let session = Arc::new(Session::new(metadata));
-                if let Some(profiles) = request.ssh_profiles {
-                    if let Err(err) = session.restore_ssh_profiles(profiles) {
-                        warn!(?err, "ignoring invalid SSH connection profiles");
-                    }
-                }
-                let restored_shells = match request.workspace {
-                    Some(workspace) => session
-                        .restore_workspace(workspace)
-                        .map_err(|err| Status::invalid_argument(err.to_string()))?,
-                    None => Vec::new(),
-                };
-                for shell in restored_shells {
-                    session
-                        .update_tx()
-                        .send(ServerMessage::CreateShell(shell))
-                        .await
-                        .map_err(|err| Status::internal(err.to_string()))?;
-                }
-                self.0.insert(&name, session);
+        if self.0.lookup(&name).is_some() {
+            if !fixed_session {
+                return Err(Status::already_exists("generated duplicate ID"));
             }
+            info!(%name, "replacing fixed session for a reconnecting daemon");
+        }
+        let metadata = Metadata {
+            encrypted_zeros: request.encrypted_zeros,
+            name: request.name,
+            write_password_hash: request.write_password_hash,
+            daemon_version: request.daemon_version,
         };
+        let session = Arc::new(Session::new(metadata));
+        if let Some(profiles) = request.ssh_profiles {
+            if let Err(err) = session.restore_ssh_profiles(profiles) {
+                warn!(?err, "ignoring invalid SSH connection profiles");
+            }
+        }
+        let restored_shells = match request.workspace {
+            Some(workspace) => session
+                .restore_workspace(workspace)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?,
+            None => Vec::new(),
+        };
+        for shell in restored_shells {
+            session
+                .update_tx()
+                .send(ServerMessage::CreateShell(shell))
+                .await
+                .map_err(|err| Status::internal(err.to_string()))?;
+        }
+        self.0.insert(&name, session);
         let token = self.0.mac().chain_update(&name).finalize();
         let url = format!("{origin}/s/{name}");
         Ok(Response::new(OpenResponse {

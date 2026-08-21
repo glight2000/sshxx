@@ -15,8 +15,9 @@ render the same canvas.
 
 ## Important limitations
 
-- Restarting the daemon restores workspace metadata but recreates shell
-  processes; it does not resume the original processes.
+- Restarting the daemon reconnects to terminals owned by the independent local
+  terminal host. Restarting the terminal host or operating system still ends
+  those processes; application-specific recovery remains manual.
 - Plain HTTP/WebSocket is intended only for trusted local networks. Use a TLS
   reverse proxy and appropriate access controls on untrusted networks.
 - Image paste currently targets local daemon terminals. Remote SSH image

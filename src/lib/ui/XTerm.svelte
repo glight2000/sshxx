@@ -122,6 +122,7 @@
   let attention = false;
   let imageDragging = false;
   let suppressAttention = 0;
+  let suppressInput = 0;
   let workingDirectory = ".";
   $: displayTitle = title || currentTitle;
 
@@ -284,9 +285,17 @@
     }
 
     writeInProgress = true;
-    if (next.replay) suppressAttention += 1;
+    if (next.replay) {
+      suppressAttention += 1;
+      suppressInput += 1;
+      typeahead.beginInputSuppression();
+    }
     const complete = () => {
-      if (next.replay) suppressAttention -= 1;
+      if (next.replay) {
+        suppressAttention -= 1;
+        suppressInput -= 1;
+        typeahead.endInputSuppression();
+      }
       writeInProgress = false;
       flushPendingWrites();
     };
@@ -467,9 +476,11 @@
 
     const utf8 = new TextEncoder();
     term.onData((data: string) => {
+      if (suppressInput > 0) return;
       dispatch("data", utf8.encode(data));
     });
     term.onBinary((data: string) => {
+      if (suppressInput > 0) return;
       dispatch("data", Buffer.from(data, "binary"));
     });
   });
@@ -709,7 +720,7 @@
   </div>
   <div
     role="presentation"
-    class="terminal-host inline-block w-full py-2 pl-4 pr-0 transition-opacity duration-500"
+    class="terminal-host inline-block w-full pb-0 pl-1 pr-1 pt-1 transition-opacity duration-500"
     bind:this={termEl}
     style:opacity={loaded ? 1.0 : 0.0}
   ></div>
@@ -816,7 +827,7 @@
   }
 
   .term-container.linked-highlight {
-    outline: 2px solid rgb(228 228 231 / 82%);
+    outline: 2px solid rgb(228 228 231 / 50%);
     outline-offset: 1px;
     animation: linked-terminal-pulse 1.8s ease-in-out infinite;
   }
@@ -838,10 +849,12 @@
   @keyframes linked-terminal-pulse {
     0%,
     100% {
-      box-shadow: 0 0 4px rgb(228 228 231 / 16%);
+      box-shadow: 0 0 2px rgb(228 228 231 / 6%);
     }
     50% {
-      box-shadow: 0 0 10px rgb(228 228 231 / 42%);
+      box-shadow:
+        0 0 10px rgb(228 228 231 / 55%),
+        0 0 18px rgb(228 228 231 / 34%);
     }
   }
 

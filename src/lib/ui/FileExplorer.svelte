@@ -1,37 +1,45 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
-  import {
-    Edit2Icon,
-    FilePlusIcon,
-    FileIcon,
-    FolderIcon,
-    FolderPlusIcon,
-    MoveIcon,
-    RefreshCwIcon,
-    SaveIcon,
-    SettingsIcon,
-    TerminalIcon,
-    Trash2Icon,
-    UploadCloudIcon,
-  } from "svelte-feather-icons";
+  import { FolderIcon } from "svelte-feather-icons";
 
   import type {
     FileOperationRequest,
     FileOperationResponse,
     FileTreeEntry,
   } from "$lib/protocol";
+  import {
+    type FilePreviewKind,
+    ancestorPaths,
+    childPath,
+    encodeBase64,
+    filesystemRoot,
+    isPathInside,
+    mimeType,
+    normalizedPath,
+    parentPath,
+    pathDepth,
+    pathName,
+    pathSeparator,
+    previewType,
+    safeUploadPath,
+    samePath,
+    trimTrailingSeparators,
+  } from "$lib/filesystem";
   import { makeToast } from "$lib/toast";
   import CanvasRelations, {
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";
-  import CodeEditor, {
-    type TextInsertPosition,
-    type TextInsertResult,
+  import type {
+    TextInsertPosition,
+    TextInsertResult,
   } from "./CodeEditor.svelte";
-  import CircleButton from "./CircleButton.svelte";
-  import CircleButtons from "./CircleButtons.svelte";
   import FileEntryDialog from "./FileEntryDialog.svelte";
+  import FileContextMenu from "./FileContextMenu.svelte";
+  import FileDirectoryGrid from "./FileDirectoryGrid.svelte";
+  import FileExplorerActions from "./FileExplorerActions.svelte";
+  import FileExplorerHeader from "./FileExplorerHeader.svelte";
   import FileMoveDialog from "./FileMoveDialog.svelte";
+  import FilePreview from "./FilePreview.svelte";
   import FileTree, { type FileNode } from "./FileTree.svelte";
   import FileUploadDialog, { type UploadItem } from "./FileUploadDialog.svelte";
 
@@ -89,9 +97,6 @@
   }>();
   let sectionElement: HTMLElement;
   let pathInput: HTMLInputElement;
-  let settingsButton: HTMLButtonElement;
-  let settingsPanel: HTMLDivElement;
-  let contextMenuElement: HTMLDivElement;
   let loading = false;
   let error = "";
   let root: FileNode | null = null;
@@ -102,6 +107,7 @@
   let originalContent = "";
   let encoding: "utf8" | "base64" | null = null;
   let previewUrl = "";
+  let previewKind: FilePreviewKind;
   let handledDirectoryPath = "";
   let handledEditorPath = "";
   let editorSyncTimer: number | undefined;
@@ -123,10 +129,8 @@
   let entryDestination = "";
   let renameTarget: FileTreeEntry | null = null;
   let moveTarget: FileTreeEntry | null = null;
-  let settingsOpen = false;
   let contextMenu: {
     entry: FileTreeEntry;
-    source: "tree" | "grid" | "background";
     x: number;
     y: number;
   } | null = null;
@@ -216,24 +220,6 @@
     cancelTextDropPreview = cancelOpenEditorDropPreview;
     void loadRoot();
   });
-
-  function closeSettingsOnOutsideClick(event: MouseEvent) {
-    if (!(event.target instanceof Node)) return;
-    if (
-      settingsOpen &&
-      !settingsButton?.contains(event.target) &&
-      !settingsPanel?.contains(event.target)
-    ) {
-      settingsOpen = false;
-    }
-    if (contextMenu && !contextMenuElement?.contains(event.target)) {
-      contextMenu = null;
-    }
-  }
-
-  function handleWindowKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") contextMenu = null;
-  }
 
   // Both synchronizers write the locally mirrored prop after resolving a
   // daemon path. Their handled-path guards make the reactive feedback finite.
@@ -467,68 +453,6 @@
     };
   }
 
-  function pathSeparator(path: string) {
-    return path.includes("\\") ? "\\" : "/";
-  }
-
-  function trimTrailingSeparators(path: string) {
-    if (path === "/" || /^[A-Za-z]:[\\/]$/.test(path)) return path;
-    return path.replace(/[\\/]+$/, "");
-  }
-
-  function normalizedPath(path: string) {
-    const normalized = trimTrailingSeparators(path).replace(/\\/g, "/");
-    return /^[A-Za-z]:\//.test(normalized)
-      ? normalized.toLowerCase()
-      : normalized;
-  }
-
-  function samePath(left: string, right: string) {
-    return normalizedPath(left) === normalizedPath(right);
-  }
-
-  function filesystemRoot(path: string) {
-    const extendedDrive = path.match(/^\\\\\?\\([A-Za-z]:)\\/);
-    if (extendedDrive) return `\\\\?\\${extendedDrive[1]}\\`;
-    const drive = path.match(/^([A-Za-z]:)[\\/]/);
-    if (drive) return `${drive[1]}${pathSeparator(path)}`;
-    const unc = path.match(/^(\\\\[^\\]+\\[^\\]+)[\\]?/);
-    if (unc) return `${unc[1]}\\`;
-    return "/";
-  }
-
-  function ancestorPaths(rootPath: string, targetPath: string) {
-    const separator = pathSeparator(targetPath);
-    const remainder = targetPath
-      .slice(rootPath.length)
-      .split(/[\\/]+/)
-      .filter(Boolean);
-    const paths = [rootPath];
-    let cursor = rootPath;
-    for (const part of remainder) {
-      cursor = `${cursor.replace(/[\\/]+$/, "")}${separator}${part}`;
-      paths.push(cursor);
-    }
-    return paths;
-  }
-
-  function isPathInside(rootPath: string, path: string) {
-    const root = normalizedPath(rootPath);
-    const candidate = normalizedPath(path);
-    return (
-      candidate === root ||
-      candidate.startsWith(root === "/" ? root : `${root}/`)
-    );
-  }
-
-  function pathDepth(path: string) {
-    return normalizedPath(path).split("/").filter(Boolean).length;
-  }
-
-  function pathName(path: string) {
-    return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
-  }
-
   function findNode(node: FileNode, path: string): FileNode | null {
     if (samePath(node.path, path)) return node;
     for (const child of node.children ?? []) {
@@ -742,7 +666,6 @@
     const menuHeight = entry.kind === "directory" ? 390 : 230;
     contextMenu = {
       entry,
-      source,
       x: Math.max(
         8,
         Math.min(
@@ -758,11 +681,6 @@
         ),
       ),
     };
-  }
-
-  function runContextAction(action: () => void) {
-    action();
-    contextMenu = null;
   }
 
   function applySharedEditor(
@@ -823,21 +741,6 @@
     }
   }
 
-  function childPath(directory: string, name: string) {
-    const separator = directory.includes("\\") ? "\\" : "/";
-    return `${directory.replace(/[\\/]+$/, "")}${separator}${name}`;
-  }
-
-  function parentPath(path: string) {
-    const separator = pathSeparator(path);
-    const trimmed = trimTrailingSeparators(path);
-    if (/^[A-Za-z]:$/.test(trimmed)) return `${trimmed}${separator}`;
-    const boundary = trimmed.lastIndexOf(separator);
-    if (boundary === 2 && trimmed[1] === ":") return trimmed.slice(0, 3);
-    if (boundary > 0) return trimmed.slice(0, boundary);
-    return separator;
-  }
-
   function clampSidebarWidth(value: number, windowWidth = width) {
     const fallback = Math.round(windowWidth * 0.32);
     return Math.round(
@@ -881,33 +784,6 @@
     window.removeEventListener("pointermove", resizeSidebar);
     window.removeEventListener("pointerup", finishSidebarResize);
     window.removeEventListener("pointercancel", finishSidebarResize);
-  }
-
-  function encodeBase64(bytes: Uint8Array) {
-    let binary = "";
-    const chunkSize = 32 << 10;
-    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-      binary += String.fromCharCode(
-        ...bytes.subarray(offset, offset + chunkSize),
-      );
-    }
-    return btoa(binary);
-  }
-
-  function safeUploadPath(path: string) {
-    const parts = path.split(/[\\/]+/).filter(Boolean);
-    if (
-      parts.length === 0 ||
-      parts.some(
-        (part) =>
-          part === "." ||
-          part === ".." ||
-          part.length > 255 ||
-          /[\0\u0000-\u001f]/.test(part),
-      )
-    )
-      throw new Error(`Upload path “${path}” is invalid.`);
-    return parts;
   }
 
   async function uploadItems(items: UploadItem[]) {
@@ -1207,53 +1083,7 @@
       entry.kind === "directory" ? entry.path : parentPath(entry.path);
     if (location) dispatch("openTerminal", location);
   }
-
-  function previewType(filename: string) {
-    const extension = filename.split(".").at(-1)?.toLowerCase();
-    if (
-      ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"].includes(
-        extension ?? "",
-      )
-    )
-      return "image";
-    if (["mp3", "wav", "ogg", "flac", "m4a"].includes(extension ?? ""))
-      return "audio";
-    if (["mp4", "webm", "mov"].includes(extension ?? "")) return "video";
-    if (extension === "pdf") return "pdf";
-    return "binary";
-  }
-
-  function mimeType(filename: string) {
-    const extension = filename.split(".").at(-1)?.toLowerCase();
-    return (
-      (
-        {
-          png: "image/png",
-          jpg: "image/jpeg",
-          jpeg: "image/jpeg",
-          gif: "image/gif",
-          webp: "image/webp",
-          svg: "image/svg+xml",
-          ico: "image/x-icon",
-          mp3: "audio/mpeg",
-          wav: "audio/wav",
-          ogg: "audio/ogg",
-          flac: "audio/flac",
-          m4a: "audio/mp4",
-          mp4: "video/mp4",
-          webm: "video/webm",
-          mov: "video/quicktime",
-          pdf: "application/pdf",
-        } as Record<string, string>
-      )[extension ?? ""] ?? "application/octet-stream"
-    );
-  }
 </script>
-
-<svelte:window
-  on:mousedown|capture={closeSettingsOnOutsideClick}
-  on:keydown={handleWindowKeydown}
-/>
 
 <section
   bind:this={sectionElement}
@@ -1282,74 +1112,19 @@
     if (!event.ctrlKey) event.stopPropagation();
   }}
 >
-  <header
-    role="presentation"
-    class="relative flex h-9 shrink-0 cursor-move select-none items-center border-b border-zinc-800"
-    class:cursor-default={fullscreen}
-    on:mousedown={(event) => {
-      if (event.button === 0 && !fullscreen) dispatch("startMove", event);
+  <FileExplorerHeader
+    {title}
+    {fullscreen}
+    {hasWriteAccess}
+    on:close={() => dispatch("close")}
+    on:toggleFullscreen={() => dispatch("toggleFullscreen")}
+    on:startMove={(event) => dispatch("startMove", event.detail)}
+    on:reload={loadRoot}
+    on:resetSplit={() => {
+      sidebarWidthValue = clampSidebarWidth(Math.round(width * 0.32));
+      updateSharedState({ sidebarWidth: sidebarWidthValue });
     }}
-  >
-    <div class="flex h-full flex-1 items-center px-3">
-      <CircleButtons>
-        <CircleButton
-          kind="red"
-          disabled={!hasWriteAccess}
-          ariaLabel="Close file explorer"
-          on:mousedown={(event) => event.button === 0 && dispatch("close")}
-        />
-        <CircleButton
-          kind="purple"
-          active={fullscreen}
-          ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
-          on:mousedown={(event) =>
-            event.button === 0 && dispatch("toggleFullscreen")}
-        />
-      </CircleButtons>
-    </div>
-    <div
-      class="flex h-full w-0 flex-grow-[4] items-center justify-center overflow-hidden whitespace-nowrap px-2 text-center text-sm font-medium text-zinc-300"
-    >
-      <span class="truncate">{title} · Files</span>
-    </div>
-    <div
-      class="relative flex h-full flex-1 items-center justify-end gap-0.5 pr-2"
-    >
-      <button
-        class="header-button"
-        title="Reload filesystem"
-        aria-label="Reload filesystem"
-        on:mousedown|stopPropagation
-        on:click={loadRoot}><RefreshCwIcon /></button
-      >
-      <button
-        bind:this={settingsButton}
-        class="header-button"
-        title="File explorer settings"
-        aria-label="File explorer settings"
-        on:mousedown|stopPropagation
-        on:click={() => (settingsOpen = !settingsOpen)}><SettingsIcon /></button
-      >
-      {#if settingsOpen}
-        <div
-          bind:this={settingsPanel}
-          role="presentation"
-          class="panel absolute right-2 top-8 z-30 w-52 p-1.5 text-left text-sm"
-          on:mousedown|stopPropagation
-        >
-          <button
-            type="button"
-            class="settings-row"
-            on:click={() => {
-              sidebarWidthValue = clampSidebarWidth(Math.round(width * 0.32));
-              updateSharedState({ sidebarWidth: sidebarWidthValue });
-              settingsOpen = false;
-            }}>Reset split layout</button
-          >
-        </div>
-      {/if}
-    </div>
-  </header>
+  />
   <div
     class="grid min-h-0 flex-1"
     style:grid-template-columns={`${sidebarWidthValue}px 5px minmax(0, 1fr)`}
@@ -1428,197 +1203,66 @@
       class="relative flex min-h-0 min-w-0 flex-col bg-[#111113]"
       data-canvas-file-editor
     >
-      <div
-        class="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800 px-3"
-      >
-        <span class="min-w-0 flex-1 truncate text-xs text-zinc-400"
-          >{actionTarget?.path ?? currentPath}</span
-        >
-        {#if actionTarget?.kind === "directory"}
-          <span class="text-[11px] text-zinc-600"
-            >{samePath(actionTarget.path, currentPath)
-              ? `${directoryEntries.length} items`
-              : "Folder selected"}</span
-          >
-          <button
-            class="content-action"
-            disabled={!hasWriteAccess || mutationBusy}
-            title="Upload files or folders here"
-            aria-label="Upload files or folders here"
-            on:click={() => beginUpload(actionTarget!)}
-            ><UploadCloudIcon /></button
-          >
-          <button
-            class="content-action"
-            disabled={!hasWriteAccess || mutationBusy}
-            title="Create folder here"
-            aria-label="Create folder here"
-            on:click={() => beginCreate("directory", actionTarget!.path)}
-            ><FolderPlusIcon /></button
-          >
-          <button
-            class="content-action"
-            disabled={!hasWriteAccess || mutationBusy}
-            title="Create file here"
-            aria-label="Create file here"
-            on:click={() => beginCreate("file", actionTarget!.path)}
-            ><FilePlusIcon /></button
-          >
-          <button
-            class="content-action"
-            title="Open terminal here"
-            aria-label="Open terminal here"
-            on:click={() => openTerminalAtEntry(actionTarget!)}
-            ><TerminalIcon /></button
-          >
-          <button
-            class="content-action danger"
-            disabled={!hasWriteAccess ||
-              mutationBusy ||
-              !canMutateEntry(actionTarget!)}
-            title="Delete folder"
-            aria-label="Delete folder"
-            on:click={() => void deleteEntry(actionTarget!)}
-            ><Trash2Icon /></button
-          >
-        {:else if actionTarget}
-          <button
-            class="content-action"
-            title="Open or edit file"
-            aria-label="Open or edit file"
-            on:click={() => openGridEntry(actionTarget!)}><Edit2Icon /></button
-          >
-          <button
-            class="content-action"
-            title="Open terminal in containing folder"
-            aria-label="Open terminal in containing folder"
-            on:click={() => openTerminalAtEntry(actionTarget!)}
-            ><TerminalIcon /></button
-          >
-          <button
-            class="content-action danger"
-            disabled={!hasWriteAccess || mutationBusy}
-            title="Delete file"
-            aria-label="Delete file"
-            on:click={() => void deleteEntry(actionTarget!)}
-            ><Trash2Icon /></button
-          >
-        {/if}
-        {#if dirty}
-          <span class="text-xs text-amber-300">Unsaved</span>
-          <button
-            class="save-button"
-            disabled={!hasWriteAccess || loading}
-            on:click={save}><SaveIcon />Save</button
-          >
-        {/if}
-      </div>
+      <FileExplorerActions
+        target={actionTarget}
+        {currentPath}
+        directoryCount={directoryEntries.length}
+        {dirty}
+        {loading}
+        {mutationBusy}
+        {hasWriteAccess}
+        canMutate={actionTarget ? canMutateEntry(actionTarget) : false}
+        on:upload={(event) => beginUpload(event.detail)}
+        on:create={(event) =>
+          beginCreate(event.detail.kind, event.detail.directory)}
+        on:openTerminal={(event) => openTerminalAtEntry(event.detail)}
+        on:delete={(event) => void deleteEntry(event.detail)}
+        on:openFile={(event) => openGridEntry(event.detail)}
+        on:save={save}
+      />
       <div
         class="relative min-h-0 flex-1 overflow-auto"
         on:wheel={(event) => {
           if (!event.ctrlKey) event.stopPropagation();
         }}
       >
-        {#if selected?.kind === "directory"}
-          <div
-            class="directory-list"
-            aria-label={`Contents of ${selected.path}`}
-            role="presentation"
-            on:mousedown={(event) => {
-              if (event.target !== event.currentTarget || event.button !== 0)
-                return;
-              selectedPath = "";
-              selectedKind = "";
-              updateSharedState({ selectedPath, selectedKind });
-            }}
-            on:contextmenu={(event) =>
-              event.target === event.currentTarget &&
-              openEntryContextMenu(currentDirectory, "background", event)}
-          >
-            {#if directoryEntries.length}
-              {#each directoryEntries as entry (entry.path)}
-                <button
-                  type="button"
-                  class="directory-entry"
-                  class:selected={selectedKind === entry.kind &&
-                    samePath(selectedPath, entry.path)}
-                  title={entry.path}
-                  on:click={() => selectGridEntry(entry)}
-                  on:dblclick={() => openGridEntry(entry)}
-                  on:contextmenu={(event) =>
-                    openEntryContextMenu(entry, "grid", event)}
-                >
-                  {#if entry.kind === "directory"}
-                    <FolderIcon class="text-amber-300/90" />
-                  {:else}
-                    <FileIcon class="text-zinc-400" />
-                  {/if}
-                  <span class="directory-entry-name">{entry.name}</span>
-                </button>
-              {/each}
-            {:else if !loading}
-              <div class="empty-directory">Empty</div>
-            {/if}
-          </div>
-        {:else if selected && encoding === "utf8"}
-          {#key selected.path}
-            <CodeEditor
-              value={content}
-              filename={selected.name}
-              readOnly={!hasWriteAccess}
-              onChange={updateEditor}
-              bind:insertText={editorInsertText}
-              bind:previewTextDrop={editorPreviewTextDrop}
-              bind:cancelTextDropPreview={editorCancelTextDropPreview}
+        <FilePreview
+          {selected}
+          {encoding}
+          {content}
+          {previewUrl}
+          {previewKind}
+          readOnly={!hasWriteAccess}
+          {loading}
+          paragraphDropBlocked={paragraphDropState === "blocked"}
+          onChange={updateEditor}
+          bind:insertText={editorInsertText}
+          bind:previewTextDrop={editorPreviewTextDrop}
+          bind:cancelTextDropPreview={editorCancelTextDropPreview}
+        >
+          <svelte:fragment slot="directory">
+            <FileDirectoryGrid
+              directory={selected ?? currentDirectory}
+              entries={directoryEntries}
+              {selectedPath}
+              {selectedKind}
+              {loading}
+              on:clearSelection={() => {
+                selectedPath = "";
+                selectedKind = "";
+                updateSharedState({ selectedPath, selectedKind });
+              }}
+              on:select={(event) => selectGridEntry(event.detail)}
+              on:open={(event) => openGridEntry(event.detail)}
+              on:context={(event) =>
+                openEntryContextMenu(
+                  event.detail.entry,
+                  event.detail.source,
+                  event.detail.event,
+                )}
             />
-          {/key}
-        {:else if previewUrl && previewKind === "image"}
-          <div class="flex min-h-full items-center justify-center p-6">
-            <img
-              class="max-h-full max-w-full object-contain"
-              src={previewUrl}
-              alt={selected?.name}
-            />
-          </div>
-        {:else if previewUrl && previewKind === "audio"}
-          <div class="flex min-h-full items-center justify-center p-6">
-            <audio controls src={previewUrl}></audio>
-          </div>
-        {:else if previewUrl && previewKind === "video"}
-          <!-- svelte-ignore a11y_media_has_caption -->
-          <div class="flex min-h-full items-center justify-center p-6">
-            <video class="max-h-full max-w-full" controls src={previewUrl}
-            ></video>
-          </div>
-        {:else if previewUrl && previewKind === "pdf"}
-          <iframe
-            class="h-full w-full border-0"
-            src={previewUrl}
-            title={selected?.name}
-          ></iframe>
-        {:else if selected && encoding === "base64"}
-          <div
-            class="flex h-full items-center justify-center p-8 text-center text-sm text-zinc-500"
-          >
-            Binary preview is not available for this file type.
-          </div>
-        {:else}
-          <div
-            class="flex h-full items-center justify-center p-8 text-center text-sm text-zinc-600"
-          >
-            Select a folder on the left, then double-click an item to open it.
-          </div>
-        {/if}
-        {#if loading}<div
-            class="absolute inset-0 flex items-center justify-center bg-zinc-950/65 text-sm text-zinc-300 backdrop-blur-[1px]"
-          >
-            Loading…
-          </div>{/if}
-        {#if paragraphDropState === "blocked"}<div
-            class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center border-2 border-dashed border-amber-300/65 bg-amber-950/35 p-8 text-center text-sm font-medium text-amber-100 backdrop-blur-[1px]"
-          >
-            Open an editable text file before dropping this paragraph.
-          </div>{/if}
+          </svelte:fragment>
+        </FilePreview>
       </div>
       {#if error}<div
           class="shrink-0 border-t border-red-900/60 bg-red-950/50 px-3 py-2 text-xs text-red-300"
@@ -1637,108 +1281,24 @@
       />
     </div>{/if}
   {#if contextMenu}
-    <div
-      bind:this={contextMenuElement}
-      class="context-menu"
-      role="menu"
-      tabindex="-1"
-      aria-label={`Actions for ${contextMenu.entry.name}`}
-      style:left={`${contextMenu.x}px`}
-      style:top={`${contextMenu.y}px`}
-      on:mousedown|stopPropagation
-      on:contextmenu|preventDefault|stopPropagation
-    >
-      <div class="context-title" title={contextMenu.entry.path}>
-        {contextMenu.entry.name}
-      </div>
-      {#if contextMenu.entry.kind === "directory"}
-        <button
-          class="context-action"
-          role="menuitem"
-          on:click={() =>
-            runContextAction(() => void selectDirectory(contextMenu!.entry))}
-          ><FolderIcon />Open folder</button
-        >
-        <button
-          class="context-action"
-          role="menuitem"
-          on:click={() =>
-            runContextAction(() => openTerminalAtEntry(contextMenu!.entry))}
-          ><TerminalIcon />Open terminal here</button
-        >
-        <div class="context-divider"></div>
-        <button
-          class="context-action"
-          role="menuitem"
-          disabled={!hasWriteAccess || mutationBusy}
-          on:click={() =>
-            runContextAction(() => beginUpload(contextMenu!.entry))}
-          ><UploadCloudIcon />Upload here</button
-        >
-        <button
-          class="context-action"
-          role="menuitem"
-          disabled={!hasWriteAccess || mutationBusy}
-          on:click={() =>
-            runContextAction(() =>
-              beginCreate("directory", contextMenu!.entry.path),
-            )}><FolderPlusIcon />New folder</button
-        >
-        <button
-          class="context-action"
-          role="menuitem"
-          disabled={!hasWriteAccess || mutationBusy}
-          on:click={() =>
-            runContextAction(() =>
-              beginCreate("file", contextMenu!.entry.path),
-            )}><FilePlusIcon />New file</button
-        >
-      {:else}
-        <button
-          class="context-action"
-          role="menuitem"
-          on:click={() =>
-            runContextAction(() => openGridEntry(contextMenu!.entry))}
-          ><Edit2Icon />Open / edit</button
-        >
-        <button
-          class="context-action"
-          role="menuitem"
-          on:click={() =>
-            runContextAction(() => openTerminalAtEntry(contextMenu!.entry))}
-          ><TerminalIcon />Open terminal here</button
-        >
-      {/if}
-      <div class="context-divider"></div>
-      <button
-        class="context-action"
-        role="menuitem"
-        disabled={!hasWriteAccess ||
-          mutationBusy ||
-          !canMutateEntry(contextMenu.entry)}
-        on:click={() => runContextAction(() => beginRename(contextMenu!.entry))}
-        ><Edit2Icon />Rename</button
-      >
-      <button
-        class="context-action"
-        role="menuitem"
-        disabled={!hasWriteAccess ||
-          mutationBusy ||
-          !canMutateEntry(contextMenu.entry)}
-        on:click={() => runContextAction(() => beginMove(contextMenu!.entry))}
-        ><MoveIcon />Move</button
-      >
-      <button
-        class="context-action danger"
-        role="menuitem"
-        disabled={!hasWriteAccess ||
-          mutationBusy ||
-          !canMutateEntry(contextMenu.entry)}
-        on:click={() =>
-          runContextAction(() => void deleteEntry(contextMenu!.entry))}
-        ><Trash2Icon />Delete</button
-      >
-    </div>
+    <FileContextMenu
+      entry={contextMenu.entry}
+      x={contextMenu.x}
+      y={contextMenu.y}
+      {hasWriteAccess}
+      {mutationBusy}
+      canMutate={canMutateEntry(contextMenu.entry)}
+      on:close={() => (contextMenu = null)}
+      on:openDirectory={(event) => void selectDirectory(event.detail)}
+      on:openFile={(event) => openGridEntry(event.detail)}
+      on:openTerminal={(event) => openTerminalAtEntry(event.detail)}
+      on:upload={(event) => beginUpload(event.detail)}
+      on:create={(event) =>
+        beginCreate(event.detail.kind, event.detail.directory)}
+      on:rename={(event) => beginRename(event.detail)}
+      on:move={(event) => beginMove(event.detail)}
+      on:delete={(event) => void deleteEntry(event.detail)}
+    />
   {/if}
 </section>
 
@@ -1784,15 +1344,6 @@
 
 <style lang="postcss">
   @reference "../../app.css";
-  .header-button {
-    @apply inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35;
-  }
-  .header-button :global(svg) {
-    @apply h-4 w-4;
-  }
-  .settings-row {
-    @apply block w-full rounded px-2 py-1.5 text-left text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white;
-  }
   .path-input {
     @apply h-7 w-full rounded border border-indigo-500/40 bg-zinc-950/85 px-2 font-mono text-xs text-indigo-100 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/25;
   }
@@ -1808,61 +1359,6 @@
   }
   .sidebar-divider.active {
     @apply bg-indigo-400;
-  }
-  .save-button {
-    @apply inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-2.5 py-1 text-xs text-white hover:bg-indigo-500 disabled:opacity-40;
-  }
-  .save-button :global(svg) {
-    @apply h-3.5 w-3.5;
-  }
-  .content-action {
-    @apply inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-35;
-  }
-  .content-action :global(svg) {
-    @apply h-3.5 w-3.5;
-  }
-  .content-action.danger:hover:not(:disabled) {
-    @apply bg-red-950/70 text-red-300;
-  }
-  .directory-list {
-    @apply relative grid min-h-full auto-rows-min grid-cols-[repeat(auto-fill,minmax(96px,112px))] content-start gap-2 p-3;
-  }
-  .directory-entry {
-    @apply flex h-24 w-full flex-col items-center justify-center gap-2 rounded-lg border border-transparent px-2 py-2 text-sm text-zinc-300 outline-none hover:border-zinc-700/70 hover:bg-zinc-800/80 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70;
-  }
-  .directory-entry.selected {
-    @apply bg-indigo-500/20 text-indigo-100 ring-1 ring-inset ring-indigo-400/45;
-  }
-  .directory-entry :global(svg) {
-    @apply h-9 w-9 shrink-0;
-    stroke-width: 1.5;
-  }
-  .directory-entry-name {
-    @apply max-h-8 w-full overflow-hidden break-all text-center text-xs leading-4;
-  }
-  .empty-directory {
-    @apply pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-zinc-600;
-  }
-  .context-menu {
-    @apply absolute z-50 w-[210px] rounded-lg border border-zinc-700 bg-zinc-900/98 p-1.5 text-left shadow-xl shadow-black/60 backdrop-blur-md;
-  }
-  .context-title {
-    @apply truncate px-2 py-1.5 text-[11px] font-medium text-zinc-500;
-  }
-  .context-action {
-    @apply flex h-8 w-full items-center gap-2 rounded-md px-2 text-xs text-zinc-300 outline-none hover:bg-zinc-700 hover:text-white focus-visible:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-35;
-  }
-  .context-action :global(svg) {
-    @apply h-3.5 w-3.5 shrink-0;
-  }
-  .context-action.danger:not(:disabled) {
-    @apply text-red-300;
-  }
-  .context-action.danger:hover:not(:disabled) {
-    @apply bg-red-950/70;
-  }
-  .context-divider {
-    @apply my-1 border-t border-zinc-700/80;
   }
   .file-window.fullscreen {
     display: flex;

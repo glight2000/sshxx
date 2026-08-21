@@ -12,6 +12,10 @@ import type {
   ITerminalAddon,
   Terminal,
 } from "@xterm/xterm";
+import {
+  currentTypeAheadAttributes,
+  supportsTypeAheadAttributes,
+} from "$lib/xtermCompatibility";
 
 ///// BEGIN PORTS FROM PACKAGES vs/base/* /////
 
@@ -149,15 +153,6 @@ const enum StatsConstants {
  */
 const PREDICTION_OMIT_RE = /^(\x1b\[(\??25[hl]|\??[0-9;]+n))+/;
 
-/**
- * Read xterm's current SGR attributes for local-echo rollback.
- *
- * xterm does not expose this state through its public addon API. Keep the
- * private API dependency isolated here so upgrades have one compatibility
- * boundary to audit.
- */
-const currentAttributes = (terminal: Terminal): IBufferCell =>
-  (terminal as any)._core._inputHandler.getAttrData() as IBufferCell;
 const flushOutput = (terminal: Terminal) => {
   // TODO: Flushing output is not possible anymore without async
   void terminal;
@@ -612,7 +607,7 @@ class BackspacePrediction implements IPrediction {
       oldAttributes +
       oldChar +
       cursor.moveTo(pos) +
-      attributesToSeq(currentAttributes(this._terminal))
+      attributesToSeq(currentTypeAheadAttributes(this._terminal))
     );
   }
 
@@ -1053,7 +1048,9 @@ export class PredictionTimeline {
           if (rollback.some((r) => r.p.affectsStyle)) {
             // reading the current style should generally be safe, since predictions
             // always restore the style if they modify it.
-            output += attributesToSeq(currentAttributes(this.terminal));
+            output += attributesToSeq(
+              currentTypeAheadAttributes(this.terminal),
+            );
           }
           this._clearPredictionState();
           this._failedEmitter.fire(prediction);
@@ -1381,7 +1378,9 @@ class TypeAheadStyle implements IDisposable {
    */
   startTracking() {
     this._expectedIncomingStyles = 0;
-    this._onDidWriteSGR(attributesToArgs(currentAttributes(this._terminal)));
+    this._onDidWriteSGR(
+      attributesToArgs(currentTypeAheadAttributes(this._terminal)),
+    );
     this._csiHandler = this._terminal.parser.registerCsiHandler(
       { final: "m" },
       (args) => {
@@ -1564,6 +1563,7 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
   };
   protected _timeline?: PredictionTimeline;
   private _terminalTitle = "";
+  private _inputSuppressionDepth = 0;
   stats?: PredictionStats;
 
   /**
@@ -1584,6 +1584,12 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
   }
 
   activate(terminal: Terminal): void {
+    if (!supportsTypeAheadAttributes(terminal)) {
+      console.warn(
+        "TypeAhead is disabled because this xterm version does not expose the required SGR attribute capability.",
+      );
+      return;
+    }
     const style = (this._typeaheadStyle = this._register(
       new TypeAheadStyle(
         "dim", // ITerminalConfiguration.localEchoStyle
@@ -1656,6 +1662,16 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
 
   reset() {
     this._lastRow = undefined;
+  }
+
+  /** Ignore terminal-generated responses while retained output is replayed. */
+  beginInputSuppression() {
+    this._inputSuppressionDepth += 1;
+  }
+
+  /** Resume prediction after the matching retained-output write completes. */
+  endInputSuppression() {
+    this._inputSuppressionDepth = Math.max(0, this._inputSuppressionDepth - 1);
   }
 
   private _deferClearingPredictions() {
@@ -1746,6 +1762,7 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
   }
 
   private _onUserData(data: string): void {
+    if (this._inputSuppressionDepth > 0) return;
     if (this._timeline?.terminal.buffer.active.type !== "normal") {
       return;
     }

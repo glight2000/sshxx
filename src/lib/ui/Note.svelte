@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher, tick } from "svelte";
   import {
+    CopyIcon,
     Maximize2Icon,
     Minimize2Icon,
     Edit3Icon,
@@ -14,6 +15,20 @@
     XIcon,
   } from "svelte-feather-icons";
   import type { WsNote } from "$lib/protocol";
+  import { makeToast } from "$lib/toast";
+  import {
+    deleteParagraphs,
+    PARAGRAPH_CLIPBOARD_TYPE,
+    paragraphPlainText,
+    reorderParagraphs,
+    selectedParagraphs,
+    serializeParagraphs,
+  } from "$lib/paragraphs";
+  import {
+    copyParagraphs,
+    readParagraphClipboard,
+    writeParagraphClipboard,
+  } from "$lib/paragraphClipboard";
   import CanvasRelations, {
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";
@@ -29,6 +44,7 @@
   export let linkedItems: CanvasRelationItem[] = [];
   export let linkSelecting = false;
   export let linkedHighlight = false;
+  export let linkedHighlightSource: "terminal" | "note" | "file" | null = null;
   export let paragraphDropIndex: number | null = null;
 
   const dispatch = createEventDispatcher<{
@@ -45,22 +61,47 @@
     navigateRelation: CanvasRelationItem;
     unlinkRelation: CanvasRelationItem;
     sendParagraph: {
+      paragraphs: string[];
       text: string;
       target: "all" | "notes" | "terminals" | "terminals-execute" | "files";
     };
-    paragraphDragStart: { text: string; sourceNoteId: number };
+    paragraphDragStart: {
+      paragraphs: string[];
+      text: string;
+      sourceNoteId: number;
+      paragraphIndexes: number[];
+    };
     paragraphDragEnd: void;
     toggleFullscreen: void;
   }>();
 
   let root: HTMLElement;
   let editing = false;
+  let activeParagraphIndex: number | null = null;
   let focused = false;
   let settingsOpen = false;
   let settingsButton: HTMLButtonElement;
   let settingsPanel: HTMLDivElement;
   let paragraphMenu: number | null = null;
+  let paragraphMenuAnchor: HTMLButtonElement | null = null;
+  let paragraphMenuPanel: HTMLDivElement | null = null;
+  let paragraphMenuLeft = 0;
+  let paragraphMenuTop = 0;
+  let paragraphMenuPositioned = false;
   let paragraphs = noteParagraphs(note);
+  let selectedParagraphIndexes: number[] = [];
+  let selectionAnchor: number | null = null;
+  let rangeSelection: {
+    anchor: number;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null = null;
+  let suppressParagraphClick = false;
+  let draggingParagraphIndexes: number[] = [];
+  let movedParagraphIndexes: number[] = [];
+  let movedParagraphTimer: number | null = null;
+  let editorViewport: HTMLElement;
   const editors: Record<number, HTMLTextAreaElement> = {};
   type HistoryEntry = {
     paragraphs: string[];
@@ -94,6 +135,9 @@
   }
   function applyExternalParagraphs(next: string[]) {
     paragraphs = next;
+    activeParagraphIndex = null;
+    selectedParagraphIndexes = [];
+    selectionAnchor = null;
     undoStack.length = 0;
     redoStack.length = 0;
     resetHistoryGroup();
@@ -132,11 +176,12 @@
   async function restoreHistory(entry: HistoryEntry) {
     paragraphs = [...entry.paragraphs];
     emitText();
-    await tick();
     const index = Math.min(
       Math.max(0, entry.paragraphIndex),
       paragraphs.length - 1,
     );
+    activeParagraphIndex = index;
+    await tick();
     const editor = editors[index];
     if (!editor) return;
     const length = paragraphs[index].length;
@@ -179,24 +224,276 @@
   }
   async function beginEditing(index: number, event: MouseEvent) {
     event.stopPropagation();
+    if (suppressParagraphClick) {
+      event.preventDefault();
+      suppressParagraphClick = false;
+      return;
+    }
     if (!(await ensureEditing())) return;
     dispatch("bringToFront");
+    activeParagraphIndex = index;
+    selectedParagraphIndexes = [index];
+    selectionAnchor = index;
+    window.getSelection()?.removeAllRanges();
     editors[index]?.focus({ preventScroll: true });
+  }
+
+  function portal(node: HTMLElement) {
+    document.body.append(node);
+    return {
+      destroy() {
+        node.remove();
+      },
+    };
+  }
+  function closeParagraphMenu(restoreFocus = false) {
+    const anchor = paragraphMenuAnchor;
+    paragraphMenu = null;
+    paragraphMenuAnchor = null;
+    paragraphMenuPanel = null;
+    paragraphMenuPositioned = false;
+    if (restoreFocus)
+      requestAnimationFrame(() => anchor?.focus({ preventScroll: true }));
+  }
+  function positionParagraphMenu() {
+    if (
+      paragraphMenu === null ||
+      !paragraphMenuAnchor?.isConnected ||
+      !paragraphMenuPanel?.isConnected
+    )
+      return;
+    const anchor = paragraphMenuAnchor.getBoundingClientRect();
+    const menu = paragraphMenuPanel.getBoundingClientRect();
+    const edge = 8;
+    const gap = 6;
+    paragraphMenuLeft = Math.min(
+      Math.max(edge, anchor.left),
+      Math.max(edge, window.innerWidth - menu.width - edge),
+    );
+    paragraphMenuTop =
+      anchor.bottom + gap + menu.height <= window.innerHeight - edge
+        ? anchor.bottom + gap
+        : Math.max(edge, anchor.top - menu.height - gap);
+    paragraphMenuPositioned = true;
+  }
+  async function selectParagraph(index: number, event: MouseEvent) {
+    finishEditing(false);
+    if (event.shiftKey && selectionAnchor !== null) {
+      const start = Math.min(selectionAnchor, index);
+      const end = Math.max(selectionAnchor, index);
+      selectedParagraphIndexes = Array.from(
+        { length: end - start + 1 },
+        (_, offset) => start + offset,
+      );
+      closeParagraphMenu();
+    } else if (event.ctrlKey || event.metaKey) {
+      selectedParagraphIndexes = selectedParagraphIndexes.includes(index)
+        ? selectedParagraphIndexes.filter((value) => value !== index)
+        : [...selectedParagraphIndexes, index].sort(
+            (left, right) => left - right,
+          );
+      selectionAnchor = index;
+      closeParagraphMenu();
+    } else {
+      const preserveSelection =
+        selectedParagraphIndexes.length > 1 &&
+        selectedParagraphIndexes.includes(index);
+      if (!preserveSelection) selectedParagraphIndexes = [index];
+      selectionAnchor = index;
+      if (paragraphMenu === index) {
+        closeParagraphMenu();
+        return;
+      }
+      paragraphMenu = index;
+      paragraphMenuAnchor = event.currentTarget as HTMLButtonElement;
+      paragraphMenuPositioned = false;
+      await tick();
+      positionParagraphMenu();
+    }
+  }
+
+  function prepareParagraphDrag(index: number, event: MouseEvent) {
+    if (event.button !== 0) return;
+    finishEditing(false);
+    if (
+      !selectedParagraphIndexes.includes(index) &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey
+    ) {
+      selectedParagraphIndexes = [index];
+      selectionAnchor = index;
+    }
   }
   function finishEditing(blurActiveElement = true) {
     if (!editing) return;
     editing = false;
-    paragraphMenu = null;
+    activeParagraphIndex = null;
+    closeParagraphMenu();
     resetHistoryGroup();
     dispatch("editing", false);
     if (blurActiveElement)
       (document.activeElement as HTMLElement | null)?.blur?.();
+  }
+
+  function acquireStructuralEdit() {
+    if (!hasWriteAccess || (editingBy !== null && editingBy !== userId)) {
+      makeToast({
+        kind: "info",
+        message:
+          editingBy !== null && editingBy !== userId
+            ? `${editingName || `User ${editingBy}`} is editing this note.`
+            : "You cannot modify this note in read-only mode.",
+      });
+      return null;
+    }
+    const temporary = !editing;
+    if (temporary) {
+      // Component events are synchronous, so the ownership message is queued
+      // before the paragraph update and the release message.
+      dispatch("editing", true);
+    }
+    return () => {
+      if (temporary) dispatch("editing", false);
+    };
+  }
+
+  function startRangeSelection(index: number, event: MouseEvent) {
+    if (event.button !== 0) return;
+    if (
+      editing &&
+      activeParagraphIndex === index &&
+      event.target === editors[index]
+    )
+      return;
+    event.preventDefault();
+    finishEditing(false);
+    closeParagraphMenu();
+    rangeSelection = {
+      anchor: index,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+  }
+
+  function paragraphIndexAt(clientY: number) {
+    const rows = Array.from(
+      editorViewport.querySelectorAll<HTMLElement>(
+        "[data-note-paragraph-index]",
+      ),
+    );
+    if (!rows.length) return 0;
+    for (const row of rows) {
+      const bounds = row.getBoundingClientRect();
+      if (clientY < bounds.bottom)
+        return Number(row.dataset.noteParagraphIndex);
+    }
+    return rows.length - 1;
+  }
+
+  function updateRangeSelection(event: MouseEvent) {
+    if (!rangeSelection) return;
+    if ((event.buttons & 1) === 0) {
+      finishRangeSelection();
+      return;
+    }
+    if (
+      !rangeSelection.active &&
+      Math.hypot(
+        event.clientX - rangeSelection.startX,
+        event.clientY - rangeSelection.startY,
+      ) < 5
+    )
+      return;
+    event.preventDefault();
+    rangeSelection.active = true;
+    window.getSelection()?.removeAllRanges();
+    const bounds = editorViewport.getBoundingClientRect();
+    if (event.clientY < bounds.top + 24) editorViewport.scrollTop -= 12;
+    else if (event.clientY > bounds.bottom - 24) editorViewport.scrollTop += 12;
+    const current = paragraphIndexAt(event.clientY);
+    const start = Math.min(rangeSelection.anchor, current);
+    const end = Math.max(rangeSelection.anchor, current);
+    selectedParagraphIndexes = Array.from(
+      { length: end - start + 1 },
+      (_, offset) => start + offset,
+    );
+    selectionAnchor = rangeSelection.anchor;
+  }
+
+  function finishRangeSelection(event?: MouseEvent) {
+    if (!rangeSelection) return;
+    if (rangeSelection.active) {
+      event?.preventDefault();
+      suppressParagraphClick = true;
+      window.setTimeout(() => (suppressParagraphClick = false), 0);
+      root.focus({ preventScroll: true });
+    }
+    rangeSelection = null;
   }
   async function handleParagraphBlur() {
     await tick();
     const active = document.activeElement;
     if (active instanceof HTMLTextAreaElement && root.contains(active)) return;
     if (root.contains(active)) finishEditing(false);
+  }
+  function caretOffsetTop(editor: HTMLTextAreaElement) {
+    const style = getComputedStyle(editor);
+    const mirror = document.createElement("div");
+    Object.assign(mirror.style, {
+      position: "fixed",
+      left: "-10000px",
+      top: "0",
+      visibility: "hidden",
+      boxSizing: "border-box",
+      width: `${editor.clientWidth}px`,
+      whiteSpace: "pre-wrap",
+      overflowWrap: "break-word",
+      wordBreak: style.wordBreak,
+      font: style.font,
+      letterSpacing: style.letterSpacing,
+      lineHeight: style.lineHeight,
+      padding: style.padding,
+      border: "0",
+    });
+    mirror.textContent = editor.value.slice(0, editor.selectionStart);
+    const marker = document.createElement("span");
+    marker.textContent = "\u200b";
+    mirror.append(marker);
+    document.body.append(mirror);
+    const top = marker.offsetTop;
+    mirror.remove();
+    return top;
+  }
+  function revealCaret(editor: HTMLTextAreaElement) {
+    if (!editorViewport) return;
+    const viewportBounds = editorViewport.getBoundingClientRect();
+    const editorBounds = editor.getBoundingClientRect();
+    const lineHeight =
+      Number.parseFloat(getComputedStyle(editor).lineHeight) || 24;
+    const caretTop = editorBounds.top + caretOffsetTop(editor);
+    const margin = 10;
+    if (caretTop + lineHeight > viewportBounds.bottom - margin) {
+      editorViewport.scrollTop +=
+        caretTop + lineHeight - viewportBounds.bottom + margin;
+    } else if (caretTop < viewportBounds.top + margin) {
+      editorViewport.scrollTop -= viewportBounds.top + margin - caretTop;
+    }
+  }
+  async function focusParagraph(
+    index: number,
+    selectionStart: number,
+    selectionEnd = selectionStart,
+  ) {
+    await tick();
+    const editor = editors[index];
+    if (!editor) return;
+    activeParagraphIndex = index;
+    resizeEditor(editor);
+    editor.focus({ preventScroll: true });
+    editor.setSelectionRange(selectionStart, selectionEnd);
+    revealCaret(editor);
   }
   async function handleParagraphKey(event: KeyboardEvent, index: number) {
     const editor = event.currentTarget as HTMLTextAreaElement;
@@ -224,9 +521,24 @@
       const current = paragraphs[index];
       paragraphs.splice(index, 1, current.slice(0, start), current.slice(end));
       emitText();
-      await tick();
-      editors[index + 1]?.focus({ preventScroll: true });
-      editors[index + 1]?.setSelectionRange(0, 0);
+      selectedParagraphIndexes = [index + 1];
+      selectionAnchor = index + 1;
+      await focusParagraph(index + 1, 0);
+    } else if (
+      event.key === "Backspace" &&
+      paragraphs[index] === "" &&
+      editor.selectionStart === editor.selectionEnd &&
+      paragraphs.length > 1
+    ) {
+      event.preventDefault();
+      recordHistory(index, editor);
+      paragraphs.splice(index, 1);
+      emitText();
+      const target = index > 0 ? index - 1 : 0;
+      const caret = index > 0 ? paragraphs[target].length : 0;
+      selectedParagraphIndexes = [target];
+      selectionAnchor = target;
+      await focusParagraph(target, caret);
     } else if (
       event.key === "Backspace" &&
       editor.selectionStart === 0 &&
@@ -242,32 +554,181 @@
         paragraphs[index - 1] + paragraphs[index],
       );
       emitText();
-      await tick();
-      editors[index - 1]?.focus({ preventScroll: true });
-      editors[index - 1]?.setSelectionRange(caret, caret);
+      selectedParagraphIndexes = [index - 1];
+      selectionAnchor = index - 1;
+      await focusParagraph(index - 1, caret);
+    } else if (
+      event.key === "Delete" &&
+      editor.selectionStart === editor.selectionEnd &&
+      editor.selectionStart === paragraphs[index].length &&
+      index < paragraphs.length - 1
+    ) {
+      event.preventDefault();
+      recordHistory(index, editor);
+      const caret = editor.selectionStart;
+      paragraphs.splice(index, 2, paragraphs[index] + paragraphs[index + 1]);
+      emitText();
+      selectedParagraphIndexes = [index];
+      selectionAnchor = index;
+      await focusParagraph(index, caret);
+    } else if (event.key === "Enter") {
+      requestAnimationFrame(() => {
+        resizeEditor(editor);
+        revealCaret(editor);
+      });
     }
   }
   async function insertParagraph(index: number) {
     if (!(await ensureEditing())) return;
     recordHistory(index, editors[index]);
     paragraphs.splice(index + 1, 0, "");
-    paragraphMenu = null;
+    closeParagraphMenu();
     emitText();
-    await tick();
-    editors[index + 1]?.focus({ preventScroll: true });
-    editors[index + 1]?.setSelectionRange(0, 0);
+    selectedParagraphIndexes = [index + 1];
+    selectionAnchor = index + 1;
+    await focusParagraph(index + 1, 0);
   }
   async function deleteParagraph(index: number) {
     if (!(await ensureEditing())) return;
     recordHistory(index, editors[index]);
-    paragraphs.splice(index, 1);
-    if (!paragraphs.length) paragraphs = [""];
-    paragraphMenu = null;
+    const removed = selectedParagraphIndexes.includes(index)
+      ? selectedParagraphIndexes
+      : [index];
+    const result = deleteParagraphs(paragraphs, removed);
+    paragraphs = result.paragraphs;
+    closeParagraphMenu();
     emitText();
-    await tick();
-    editors[Math.min(index, paragraphs.length - 1)]?.focus({
-      preventScroll: true,
-    });
+    const target = result.selectedIndex;
+    selectedParagraphIndexes = [target];
+    selectionAnchor = target;
+    await focusParagraph(target, 0);
+  }
+
+  function paragraphSelection(index: number) {
+    const indexes = selectedParagraphIndexes.includes(index)
+      ? selectedParagraphIndexes
+      : [index];
+    return selectedParagraphs(paragraphs, indexes);
+  }
+
+  function paragraphTransfer(index: number) {
+    const values = paragraphSelection(index);
+    return { paragraphs: values, text: paragraphPlainText(values) };
+  }
+
+  async function copyParagraphSelection(index: number) {
+    const values = paragraphSelection(index);
+    closeParagraphMenu();
+    try {
+      await copyParagraphs(values);
+    } catch (cause) {
+      makeToast({
+        kind: "error",
+        message:
+          cause instanceof Error ? cause.message : "Could not copy paragraphs.",
+      });
+    }
+  }
+
+  function handleCopy(event: ClipboardEvent) {
+    if (!event.clipboardData || !selectedParagraphIndexes.length) return;
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLTextAreaElement &&
+      active === editors[activeParagraphIndex ?? -1]
+    )
+      return;
+    event.preventDefault();
+    writeParagraphClipboard(
+      event.clipboardData,
+      selectedParagraphs(paragraphs, selectedParagraphIndexes),
+    );
+  }
+
+  async function pasteStructuredParagraphs(
+    values: string[],
+    editor: HTMLTextAreaElement | null,
+  ) {
+    const release = acquireStructuralEdit();
+    if (!release) return;
+    dispatch("bringToFront");
+    try {
+      if (
+        editor &&
+        editing &&
+        activeParagraphIndex !== null &&
+        editor === editors[activeParagraphIndex]
+      ) {
+        const index = activeParagraphIndex;
+        const before = paragraphs[index].slice(0, editor.selectionStart);
+        const after = paragraphs[index].slice(editor.selectionEnd);
+        const inserted = [...values];
+        inserted[0] = before + inserted[0];
+        const last = inserted.length - 1;
+        const caret = inserted[last].length;
+        inserted[last] += after;
+        const next = [...paragraphs];
+        next.splice(index, 1, ...inserted);
+        if (next.length > 500 || paragraphPlainText(next).length > 10_000) {
+          makeToast({
+            kind: "error",
+            message: "The note is too large to paste.",
+          });
+          return;
+        }
+        recordHistory(index, editor);
+        paragraphs = next;
+        emitText();
+        selectedParagraphIndexes = inserted.map((_, offset) => index + offset);
+        selectionAnchor = index;
+        await focusParagraph(index + last, caret);
+        return;
+      }
+
+      const anchor = selectedParagraphIndexes.length
+        ? Math.max(...selectedParagraphIndexes) + 1
+        : paragraphs.length;
+      const next = [...paragraphs];
+      next.splice(anchor, 0, ...values);
+      if (next.length > 500 || paragraphPlainText(next).length > 10_000) {
+        makeToast({
+          kind: "error",
+          message: "The note is too large to paste.",
+        });
+        return;
+      }
+      recordHistory(Math.max(0, anchor - 1), editors[anchor - 1]);
+      paragraphs = next;
+      emitText();
+      selectedParagraphIndexes = values.map((_, offset) => anchor + offset);
+      selectionAnchor = anchor;
+    } finally {
+      release();
+    }
+  }
+
+  function handlePaste(event: ClipboardEvent) {
+    if (!event.clipboardData) return;
+    const values = readParagraphClipboard(event.clipboardData);
+    if (!values) return;
+    event.preventDefault();
+    const active = document.activeElement;
+    void pasteStructuredParagraphs(
+      values,
+      active instanceof HTMLTextAreaElement ? active : null,
+    );
+  }
+
+  function handleSelectStart(event: Event) {
+    const target = event.target;
+    if (
+      target instanceof HTMLTextAreaElement &&
+      editing &&
+      activeParagraphIndex !== null &&
+      target === editors[activeParagraphIndex]
+    )
+      return;
+    event.preventDefault();
   }
   function handleParagraphBeforeInput(event: Event, index: number) {
     const editor = event.currentTarget as HTMLTextAreaElement;
@@ -286,19 +747,40 @@
     paragraphs[index] = editor.value;
     resizeEditor(editor);
     emitText();
+    if ((event as InputEvent).inputType === "insertLineBreak") {
+      void tick().then(() => {
+        resizeEditor(editor);
+        revealCaret(editor);
+      });
+    }
   }
   function handleWindowMouseDown(event: MouseEvent) {
     if (!(event.target instanceof Node)) return;
+    const insideParagraphMenu =
+      paragraphMenuPanel?.contains(event.target) ?? false;
+    const onParagraphMenuAnchor =
+      paragraphMenuAnchor?.contains(event.target) ?? false;
     if (
       settingsOpen &&
       !settingsButton.contains(event.target) &&
       !settingsPanel?.contains(event.target)
     )
       settingsOpen = false;
-    if (root && !root.contains(event.target)) {
-      paragraphMenu = null;
+    if (
+      paragraphMenu !== null &&
+      !insideParagraphMenu &&
+      !onParagraphMenuAnchor
+    )
+      closeParagraphMenu();
+    if (root && !root.contains(event.target) && !insideParagraphMenu) {
       finishEditing();
     }
+  }
+  function handleWindowKeyDown(event: KeyboardEvent) {
+    if (event.key !== "Escape" || paragraphMenu === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeParagraphMenu(true);
   }
   function resizeEditor(editor: HTMLTextAreaElement) {
     editor.style.height = "0";
@@ -315,17 +797,31 @@
       },
     };
   }
-  function startParagraphDrag(event: DragEvent, text: string) {
-    if (!hasWriteAccess || !text || !event.dataTransfer) {
+  function startParagraphDrag(event: DragEvent, index: number) {
+    if (!hasWriteAccess || !event.dataTransfer) {
       event.preventDefault();
       return;
     }
-    paragraphMenu = null;
-    event.dataTransfer.effectAllowed = "copy";
+    const indexes = selectedParagraphIndexes.includes(index)
+      ? [...selectedParagraphIndexes].sort((left, right) => left - right)
+      : [index];
+    selectedParagraphIndexes = indexes;
+    selectionAnchor = index;
+    draggingParagraphIndexes = indexes;
+    const values = selectedParagraphs(paragraphs, indexes);
+    const text = paragraphPlainText(values);
+    closeParagraphMenu();
+    event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData("text/plain", text);
-    event.dataTransfer.setData("application/x-sshxx-note-paragraph", text);
+    event.dataTransfer.setData(
+      PARAGRAPH_CLIPBOARD_TYPE,
+      serializeParagraphs(values),
+    );
     const preview = document.createElement("div");
-    preview.textContent = text.replace(/\s+/g, " ").trim() || "Empty paragraph";
+    preview.textContent =
+      indexes.length > 1
+        ? `${indexes.length} paragraphs · ${text.replace(/\s+/g, " ").trim()}`
+        : text.replace(/\s+/g, " ").trim() || "Empty paragraph";
     Object.assign(preview.style, {
       position: "fixed",
       left: "-10000px",
@@ -347,7 +843,64 @@
     document.body.append(preview);
     event.dataTransfer.setDragImage(preview, 18, 18);
     requestAnimationFrame(() => preview.remove());
-    dispatch("paragraphDragStart", { text, sourceNoteId: noteId });
+    dispatch("paragraphDragStart", {
+      paragraphs: values,
+      text,
+      sourceNoteId: noteId,
+      paragraphIndexes: indexes,
+    });
+  }
+  function finishParagraphDrag() {
+    draggingParagraphIndexes = [];
+    dispatch("paragraphDragEnd");
+  }
+  function internalParagraphDropIndex(clientY: number) {
+    const rows = Array.from(
+      editorViewport.querySelectorAll<HTMLElement>(
+        "[data-note-paragraph-index]",
+      ),
+    );
+    for (const row of rows) {
+      const bounds = row.getBoundingClientRect();
+      if (clientY < bounds.top + bounds.height / 2) {
+        return Number(row.dataset.noteParagraphIndex);
+      }
+    }
+    return rows.length;
+  }
+  function handleInternalParagraphDrop(event: DragEvent) {
+    if (!draggingParagraphIndexes.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const release = acquireStructuralEdit();
+    if (!release) {
+      finishParagraphDrag();
+      return;
+    }
+    const targetIndex = internalParagraphDropIndex(event.clientY);
+    const indexes = [...draggingParagraphIndexes].sort(
+      (left, right) => left - right,
+    );
+    const reordered = reorderParagraphs(paragraphs, indexes, targetIndex);
+    try {
+      if (!sameParagraphs(reordered.paragraphs, paragraphs)) {
+        recordHistory(indexes[0], editors[indexes[0]]);
+        paragraphs = reordered.paragraphs;
+        emitText();
+        selectedParagraphIndexes = reordered.selectedIndexes;
+        selectionAnchor = selectedParagraphIndexes[0] ?? null;
+        movedParagraphIndexes = [...selectedParagraphIndexes];
+        if (movedParagraphTimer !== null)
+          window.clearTimeout(movedParagraphTimer);
+        movedParagraphTimer = window.setTimeout(() => {
+          movedParagraphIndexes = [];
+          movedParagraphTimer = null;
+        }, 220);
+      }
+    } finally {
+      release();
+      finishParagraphDrag();
+    }
   }
   function handleFocusIn() {
     focused = true;
@@ -356,15 +909,45 @@
   function handleFocusOut(event: FocusEvent) {
     if (
       event.relatedTarget instanceof Node &&
-      root.contains(event.relatedTarget)
+      (root.contains(event.relatedTarget) ||
+        paragraphMenuPanel?.contains(event.relatedTarget))
     )
       return;
     focused = false;
     dispatch("blur");
   }
+
+  function handleNoteKeyDown(event: KeyboardEvent) {
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLTextAreaElement &&
+      editing &&
+      activeParagraphIndex !== null &&
+      active === editors[activeParagraphIndex]
+    )
+      return;
+    const commandModifier = (event.ctrlKey || event.metaKey) && !event.altKey;
+    if (commandModifier && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      selectedParagraphIndexes = paragraphs.map((_, index) => index);
+      selectionAnchor = 0;
+    } else if (
+      (event.key === "Delete" || event.key === "Backspace") &&
+      selectedParagraphIndexes.length
+    ) {
+      event.preventDefault();
+      void deleteParagraph(selectedParagraphIndexes[0]);
+    }
+  }
 </script>
 
-<svelte:window on:mousedown|capture={handleWindowMouseDown} />
+<svelte:window
+  on:mousedown|capture={handleWindowMouseDown}
+  on:mousemove={updateRangeSelection}
+  on:mouseup={finishRangeSelection}
+  on:keydown|capture={handleWindowKeyDown}
+  on:resize={positionParagraphMenu}
+/>
 
 <article
   bind:this={root}
@@ -377,6 +960,8 @@
   class:focused
   class:editing-active={focused && editing}
   class:linked-highlight={linkedHighlight}
+  class:linked-from-terminal={linkedHighlight &&
+    linkedHighlightSource === "terminal"}
   style:width={fullscreen ? "100%" : `${note.width}px`}
   style:height={fullscreen ? "100%" : `${note.height}px`}
   style:background={note.background}
@@ -387,6 +972,10 @@
   on:focusin={handleFocusIn}
   on:focusout={handleFocusOut}
   on:pointerdown={(event) => event.stopPropagation()}
+  on:copy={handleCopy}
+  on:paste={handlePaste}
+  on:selectstart={handleSelectStart}
+  on:keydown={handleNoteKeyDown}
   on:wheel={(event) => {
     if (!event.ctrlKey) event.stopPropagation();
   }}
@@ -425,7 +1014,11 @@
       >
       {#if focused}<span
           class="block max-w-40 truncate text-[10px] text-zinc-300/65"
-          >{editing ? "Editing paragraph" : "Selected"}</span
+          >{editing
+            ? "Editing paragraph"
+            : selectedParagraphIndexes.length > 1
+              ? `${selectedParagraphIndexes.length} paragraphs selected`
+              : "Selected"}</span
         >
       {:else if editingBy !== null && editingBy !== userId}<span
           class="block max-w-36 truncate text-[10px] text-zinc-300/60"
@@ -476,14 +1069,21 @@
   {/if}
 
   <div
+    bind:this={editorViewport}
     role="presentation"
     class="note-editor h-[calc(100%-2.25rem)] overflow-y-auto py-3 pr-3"
     class:editing
+    class:block-selecting={rangeSelection?.active}
     on:mousedown|stopPropagation
+    on:scroll={positionParagraphMenu}
+    on:drop={handleInternalParagraphDrop}
   >
     {#each paragraphs as paragraph, index (index)}
       <div
         class="paragraph-row group relative flex min-h-8 items-start pl-6"
+        class:selected={selectedParagraphIndexes.includes(index)}
+        class:dragging={draggingParagraphIndexes.includes(index)}
+        class:moved={movedParagraphIndexes.includes(index)}
         data-note-paragraph-index={index}
       >
         {#if paragraphDropIndex === index}<div
@@ -494,29 +1094,43 @@
           type="button"
           class="paragraph-marker"
           class:active={paragraphMenu === index}
+          class:selected={selectedParagraphIndexes.includes(index)}
           aria-label={`Paragraph ${index + 1} actions`}
-          title="Paragraph actions · Drag to copy"
-          draggable={hasWriteAccess && Boolean(paragraph)}
+          aria-pressed={selectedParagraphIndexes.includes(index)}
+          title="Select paragraph · Ctrl/Cmd-click to toggle · Shift-click for a range · Drag to move or copy"
+          draggable={hasWriteAccess}
           disabled={!hasWriteAccess}
-          on:mousedown|stopPropagation
-          on:click|stopPropagation={() =>
-            (paragraphMenu = paragraphMenu === index ? null : index)}
+          on:mousedown|stopPropagation={(event) =>
+            prepareParagraphDrag(index, event)}
+          on:click|stopPropagation={(event) => selectParagraph(index, event)}
           on:dragstart|stopPropagation={(event) =>
-            startParagraphDrag(event, paragraph)}
-          on:dragend={() => dispatch("paragraphDragEnd")}
+            startParagraphDrag(event, index)}
+          on:dragend={finishParagraphDrag}
           ><span></span><span></span><span></span><span></span></button
         >
         {#if paragraphMenu === index}
           <div
+            bind:this={paragraphMenuPanel}
             role="presentation"
             class="paragraph-menu"
+            class:positioned={paragraphMenuPositioned}
+            style:left={`${paragraphMenuLeft}px`}
+            style:top={`${paragraphMenuTop}px`}
+            use:portal
             on:mousedown|stopPropagation
           >
             <button
               type="button"
               disabled={editingBy !== null && editingBy !== userId}
               on:click={() => deleteParagraph(index)}
-              ><Trash2Icon />Delete</button
+              ><Trash2Icon />Delete{selectedParagraphIndexes.length > 1
+                ? ` ${selectedParagraphIndexes.length} paragraphs`
+                : ""}</button
+            >
+            <button type="button" on:click={() => copyParagraphSelection(index)}
+              ><CopyIcon />Copy{selectedParagraphIndexes.length > 1
+                ? ` ${selectedParagraphIndexes.length} paragraphs`
+                : ""}</button
             >
             <button
               type="button"
@@ -527,23 +1141,29 @@
             <button
               type="button"
               on:click={() => {
-                paragraphMenu = null;
-                dispatch("sendParagraph", { text: paragraph, target: "all" });
+                closeParagraphMenu();
+                dispatch("sendParagraph", {
+                  ...paragraphTransfer(index),
+                  target: "all",
+                });
               }}><SendIcon />Send to all linked</button
             >
             <button
               type="button"
               on:click={() => {
-                paragraphMenu = null;
-                dispatch("sendParagraph", { text: paragraph, target: "notes" });
+                closeParagraphMenu();
+                dispatch("sendParagraph", {
+                  ...paragraphTransfer(index),
+                  target: "notes",
+                });
               }}><FileTextIcon />Send to linked notes</button
             >
             <button
               type="button"
               on:click={() => {
-                paragraphMenu = null;
+                closeParagraphMenu();
                 dispatch("sendParagraph", {
-                  text: paragraph,
+                  ...paragraphTransfer(index),
                   target: "terminals",
                 });
               }}><TerminalIcon />Send to linked terminals</button
@@ -551,9 +1171,9 @@
             <button
               type="button"
               on:click={() => {
-                paragraphMenu = null;
+                closeParagraphMenu();
                 dispatch("sendParagraph", {
-                  text: paragraph,
+                  ...paragraphTransfer(index),
                   target: "terminals-execute",
                 });
               }}><PlayIcon />Send to terminals &amp; run</button
@@ -561,8 +1181,11 @@
             <button
               type="button"
               on:click={() => {
-                paragraphMenu = null;
-                dispatch("sendParagraph", { text: paragraph, target: "files" });
+                closeParagraphMenu();
+                dispatch("sendParagraph", {
+                  ...paragraphTransfer(index),
+                  target: "files",
+                });
               }}><Edit3Icon />Send to file editors</button
             >
           </div>
@@ -571,7 +1194,7 @@
           bind:this={editors[index]}
           value={paragraph}
           rows="1"
-          readonly={!editing}
+          readonly={!editing || activeParagraphIndex !== index}
           aria-label={`Note paragraph ${index + 1}`}
           placeholder={!editing && paragraphs.length === 1 && !paragraph
             ? editingBy !== null && editingBy !== userId
@@ -579,7 +1202,9 @@
               : "Click to edit this note"
             : ""}
           class="paragraph-input"
+          class:text-editing={editing && activeParagraphIndex === index}
           use:autoResizeParagraph={paragraph}
+          on:mousedown={(event) => startRangeSelection(index, event)}
           on:click={(event) => beginEditing(index, event)}
           on:focus={(event) => resizeEditor(event.currentTarget)}
           on:blur={handleParagraphBlur}
@@ -588,15 +1213,16 @@
           on:keydown={(event) => handleParagraphKey(event, index)}></textarea>
       </div>
     {/each}
-    <div class="paragraph-hint" aria-hidden="true">
-      Drag a handle · Ctrl/Cmd+Enter adds a paragraph
-    </div>
     {#if paragraphDropIndex === paragraphs.length}<div
         class="paragraph-drop-end"
         aria-hidden="true"
       >
         <span></span>
       </div>{/if}
+    <div class="paragraph-hint" aria-hidden="true">
+      Drag across paragraphs to select · Drag a selected handle to move ·
+      Ctrl/Cmd+Enter adds a paragraph
+    </div>
   </div>
   <footer class="note-relations">
     <CanvasRelations
@@ -638,6 +1264,10 @@
     outline-offset: 1px;
     animation: linked-note-pulse 1.8s ease-in-out infinite;
   }
+  .note-container.linked-highlight.linked-from-terminal {
+    outline-color: rgb(129 140 248 / 50%);
+    animation-name: linked-note-from-terminal-pulse;
+  }
   .note-container.fullscreen {
     display: flex;
     flex-direction: column;
@@ -657,15 +1287,31 @@
   }
   .paragraph-input {
     @apply block min-h-7 w-full resize-none overflow-hidden bg-transparent px-2 py-1 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-300/40;
+    user-select: none;
+  }
+  .paragraph-input.text-editing {
+    user-select: text;
   }
   .note-editor.editing .paragraph-input:focus {
     @apply rounded bg-white/[0.035];
+  }
+  .note-editor.block-selecting .paragraph-input {
+    cursor: crosshair;
   }
   .paragraph-marker {
     @apply absolute left-1.5 top-2 grid h-4 w-4 cursor-grab grid-cols-[repeat(2,2px)] grid-rows-[repeat(2,2px)] place-content-center gap-x-[1.5px] gap-y-[3px] rounded text-zinc-300 opacity-35 transition-opacity hover:bg-white/10 hover:text-zinc-100 hover:opacity-100 active:cursor-grabbing disabled:pointer-events-none;
   }
   .paragraph-row {
-    @apply mx-1 rounded-md border border-white/[0.055] bg-black/[0.06] transition-colors hover:border-white/10 hover:bg-white/[0.035];
+    @apply mx-1 rounded-md border border-white/[0.055] bg-black/[0.06] transition-[border-color,background-color,opacity,transform] duration-150 hover:border-white/10 hover:bg-white/[0.035];
+  }
+  .paragraph-row.selected {
+    @apply border-sky-300/30 bg-sky-300/[0.07];
+  }
+  .paragraph-row.dragging {
+    @apply scale-[0.99] opacity-45;
+  }
+  .paragraph-row.moved {
+    animation: paragraph-settle 220ms ease-out;
   }
   .paragraph-row + .paragraph-row {
     @apply mt-1.5;
@@ -681,11 +1327,31 @@
   .paragraph-marker span {
     @apply h-0.5 w-0.5 rounded-full bg-current;
   }
+  .paragraph-marker.selected {
+    @apply bg-sky-300/15 text-sky-100 opacity-100;
+  }
   .paragraph-menu {
-    @apply absolute left-1.5 top-7 z-30 w-60 overflow-hidden rounded-md border border-zinc-700 bg-zinc-900 p-1 shadow-xl;
+    position: fixed;
+    z-index: 1000;
+    visibility: hidden;
+    width: 15rem;
+    overflow: hidden;
+    border: 1px solid rgb(63 63 70);
+    border-radius: 0.375rem;
+    background: rgb(24 24 27 / 98%);
+    padding: 0.25rem;
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 35%);
+  }
+  .paragraph-menu.positioned {
+    visibility: visible;
   }
   .paragraph-menu button {
-    @apply flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white;
+    @apply flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs;
+    color: rgb(212 212 216);
+  }
+  .paragraph-menu button:hover {
+    background: rgb(39 39 42);
+    color: white;
   }
   .paragraph-menu button:disabled {
     @apply cursor-not-allowed opacity-35;
@@ -724,6 +1390,26 @@
     }
     50% {
       box-shadow: 0 0 11px rgb(125 211 252 / 48%);
+    }
+  }
+  @keyframes linked-note-from-terminal-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 2px rgb(129 140 248 / 6%);
+    }
+    50% {
+      box-shadow:
+        0 0 10px rgb(129 140 248 / 55%),
+        0 0 18px rgb(129 140 248 / 34%);
+    }
+  }
+  @keyframes paragraph-settle {
+    from {
+      transform: translateY(5px);
+      background-color: rgb(125 211 252 / 0.14);
+    }
+    to {
+      transform: translateY(0);
     }
   }
 </style>

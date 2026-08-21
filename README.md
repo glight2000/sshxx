@@ -9,8 +9,8 @@
 </p>
 
 Self-hosted persistent terminals on a collaborative, multi-page canvas. Use the
-same workspace from a browser or the Tauri client while `sshxx-daemon` keeps the
-shells alive independently of every viewer.
+same workspace from a browser or the Tauri client while the local terminal host
+keeps shells alive independently of every viewer and daemon restart.
 
 ![sshxx note actions connected to a persistent terminal and file editor](docs/images/sshxx-notes.png)
 
@@ -28,14 +28,14 @@ license, then extends the project for a different set of personal workflows.
 
 ## At a glance
 
-| Area                 | What sshxx provides                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------ |
-| Persistent terminals | Local and OpenSSH shells owned by the daemon, not the browser                              |
-| Shared canvas        | Page-aware terminals, notes, file windows, layout, links, and live presence                |
-| Structured notes     | Multiline paragraphs, linked targets, drag-to-copy, send, and send-and-run actions         |
-| Files beside shells  | Synchronized folder navigation, previews, CodeMirror editing, uploads, and file operations |
-| Viewer choice        | One Svelte interface for the Web and Tauri-based packaged client                           |
-| Local control        | Browser-local page, viewport, full-screen, theme, focus, and undo/redo state               |
+| Area                 | What sshxx provides                                                                          |
+| -------------------- | -------------------------------------------------------------------------------------------- |
+| Persistent terminals | Local and OpenSSH shells owned by an independent local host, not a browser or daemon process |
+| Shared canvas        | Page-aware terminals, notes, file windows, layout, links, and live presence                  |
+| Structured notes     | Multiline paragraphs, block selection/reordering, structured copy, links, and delivery       |
+| Files beside shells  | Synchronized folder navigation, previews, CodeMirror editing, uploads, and file operations   |
+| Viewer choice        | One Svelte interface for the Web and Tauri-based packaged client                             |
+| Local control        | Browser-local page, viewport, full-screen, theme, focus, and undo/redo state                 |
 
 The README intentionally stays at project level. See the
 **[complete Feature Guide](https://github.com/glight2000/sshxx/wiki/Features)**
@@ -44,26 +44,29 @@ for the full capability set and screenshots, or start from the
 
 ## Architecture
 
-| Component      | Source               | Responsibility                                                              |
-| -------------- | -------------------- | --------------------------------------------------------------------------- |
-| `sshxx-daemon` | `crates/sshx-daemon` | Owns shell/SSH processes, filesystem operations, and durable workspace data |
-| `sshxx-server` | `crates/sshx-server` | Authorizes and coordinates encrypted, page-aware sessions                   |
-| `sshxx-client` | `src/`, `src-tauri/` | Renders and controls a session in the browser or packaged app               |
+| Component             | Source                       | Responsibility                                                               |
+| --------------------- | ---------------------------- | ---------------------------------------------------------------------------- |
+| `sshxx-terminal-host` | `crates/sshxx-terminal-host` | Owns PTY/ConPTY handles and shell/SSH processes across daemon restarts       |
+| `sshxx-daemon`        | `crates/sshx-daemon`         | Bridges hosted terminals, performs filesystem operations, and persists state |
+| `sshxx-server`        | `crates/sshx-server`         | Authorizes and coordinates encrypted, page-aware sessions                    |
+| `sshxx-client`        | `src/`, `src-tauri/`         | Renders and controls a session in the browser or packaged app                |
 
-Closing or refreshing a viewer does not end its terminals. Restarting the daemon
-restores workspace metadata but recreates the shell processes; it does not
-resume their prior in-memory state.
+Closing or refreshing a viewer does not end its terminals. Restarting or
+upgrading the daemon reconnects to the same hosted PTYs and processes.
+Restarting `sshxx-terminal-host` remains destructive and is deliberately never
+automatic.
 
 ## State and trust boundaries
 
-| State                                                      | Owner and lifetime                                                       | Scope                                                                      |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| Pages, canvas items, notes/links, file-window/editor state | Daemon `.sshx-workspace`                                                 | Shared within the session; every canvas mutation retains its page ID       |
-| Shell and SSH processes                                    | Daemon memory                                                            | Shared stream/input; survives viewer disconnects, not daemon restarts      |
-| Reusable SSH profiles                                      | Authenticated-encrypted `.sshx-connections` with an owner-only local key | Session-visible metadata; writer-only mutation; passwords are never stored |
-| Active page, per-page pan/zoom, user settings              | Browser `localStorage`                                                   | Local to one browser profile and never synchronized                        |
-| Focus, menus, drag state, full-screen, undo/redo           | Browser memory                                                           | Local and temporary                                                        |
-| Presence and editing ownership                             | Server memory                                                            | Transient within the session                                               |
+| State                                                      | Owner and lifetime                                                       | Scope                                                                                           |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| Pages, canvas items, notes/links, file-window/editor state | Daemon `.sshx-workspace`                                                 | Shared within the session; every canvas mutation retains its page ID                            |
+| Shell and SSH processes                                    | `sshxx-terminal-host` memory                                             | Shared stream/input; survives viewer and daemon restarts, not host/OS restarts                  |
+| Per-terminal shell history                                 | Daemon launch policy and owner-only local history data                   | One history namespace/file per local terminal; nested remote shells follow remote configuration |
+| Reusable SSH profiles                                      | Authenticated-encrypted `.sshx-connections` with an owner-only local key | Session-visible metadata; writer-only mutation; passwords are never stored                      |
+| Active page, per-page pan/zoom, user settings              | Browser `localStorage`                                                   | Local to one browser profile and never synchronized                                             |
+| Focus, menus, drag state, full-screen, undo/redo           | Browser memory                                                           | Local and temporary                                                                             |
+| Presence and editing ownership                             | Server memory                                                            | Transient within the session                                                                    |
 
 Terminal streams, filesystem payloads, image chunks, and active editor content
 are encrypted through the server. Coordination metadata remains visible to the
@@ -100,10 +103,34 @@ directory. Start it from the same directory to restore the same workspace.
 their recovery files are local application data and are intentionally ignored by
 Git.
 
+The daemon normally discovers or starts its sibling host outside a service
+manager. Manual lifecycle commands are:
+
+```shell
+sshxx-daemon terminal-host start
+sshxx-daemon terminal-host status
+sshxx-daemon terminal-host stop
+sshxx-daemon terminal-host restart
+```
+
+`stop` and `restart` reject active terminals unless `--force` explicitly
+acknowledges process loss. Production service managers must run the host in a
+separate unit; restarting the daemon unit must not restart the host unit.
+
+Routine daemon releases leave a compatible running host untouched. A host
+upgrade is deliberately deferred: install the new binary, inspect
+`terminal-host status`, and restart it only after the active-terminal list is
+empty. `restart --force` is destructive and should be reserved for cases where
+losing every hosted shell, nested SSH connection, and foreground application is
+acceptable. Under systemd, check status first and then restart the independent
+`sshxx-terminal-host.service`, followed by `sshxx-daemon.service`. See
+**[Architecture and State](https://github.com/glight2000/sshxx/wiki/Architecture-and-State#terminal-host-lifecycle-and-upgrades)**
+for the complete upgrade contract.
+
 ## Build
 
 ```shell
-cargo build --release -p sshxx-daemon -p sshxx-server
+cargo build --release -p sshxx-daemon -p sshxx-server -p sshxx-terminal-host
 npm run build
 npm run app:build
 ```
@@ -124,6 +151,7 @@ when coordinating multiple server instances.
 - [Keyboard and mouse controls](https://github.com/glight2000/sshxx/wiki/Keyboard-and-Mouse)
 - [Architecture, persistence, synchronization, and security](https://github.com/glight2000/sshxx/wiki/Architecture-and-State)
 - Versioned Wiki sources: [`docs/wiki`](docs/wiki/Home.md)
+- [Documentation ownership and maintenance map](docs/README.md)
 
 <details>
 <summary><strong>Roadmap and known limitations</strong></summary>
@@ -135,15 +163,13 @@ when coordinating multiple server instances.
       backups, and recovery.
 - [ ] Add versioned workspace migrations and end-to-end browser coverage for
       pages, notes, snapping, search, terminal input, and concurrent editing.
-- [ ] Lazy-load the file editor and reduce the initial Web language registry.
-- [ ] Add a capability-checked xterm compatibility adapter around the isolated
-      private SGR access used by TypeAhead.
 - [ ] Design an explicit daemon-to-client process-status protocol before adding
       AI-agent identification or semantic completion notifications.
 
 ### Known limitations
 
-- Daemon restart restores metadata but recreates shell processes.
+- A terminal-host or operating-system restart disconnects hosted processes;
+  application-specific recovery such as Codex resume remains manual.
 - Windows ConPTY cannot currently report a child process working directory, so
   terminal duplication may fall back to the daemon directory.
 - Image paste currently targets local daemon shells; remote SSH forwarding still

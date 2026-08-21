@@ -11,14 +11,17 @@
   import { debounce, throttle } from "lodash-es";
 
   import { Encrypt } from "./encrypt";
+  import {
+    FileRequestClient,
+    randomEncryptedStream,
+    randomHex,
+  } from "./fileRequests";
   import { createLock } from "./lock";
   import { Srocket } from "./srocket";
   import { isNativeApp } from "./runtime";
   import type {
     WsClient,
     FileTreeEntry,
-    FileOperationRequest,
-    FileOperationResponse,
     WsFileWindow,
     WsNote,
     WsPage,
@@ -28,21 +31,16 @@
     WsWinsize,
   } from "./protocol";
   import { makeToast } from "./toast";
-  import Chat, { type ChatMessage } from "./ui/Chat.svelte";
-  import ChooseName from "./ui/ChooseName.svelte";
-  import NetworkInfo from "./ui/NetworkInfo.svelte";
+  import { TerminalHistory } from "./terminalHistory";
+  import { constrainTerminalResize } from "./terminalGeometry";
+  import type { ChatMessage } from "./ui/Chat.svelte";
   import Note from "./ui/Note.svelte";
-  import PagePager from "./ui/PagePager.svelte";
   import ResizeHandles, {
     type ResizeDirection,
   } from "./ui/ResizeHandles.svelte";
-  import Settings from "./ui/Settings.svelte";
-  import Toolbar from "./ui/Toolbar.svelte";
-  import TerminalSearch, {
-    type CanvasSearchItem,
-  } from "./ui/TerminalSearch.svelte";
+  import type { CanvasSearchItem } from "./ui/TerminalSearch.svelte";
+  import SessionChrome from "./ui/SessionChrome.svelte";
   import XTerm from "./ui/XTerm.svelte";
-  import FileExplorer from "./ui/FileExplorer.svelte";
   import type { CanvasRelationItem } from "./ui/CanvasRelations.svelte";
   import type {
     TextInsertPosition,
@@ -65,7 +63,6 @@
     localViewStateKey,
     parseLocalViewState,
   } from "./viewState";
-  import { EyeIcon } from "svelte-feather-icons";
 
   export let id: string;
 
@@ -81,15 +78,19 @@
   const OFFSET_TRANSFORM_ORIGIN_CSS = `calc(-1 * ${OFFSET_LEFT_CSS}) calc(-1 * ${OFFSET_TOP_CSS})`;
 
   // Terminal width and height limits.
-  const TERM_MIN_ROWS = 8;
-  const TERM_MIN_COLS = 32;
   const TERM_INITIAL_ROWS = 26;
   const TERM_INITIAL_COLS = 79;
   const TERM_INITIAL_WIDTH = 715;
   const TERM_INITIAL_HEIGHT = 523;
   const NOTE_INITIAL_WIDTH = 384;
   const NOTE_INITIAL_HEIGHT = 224;
-  const MAX_TERMINAL_HISTORY = 2 * 1024 * 1024;
+  let fileExplorerModulePromise: Promise<
+    typeof import("./ui/FileExplorer.svelte")
+  > | null = null;
+
+  function loadFileExplorer() {
+    return (fileExplorerModulePromise ??= import("./ui/FileExplorer.svelte"));
+  }
   const snapLeadingEdge = (value: number) =>
     $settings.snapToGrid ? gridLeadingEdge(value) : value;
   const snapTrailingEdge = (value: number) =>
@@ -284,6 +285,7 @@
   }
 
   let encrypt: Encrypt;
+  let fileRequests: FileRequestClient | null = null;
   let srocket: Srocket<WsServer, WsClient> | null = null;
 
   let connected = false;
@@ -349,12 +351,7 @@
   const fileWrappers: Record<number, HTMLDivElement> = {};
   const chunknums: Record<number, number> = {};
   const locks: Record<number, any> = {};
-  type TerminalHistoryBuffer = {
-    chunks: string[];
-    start: number;
-    length: number;
-  };
-  const terminalHistory: Record<number, TerminalHistoryBuffer> = {};
+  const terminalHistory = new TerminalHistory(2 * 1024 * 1024);
   const replayedWriters: Record<
     number,
     (data: string, replay?: boolean) => void
@@ -367,14 +364,6 @@
   // Browser-memory-only derived state: neither synchronized nor persisted.
   let terminalTitles: Record<number, string> = {};
   let fullscreenItems: Record<string, boolean> = {};
-  type PendingFileRequest = {
-    stream: bigint;
-    resolve: (response: FileOperationResponse) => void;
-    reject: (error: Error) => void;
-    timer: number;
-  };
-  const pendingFileRequests = new Map<string, PendingFileRequest>();
-
   // Shared workspace state: synchronized by server and persisted by daemon.
   let shells: [number, WsWinsize][] = [];
   let notes: [number, WsNote][] = [];
@@ -406,7 +395,12 @@
     noteInsertIndex?: number;
     fileReady?: boolean;
   };
-  let paragraphDrag: { text: string; sourceNoteId: number } | null = null;
+  let paragraphDrag: {
+    paragraphs: string[];
+    text: string;
+    sourceNoteId: number;
+    paragraphIndexes: number[];
+  } | null = null;
   let paragraphDropTarget: ParagraphDropTarget | null = null;
   $: if (
     linkingNoteId !== null &&
@@ -415,35 +409,11 @@
     linkingNoteId = null;
 
   function appendTerminalHistory(id: number, data: string) {
-    const history = (terminalHistory[id] ??= {
-      chunks: [],
-      start: 0,
-      length: 0,
-    });
-    history.chunks.push(data);
-    history.length += data.length;
-
-    while (history.length > MAX_TERMINAL_HISTORY) {
-      const first = history.chunks[history.start];
-      const overflow = history.length - MAX_TERMINAL_HISTORY;
-      if (overflow >= first.length) {
-        history.length -= first.length;
-        history.start += 1;
-      } else {
-        history.chunks[history.start] = first.slice(overflow);
-        history.length -= overflow;
-      }
-    }
-
-    if (history.start > 256 && history.start * 2 > history.chunks.length) {
-      history.chunks = history.chunks.slice(history.start);
-      history.start = 0;
-    }
+    terminalHistory.append(id, data);
   }
 
   function readTerminalHistory(id: number) {
-    const history = terminalHistory[id];
-    return history ? history.chunks.slice(history.start).join("") : "";
+    return terminalHistory.read(id);
   }
 
   function writeTerminalData(id: number, data: string, replay: boolean) {
@@ -517,6 +487,11 @@
       ? await (await Encrypt.new(writePassword)).zeros()
       : null;
 
+    fileRequests = new FileRequestClient(
+      encrypt,
+      () => Boolean(srocket?.connected),
+      (message) => srocket?.send(message),
+    );
     scheduleReadinessWarning();
     srocket = new Srocket<WsServer, WsClient>(`/api/s/${id}`, {
       onMessage(message) {
@@ -579,6 +554,18 @@
             users = [...users, [id, { ...update, pageId: update.pageId ?? 1 }]];
           }
         } else if (message.shells) {
+          const liveShellIds = new Set(
+            message.shells.map(([shellId]) => shellId),
+          );
+          terminalHistory.retain(liveShellIds);
+          for (const shellId of subscriptions) {
+            if (liveShellIds.has(shellId)) continue;
+            subscriptions.delete(shellId);
+            delete chunknums[shellId];
+            delete locks[shellId];
+            delete replayedWriters[shellId];
+            delete terminalTitles[shellId];
+          }
           shells = message.shells.map(([shellId, winsize]) => [
             shellId,
             {
@@ -699,24 +686,7 @@
           shellLatencies = [...shellLatencies, shellLatency].slice(-10);
         } else if (message.fileResponse) {
           const [requestId, stream, data] = message.fileResponse;
-          const pending = pendingFileRequests.get(requestId);
-          if (!pending || BigInt(stream) !== pending.stream) return;
-          pendingFileRequests.delete(requestId);
-          window.clearTimeout(pending.timer);
-          void encrypt
-            .segment(pending.stream, 0n, data)
-            .then((plaintext) => {
-              pending.resolve(
-                JSON.parse(
-                  new TextDecoder().decode(plaintext),
-                ) as FileOperationResponse,
-              );
-            })
-            .catch((error) =>
-              pending.reject(
-                error instanceof Error ? error : new Error(String(error)),
-              ),
-            );
+          fileRequests?.handleResponse(requestId, BigInt(stream), data);
         } else if (message.pong !== undefined) {
           const serverLatency = Date.now() - Number(message.pong);
           serverLatencies = [...serverLatencies, serverLatency].slice(-10);
@@ -746,15 +716,9 @@
         noteEditors = {};
         serverLatencies = [];
         shellLatencies = [];
-        for (const pending of pendingFileRequests.values()) {
-          window.clearTimeout(pending.timer);
-          pending.reject(
-            new Error(
-              "Connection closed before the filesystem request completed.",
-            ),
-          );
-        }
-        pendingFileRequests.clear();
+        fileRequests?.rejectAll(
+          "Connection closed before the filesystem request completed.",
+        );
       },
 
       onClose(event) {
@@ -783,6 +747,7 @@
 
   onDestroy(() => {
     clearReadinessTimer();
+    fileRequests?.dispose();
     srocket?.dispose();
   });
 
@@ -1125,48 +1090,13 @@
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
-  function randomEncryptedStream() {
-    const bytes = crypto.getRandomValues(new Uint8Array(8));
-    bytes[0] |= 0x80;
-    return bytes.reduce((value, byte) => (value << 8n) | BigInt(byte), 0n);
-  }
-
   async function requestFileOperation(
     shellId: number,
     pageId: number,
-    request: FileOperationRequest,
-  ): Promise<FileOperationResponse> {
-    if (!srocket?.connected) throw new Error("The daemon is not connected.");
-    const requestId = randomHex(16);
-    const requestStream = randomEncryptedStream();
-    let responseStream = randomEncryptedStream();
-    while (responseStream === requestStream)
-      responseStream = randomEncryptedStream();
-    const plaintext = new TextEncoder().encode(JSON.stringify(request));
-    const data = await encrypt.segment(requestStream, 0n, plaintext);
-    const response = new Promise<FileOperationResponse>((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        pendingFileRequests.delete(requestId);
-        reject(new Error("Filesystem request timed out."));
-      }, 35_000);
-      pendingFileRequests.set(requestId, {
-        stream: responseStream,
-        resolve,
-        reject,
-        timer,
-      });
-    });
-    srocket.send({
-      fileRequest: [
-        shellId,
-        pageId,
-        requestId,
-        requestStream,
-        responseStream,
-        data,
-      ],
-    });
-    return response;
+    request: Parameters<FileRequestClient["request"]>[2],
+  ) {
+    if (!fileRequests) throw new Error("Filesystem requests are not ready.");
+    return fileRequests.request(shellId, pageId, request);
   }
 
   function toggleFullscreen(
@@ -1509,9 +1439,9 @@
     else void navigateToFileWindow(item.id);
   }
 
-  function insertParagraphIntoNote(
+  function insertParagraphsIntoNote(
     targetNoteId: number,
-    text: string,
+    insertedParagraphs: readonly string[],
     insertIndex?: number,
   ): TextInsertResult {
     const entry = notes.find(([id]) => id === targetNoteId);
@@ -1528,7 +1458,7 @@
       0,
       Math.min(insertIndex ?? paragraphs.length, paragraphs.length),
     );
-    paragraphs.splice(index, 0, text);
+    paragraphs.splice(index, 0, ...insertedParagraphs);
     const projectedText = paragraphs.join("\n");
     if (paragraphs.length > 500 || projectedText.length > 10_000) {
       return { ok: false, message: "The target note is too large." };
@@ -1546,6 +1476,7 @@
   function sendNoteParagraph(
     noteId: number,
     detail: {
+      paragraphs: string[];
       text: string;
       target: "all" | "notes" | "terminals" | "terminals-execute" | "files";
     },
@@ -1553,8 +1484,11 @@
     if (!hasWriteAccess) return;
     const note = notes.find(([id]) => id === noteId)?.[1];
     if (!note) return;
-    if (!detail.text) {
-      makeToast({ kind: "info", message: "This paragraph is empty." });
+    if (detail.paragraphs.every((paragraph) => !paragraph)) {
+      makeToast({
+        kind: "info",
+        message: "The selected paragraphs are empty.",
+      });
       return;
     }
     const sendToNotes = detail.target === "all" || detail.target === "notes";
@@ -1587,7 +1521,7 @@
     let sent = 0;
     const failures: string[] = [];
     for (const targetNoteId of targetNoteIds) {
-      const result = insertParagraphIntoNote(targetNoteId, detail.text);
+      const result = insertParagraphsIntoNote(targetNoteId, detail.paragraphs);
       if (result.ok) sent += 1;
       else failures.push(result.message || "A linked note was unavailable.");
     }
@@ -1671,7 +1605,6 @@
     const noteElement = element.closest<HTMLElement>("[data-canvas-note-id]");
     if (noteElement) {
       const id = Number(noteElement.dataset.canvasNoteId);
-      if (id === paragraphDrag.sourceNoteId) return null;
       return {
         kind: "note" as const,
         id,
@@ -1693,8 +1626,11 @@
     paragraphDropTarget = next;
     if (!next) return;
     event.preventDefault();
-    event.stopPropagation();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    const reordering =
+      next.kind === "note" && next.id === paragraphDrag.sourceNoteId;
+    if (!reordering) event.stopPropagation();
+    if (event.dataTransfer)
+      event.dataTransfer.dropEffect = reordering ? "move" : "copy";
   }
 
   function finishParagraphDrag() {
@@ -1707,8 +1643,13 @@
     if (!paragraphDrag) return;
     const target = resolveParagraphDropTarget(event) ?? paragraphDropTarget;
     const text = paragraphDrag.text;
+    const paragraphCount = paragraphDrag.paragraphs.length;
     if (!target) {
       finishParagraphDrag();
+      return;
+    }
+    if (target.kind === "note" && target.id === paragraphDrag.sourceNoteId) {
+      event.preventDefault();
       return;
     }
     event.preventDefault();
@@ -1723,7 +1664,11 @@
         result = { ok: false, message: "The target terminal is unavailable." };
       }
     } else if (target.kind === "note") {
-      result = insertParagraphIntoNote(target.id, text, target.noteInsertIndex);
+      result = insertParagraphsIntoNote(
+        target.id,
+        paragraphDrag.paragraphs,
+        target.noteInsertIndex,
+      );
     } else {
       result = fileTextSenders[target.id]?.(text, {
         x: event.clientX,
@@ -1737,7 +1682,7 @@
     makeToast({
       kind: result.ok ? "success" : "error",
       message: result.ok
-        ? "Paragraph copied to the target."
+        ? `${paragraphCount === 1 ? "Paragraph" : "Paragraphs"} copied to the target.`
         : result.message || "Could not copy the paragraph.",
     });
   }
@@ -1773,26 +1718,12 @@
   const imageUploadChunkBytes = 64 << 10;
   let imageUploadQueue = Promise.resolve();
 
-  function randomHex(bytes: number) {
-    const data = new Uint8Array(bytes);
-    crypto.getRandomValues(data);
-    return Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join(
-      "",
-    );
-  }
-
-  function randomUploadStream() {
-    const data = new Uint8Array(8);
-    crypto.getRandomValues(data);
-    return new DataView(data.buffer).getBigUint64(0) | 0x8000000000000000n;
-  }
-
   async function uploadImage(id: number, pageId: number, file: File) {
     if (!srocket?.connected) {
       throw new Error("Connect to the daemon before uploading an image.");
     }
     const uploadId = randomHex(16);
-    const streamNum = randomUploadStream();
+    const streamNum = randomEncryptedStream();
     const totalSize = BigInt(file.size);
 
     for (let offset = 0; offset < file.size; offset += imageUploadChunkBytes) {
@@ -1905,10 +1836,10 @@
         const dy = y - resizingStartPointer[1];
         const [startLeft, startTop, startRight, startBottom] =
           resizingStartEdges;
-        let left = resizesWest(resizingDirection)
+        const left = resizesWest(resizingDirection)
           ? snapLeadingEdge(startLeft + dx)
           : startLeft;
-        let top = resizesNorth(resizingDirection)
+        const top = resizesNorth(resizingDirection)
           ? snapLeadingEdge(startTop + dy)
           : startTop;
         const right = resizesEast(resizingDirection)
@@ -1917,62 +1848,35 @@
         const bottom = resizesSouth(resizingDirection)
           ? snapTrailingEdge(startBottom + dy)
           : startBottom;
-        const changesWidth =
-          resizesWest(resizingDirection) || resizesEast(resizingDirection);
-        const changesHeight =
-          resizesNorth(resizingDirection) || resizesSouth(resizingDirection);
-        const cols = changesWidth
-          ? Math.max(
-              resizingStartSize.cols +
-                Math.floor(
-                  (right - left - resizingStartPixels[0]) /
-                    resizingCanvasCell[0],
-                ),
-              TERM_MIN_COLS,
-            )
-          : resizingStartSize.cols;
-        const rows = changesHeight
-          ? Math.max(
-              resizingStartSize.rows +
-                Math.floor(
-                  (bottom - top - resizingStartPixels[1]) /
-                    resizingCanvasCell[1],
-                ),
-              TERM_MIN_ROWS,
-            )
-          : resizingStartSize.rows;
-        if (resizesWest(resizingDirection) && cols === TERM_MIN_COLS) {
-          left = Math.round(
-            startRight -
-              (resizingStartPixels[0] +
-                (cols - resizingStartSize.cols) * resizingCanvasCell[0]),
-          );
-        }
-        if (resizesNorth(resizingDirection) && rows === TERM_MIN_ROWS) {
-          top = Math.round(
-            startBottom -
-              (resizingStartPixels[1] +
-                (rows - resizingStartSize.rows) * resizingCanvasCell[1]),
-          );
-        }
-        const width = Math.round(right - left);
-        const height = Math.round(bottom - top);
+        const resized = constrainTerminalResize({
+          direction: resizingDirection,
+          left,
+          top,
+          right,
+          bottom,
+          startWidth: resizingStartPixels[0],
+          startHeight: resizingStartPixels[1],
+          startRows: resizingStartSize.rows,
+          startCols: resizingStartSize.cols,
+          cellWidth: resizingCanvasCell[0],
+          cellHeight: resizingCanvasCell[1],
+        });
         if (
-          rows !== resizingSize.rows ||
-          cols !== resizingSize.cols ||
-          width !== resizingSize.width ||
-          height !== resizingSize.height ||
-          left !== resizingSize.x ||
-          top !== resizingSize.y
+          resized.rows !== resizingSize.rows ||
+          resized.cols !== resizingSize.cols ||
+          resized.width !== resizingSize.width ||
+          resized.height !== resizingSize.height ||
+          resized.x !== resizingSize.x ||
+          resized.y !== resizingSize.y
         ) {
           resizingSize = {
             ...resizingSize,
-            x: left,
-            y: top,
-            width,
-            height,
-            rows,
-            cols,
+            x: resized.x,
+            y: resized.y,
+            width: resized.width,
+            height: resized.height,
+            rows: resized.rows,
+            cols: resized.cols,
           };
           srocket?.send({
             move: [resizing, resizingSize.pageId, resizingSize],
@@ -2192,94 +2096,52 @@
           : undefined}
   on:wheel={(event) => event.preventDefault()}
 >
-  <div
-    class="absolute top-8 inset-x-0 flex justify-center pointer-events-none z-10"
-  >
-    <Toolbar
-      {connected}
-      {connectionStatus}
-      connectionDetail={exitReason}
-      {newMessages}
-      {hasWriteAccess}
-      profiles={sshProfiles}
-      {users}
-      on:create={handleCreate}
-      on:createSsh={(event) => handleCreateSsh(event.detail)}
-      on:saveSshProfile={(event) =>
-        srocket?.send({ upsertSshProfile: event.detail })}
-      on:deleteSshProfile={(event) =>
-        srocket?.send({ deleteSshProfile: event.detail })}
-      on:createNote={handleCreateNote}
-      on:chat={() => {
-        showChat = !showChat;
-        newMessages = false;
-      }}
-      on:settings={() => {
-        settingsOpen = true;
-      }}
-      on:search={() => (searchOpen = !searchOpen)}
-      on:networkInfo={() => {
-        showNetworkInfo = !showNetworkInfo;
-      }}
-    />
-
-    <TerminalSearch
-      open={searchOpen}
-      items={canvasSearchItems}
-      on:close={() => (searchOpen = false)}
-      on:select={(event) => selectCanvasItem(event.detail)}
-    />
-
-    {#if showNetworkInfo}
-      <div class="absolute top-20 translate-x-[116.5px]">
-        <NetworkInfo
-          status={connectionStatus === "connected"
-            ? "connected"
-            : exitReason
-              ? failureStage === "session"
-                ? "no-shell"
-                : "no-server"
-              : "no-server"}
-          serverLatency={integerMedian(serverLatencies)}
-          shellLatency={integerMedian(shellLatencies)}
-          detail={exitReason}
-        />
-      </div>
-    {/if}
-  </div>
-
-  {#if showChat}
-    <div
-      class="absolute flex flex-col justify-end inset-y-4 right-4 w-80 pointer-events-none z-10"
-    >
-      <Chat
-        {userId}
-        messages={chatMessages}
-        on:chat={(event) => srocket?.send({ chat: event.detail })}
-        on:close={() => (showChat = false)}
-      />
-    </div>
-  {/if}
-
-  <Settings
-    open={settingsOpen}
+  <SessionChrome
+    {connected}
+    {connectionStatus}
+    connectionDetail={exitReason}
+    {failureStage}
+    {newMessages}
+    {hasWriteAccess}
+    profiles={sshProfiles}
+    {users}
+    {searchOpen}
+    searchItems={canvasSearchItems}
+    {showNetworkInfo}
+    serverLatency={integerMedian(serverLatencies)}
+    shellLatency={integerMedian(shellLatencies)}
+    {showChat}
+    {userId}
+    {chatMessages}
+    {settingsOpen}
     {serverVersion}
     {daemonVersion}
-    on:close={() => (settingsOpen = false)}
-  />
-
-  <ChooseName />
-
-  <PagePager
     {pages}
     {activePageId}
-    {hasWriteAccess}
-    on:select={(event) => switchPage(event.detail)}
-    on:create={() => {
+    on:create={handleCreate}
+    on:createSsh={(event) => handleCreateSsh(event.detail)}
+    on:saveSshProfile={(event) =>
+      srocket?.send({ upsertSshProfile: event.detail })}
+    on:deleteSshProfile={(event) =>
+      srocket?.send({ deleteSshProfile: event.detail })}
+    on:createNote={handleCreateNote}
+    on:toggleChat={() => {
+      showChat = !showChat;
+      newMessages = false;
+    }}
+    on:openSettings={() => (settingsOpen = true)}
+    on:toggleSearch={() => (searchOpen = !searchOpen)}
+    on:selectSearch={(event) => selectCanvasItem(event.detail)}
+    on:toggleNetwork={() => (showNetworkInfo = !showNetworkInfo)}
+    on:chat={(event) => srocket?.send({ chat: event.detail })}
+    on:closeChat={() => (showChat = false)}
+    on:closeSettings={() => (settingsOpen = false)}
+    on:selectPage={(event) => switchPage(event.detail)}
+    on:createPage={() => {
       selectCreatedPage = true;
       srocket?.send({ createPage: "" });
     }}
-    on:rename={(event) =>
+    on:renamePage={(event) =>
       srocket?.send({
         renamePage: [event.detail.id, event.detail.name],
       })}
@@ -2298,17 +2160,6 @@
       (CONSTANT_OFFSET_LEFT + center[0])}px) calc({zoom * 50}vh - {zoom *
       (CONSTANT_OFFSET_TOP + center[1])}px)"
   ></div>
-
-  <div class="py-2">
-    {#if userId && hasWriteAccess === false}
-      <div
-        class="bg-yellow-900 text-yellow-200 px-1 py-0.5 rounded inline-flex items-center gap-1"
-      >
-        <EyeIcon size="14" />
-        <span class="text-xs">Read-only</span>
-      </div>
-    {/if}
-  </div>
 
   <div class="absolute inset-0 overflow-hidden touch-none" bind:this={fabricEl}>
     {#each shells.filter(([, winsize]) => winsize.pageId === activePageId) as [id, winsize] (id)}
@@ -2544,6 +2395,17 @@
             (focusedNoteId !== null &&
               focusedNoteId !== id &&
               associatedNoteIds(id).includes(focusedNoteId))}
+          linkedHighlightSource={focusedTerminalId !== null &&
+          displayNote.linkedShellIds.includes(focusedTerminalId)
+            ? "terminal"
+            : focusedFileWindowId !== null &&
+                displayNote.linkedFileWindowIds.includes(focusedFileWindowId)
+              ? "file"
+              : focusedNoteId !== null &&
+                  focusedNoteId !== id &&
+                  associatedNoteIds(id).includes(focusedNoteId)
+                ? "note"
+                : null}
           paragraphDropIndex={paragraphDropTarget?.kind === "note" &&
           paragraphDropTarget.id === id
             ? (paragraphDropTarget.noteInsertIndex ?? null)
@@ -2634,95 +2496,118 @@
         }}
         bind:this={fileWrappers[id]}
       >
-        <FileExplorer
-          title={displayFileWindow.title}
-          initialPath={displayFileWindow.path}
-          currentPath={displayFileWindow.currentPath}
-          expandedPaths={displayFileWindow.expandedPaths}
-          selectedPath={displayFileWindow.selectedPath}
-          selectedKind={displayFileWindow.selectedKind}
-          treeScrollTop={displayFileWindow.treeScrollTop}
-          editorPath={displayFileWindow.editorPath}
-          sharedEditorContent={fileEditorBuffers[id]?.path ===
-          displayFileWindow.editorPath
-            ? fileEditorBuffers[id].content
-            : null}
-          sharedEditorDirty={displayFileWindow.editorDirty}
-          width={displayFileWindow.width}
-          height={displayFileWindow.height}
-          sidebarWidth={displayFileWindow.sidebarWidth}
-          treeRevision={displayFileWindow.treeRevision}
-          linkedNotes={notes
-            .filter(([, note]) => note.linkedFileWindowIds.includes(id))
-            .map(([noteId, note]) => ({
-              id: noteId,
-              label: noteTitle(noteId, note),
-              kind: "note" as const,
-            }))}
-          linkedHighlight={focusedNoteId !== null &&
-            (notes
-              .find(([noteId]) => noteId === focusedNoteId)?.[1]
-              .linkedFileWindowIds.includes(id) ??
-              false)}
-          paragraphDropState={paragraphDropTarget?.kind === "file" &&
-          paragraphDropTarget.id === id
-            ? paragraphDropTarget.fileReady
-              ? "ready"
-              : "blocked"
-            : "none"}
-          fullscreen={fullscreenItems[`file:${id}`] ?? false}
-          {hasWriteAccess}
-          bind:insertText={fileTextSenders[id]}
-          bind:previewTextDrop={fileDropPreviewers[id]}
-          bind:cancelTextDropPreview={fileDropPreviewCancelers[id]}
-          updateSharedState={(update) =>
-            updateFileWindowSharedState(id, displayFileWindow.pageId, update)}
-          request={(request) =>
-            requestFileOperation(
-              displayFileWindow.shellId,
-              displayFileWindow.pageId,
-              request,
-            )}
-          on:close={() =>
-            hasWriteAccess &&
-            srocket?.send({
-              closeFileWindow: [id, fileWindow.pageId],
-            })}
-          on:toggleFullscreen={() => toggleFullscreen("file", id)}
-          on:openTerminal={(event) =>
-            handleCreateAt(
-              displayFileWindow.shellId,
-              displayFileWindow.pageId,
-              event.detail,
-            )}
-          on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
-          on:unlinkNote={(event) =>
-            removeCanvasRelation(event.detail.id, {
-              id,
-              kind: "file",
-              label: fileWindowTitle(id, displayFileWindow),
-            })}
-          on:focus={() => {
-            focusedFileWindowId = id;
-            focusedTerminalId = null;
-            focusedNoteId = null;
-          }}
-          on:blur={() => {
-            if (focusedFileWindowId === id) focusedFileWindowId = null;
-          }}
-          on:bringToFront={() => bringFileWindowToFront(id, fileWindow.pageId)}
-          on:startMove={({ detail: event }) => {
-            if (!hasWriteAccess || fullscreenItems[`file:${id}`]) return;
-            const [x, y] = normalizePosition(event);
-            movingFileOrigin = [
-              x - displayFileWindow.x,
-              y - displayFileWindow.y,
-            ];
-            movingFileState = displayFileWindow;
-            bringFileWindowToFront(id, fileWindow.pageId);
-            movingFile = id;
-          }}
-        />
+        {#await loadFileExplorer()}
+          <div
+            class="flex h-full w-full items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-sm text-zinc-500 shadow-lg shadow-black/45"
+            style:width={`${displayFileWindow.width}px`}
+            style:height={`${displayFileWindow.height}px`}
+          >
+            Loading files…
+          </div>
+        {:then fileExplorerModule}
+          <svelte:component
+            this={fileExplorerModule.default}
+            title={displayFileWindow.title}
+            initialPath={displayFileWindow.path}
+            currentPath={displayFileWindow.currentPath}
+            expandedPaths={displayFileWindow.expandedPaths}
+            selectedPath={displayFileWindow.selectedPath}
+            selectedKind={displayFileWindow.selectedKind}
+            treeScrollTop={displayFileWindow.treeScrollTop}
+            editorPath={displayFileWindow.editorPath}
+            sharedEditorContent={fileEditorBuffers[id]?.path ===
+            displayFileWindow.editorPath
+              ? fileEditorBuffers[id].content
+              : null}
+            sharedEditorDirty={displayFileWindow.editorDirty}
+            width={displayFileWindow.width}
+            height={displayFileWindow.height}
+            sidebarWidth={displayFileWindow.sidebarWidth}
+            treeRevision={displayFileWindow.treeRevision}
+            linkedNotes={notes
+              .filter(([, note]) => note.linkedFileWindowIds.includes(id))
+              .map(([noteId, note]) => ({
+                id: noteId,
+                label: noteTitle(noteId, note),
+                kind: "note" as const,
+              }))}
+            linkedHighlight={focusedNoteId !== null &&
+              (notes
+                .find(([noteId]) => noteId === focusedNoteId)?.[1]
+                .linkedFileWindowIds.includes(id) ??
+                false)}
+            paragraphDropState={paragraphDropTarget?.kind === "file" &&
+            paragraphDropTarget.id === id
+              ? paragraphDropTarget.fileReady
+                ? "ready"
+                : "blocked"
+              : "none"}
+            fullscreen={fullscreenItems[`file:${id}`] ?? false}
+            {hasWriteAccess}
+            bind:insertText={fileTextSenders[id]}
+            bind:previewTextDrop={fileDropPreviewers[id]}
+            bind:cancelTextDropPreview={fileDropPreviewCancelers[id]}
+            updateSharedState={(update) =>
+              updateFileWindowSharedState(id, displayFileWindow.pageId, update)}
+            request={(request) =>
+              requestFileOperation(
+                displayFileWindow.shellId,
+                displayFileWindow.pageId,
+                request,
+              )}
+            on:close={() =>
+              hasWriteAccess &&
+              srocket?.send({
+                closeFileWindow: [id, fileWindow.pageId],
+              })}
+            on:toggleFullscreen={() => toggleFullscreen("file", id)}
+            on:openTerminal={(event) =>
+              handleCreateAt(
+                displayFileWindow.shellId,
+                displayFileWindow.pageId,
+                event.detail,
+              )}
+            on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
+            on:unlinkNote={(event) =>
+              removeCanvasRelation(event.detail.id, {
+                id,
+                kind: "file",
+                label: fileWindowTitle(id, displayFileWindow),
+              })}
+            on:focus={() => {
+              focusedFileWindowId = id;
+              focusedTerminalId = null;
+              focusedNoteId = null;
+            }}
+            on:blur={() => {
+              if (focusedFileWindowId === id) focusedFileWindowId = null;
+            }}
+            on:bringToFront={() =>
+              bringFileWindowToFront(id, fileWindow.pageId)}
+            on:startMove={({ detail: event }) => {
+              if (!hasWriteAccess || fullscreenItems[`file:${id}`]) return;
+              const [x, y] = normalizePosition(event);
+              movingFileOrigin = [
+                x - displayFileWindow.x,
+                y - displayFileWindow.y,
+              ];
+              movingFileState = displayFileWindow;
+              bringFileWindowToFront(id, fileWindow.pageId);
+              movingFile = id;
+            }}
+          />
+        {:catch error}
+          <div
+            class="flex h-full w-full items-center justify-center rounded-xl border border-red-900/70 bg-zinc-950 p-6 text-center text-sm text-red-300 shadow-lg shadow-black/45"
+            style:width={`${displayFileWindow.width}px`}
+            style:height={`${displayFileWindow.height}px`}
+            role="alert"
+          >
+            Could not load the file explorer: {error instanceof Error
+              ? error.message
+              : String(error)}
+          </div>
+        {/await}
         <ResizeHandles
           disabled={!hasWriteAccess || fullscreenItems[`file:${id}`]}
           on:start={({ detail }) => {

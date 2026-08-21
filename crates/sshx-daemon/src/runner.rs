@@ -1,11 +1,15 @@
 //! Defines tasks that control the behavior of a single shell in the client.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use encoding_rs::{CoderResult, UTF_8};
 use sshx_core::proto::{client_update::ClientMessage, SshAuthMethod, SshProfile, TerminalData};
 use sshx_core::Sid;
+use sshxx_terminal_host::client::Client as TerminalHostClient;
+use sshxx_terminal_host::protocol::frame::Message as HostMessage;
+use sshxx_terminal_host::protocol::wire::CreateTerminal;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
@@ -13,6 +17,7 @@ use tokio::{
 
 use crate::encrypt::Encrypt;
 use crate::terminal::Terminal;
+use crate::terminal_host::TerminalHostConfig;
 
 const CONTENT_CHUNK_SIZE: usize = 1 << 16; // Send at most this many bytes at a time.
 const CONTENT_ROLLING_BYTES: usize = 8 << 20; // Store at least this much content.
@@ -23,6 +28,14 @@ const CONTENT_PRUNE_BYTES: usize = 12 << 20; // Prune when we exceed this length
 pub enum Runner {
     /// Spawns the specified shell as a subprocess, forwarding PTYs.
     Shell(String),
+
+    /// Runs shells in an independent host so daemon restarts do not close them.
+    HostedShell {
+        /// Local shell program used for newly created terminals.
+        shell: String,
+        /// Authenticated local host connection and history policy.
+        host: TerminalHostConfig,
+    },
 
     /// Mock runner that only echos its input, useful for testing.
     Echo,
@@ -50,6 +63,8 @@ pub enum ShellData {
     Size(u32, u32),
     /// Request the shell's current working directory for terminal duplication.
     WorkingDirectory(oneshot::Sender<Option<PathBuf>>),
+    /// Explicitly close the shell and its hosted process.
+    Close,
 }
 
 impl Runner {
@@ -64,25 +79,53 @@ impl Runner {
     ) -> Result<()> {
         match self {
             Self::Shell(shell) => {
-                let (program, args) = match &options.ssh_profile {
-                    Some(profile) => {
-                        let (program, mut args) = ssh_command(profile)?;
-                        if let Some(directory) = options.working_directory.take() {
-                            let host_index = args.len().saturating_sub(1);
-                            args.insert(host_index, "-t".into());
-                            args.push(format!(
-                                "cd -- {} && exec \"${{SHELL:-/bin/sh}}\" -l",
-                                shell_quote(&directory.to_string_lossy())
-                            ));
-                        }
-                        (program, args)
-                    }
-                    None => (shell.clone(), Vec::new()),
-                };
+                let (program, args) = launch_command(shell, &mut options)?;
                 shell_task(id, encrypt, &program, &args, shell_rx, output_tx, options).await
+            }
+            Self::HostedShell { shell, host } => {
+                let local_shell = options.ssh_profile.is_none();
+                let (program, args) = launch_command(shell, &mut options)?;
+                hosted_shell_task(
+                    id,
+                    encrypt,
+                    &program,
+                    args,
+                    local_shell,
+                    host,
+                    shell_rx,
+                    output_tx,
+                    options,
+                )
+                .await
             }
             Self::Echo => echo_task(id, encrypt, shell_rx, output_tx).await,
         }
+    }
+
+    /// Copy a daemon-owned history snapshot when duplicating a local terminal.
+    pub(crate) async fn clone_history(&self, source_id: Sid, target_id: Sid) -> Result<bool> {
+        match self {
+            Self::HostedShell { host, .. } => host.clone_history(source_id.0, target_id.0).await,
+            Self::Shell(_) | Self::Echo => Ok(false),
+        }
+    }
+}
+
+fn launch_command(shell: &str, options: &mut ShellOptions) -> Result<(String, Vec<String>)> {
+    match &options.ssh_profile {
+        Some(profile) => {
+            let (program, mut args) = ssh_command(profile)?;
+            if let Some(directory) = options.working_directory.take() {
+                let host_index = args.len().saturating_sub(1);
+                args.insert(host_index, "-t".into());
+                args.push(format!(
+                    "cd -- {} && exec \"${{SHELL:-/bin/sh}}\" -l",
+                    shell_quote(&directory.to_string_lossy())
+                ));
+            }
+            Ok((program, args))
+        }
+        None => Ok((shell.to_owned(), Vec::new())),
     }
 }
 
@@ -142,6 +185,7 @@ async fn shell_task(
                     Some(ShellData::WorkingDirectory(sender)) => {
                         sender.send(term.working_directory().await).ok();
                     }
+                    Some(ShellData::Close) => finished = true,
                     None => finished = true, // Server closed this shell.
                 }
             }
@@ -180,6 +224,290 @@ async fn shell_task(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn hosted_shell_task(
+    id: Sid,
+    encrypt: Encrypt,
+    program: &str,
+    mut args: Vec<String>,
+    local_shell: bool,
+    host: &TerminalHostConfig,
+    mut shell_rx: mpsc::Receiver<ShellData>,
+    output_tx: mpsc::Sender<ClientMessage>,
+    options: ShellOptions,
+) -> Result<()> {
+    let terminal_id = host.terminal_id(id.0);
+    let mut client = TerminalHostClient::connect(
+        &host.endpoint,
+        host.authentication_token.clone(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .await
+    .context("failed to connect to sshxx-terminal-host")?;
+
+    let mut environment = terminal_environment();
+    if local_shell {
+        environment.extend(history_launch_policy(
+            host,
+            &terminal_id,
+            program,
+            &mut args,
+        ));
+    }
+    attach_or_create_hosted_terminal(
+        &mut client,
+        &terminal_id,
+        program,
+        args,
+        Some(environment),
+        &options,
+    )
+    .await?;
+
+    let mut content = String::new();
+    let mut content_offset = 0usize;
+    let mut decoder = UTF_8.new_decoder();
+    let mut host_sequence = 0u64;
+    let mut seq = 0usize;
+    let mut seq_outdated = 0usize;
+    let mut pending_working_directories = HashMap::<u64, oneshot::Sender<Option<PathBuf>>>::new();
+    let mut finished = false;
+
+    while !finished {
+        tokio::select! {
+            frame = client.receive() => {
+                let frame = frame?.context("terminal host disconnected")?;
+                match frame.message {
+                    Some(HostMessage::TerminalOutput(output)) if output.terminal_id == terminal_id => {
+                        let end = output.sequence.saturating_add(output.data.len() as u64);
+                        if end > host_sequence {
+                            if output.sequence > host_sequence {
+                                decoder = UTF_8.new_decoder();
+                                host_sequence = output.sequence;
+                            }
+                            let start = host_sequence.saturating_sub(output.sequence) as usize;
+                            let bytes = &output.data[start.min(output.data.len())..];
+                            content.reserve(decoder.max_utf8_buffer_length(bytes.len()).unwrap());
+                            let (result, _, _) = decoder.decode_to_string(bytes, &mut content, false);
+                            debug_assert!(result == CoderResult::InputEmpty);
+                            host_sequence = end;
+                        }
+                    }
+                    Some(HostMessage::TerminalExited(exit)) if exit.terminal_id == terminal_id => {
+                        finished = true;
+                    }
+                    Some(HostMessage::WorkingDirectory(directory)) => {
+                        if let Some(sender) = pending_working_directories.remove(&frame.request_id) {
+                            let path = (!directory.path.is_empty()).then(|| PathBuf::from(directory.path));
+                            sender.send(path).ok();
+                        }
+                    }
+                    Some(HostMessage::Error(error)) => {
+                        if let Some(sender) = pending_working_directories.remove(&frame.request_id) {
+                            sender.send(None).ok();
+                        } else {
+                            bail!("terminal host {}: {}", error.code, error.message);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            item = shell_rx.recv() => {
+                match item {
+                    Some(ShellData::Data(data)) => {
+                        client.input(&terminal_id, data).await?;
+                    }
+                    Some(ShellData::Sync(seq2)) => {
+                        if seq2 < seq as u64 {
+                            seq_outdated += 1;
+                            if seq_outdated >= 3 {
+                                seq = seq2 as usize;
+                            }
+                        }
+                    }
+                    Some(ShellData::Size(rows, cols)) => {
+                        client.resize(&terminal_id, rows, cols).await?;
+                    }
+                    Some(ShellData::WorkingDirectory(sender)) => {
+                        let request_id = client.get_working_directory(&terminal_id).await?;
+                        pending_working_directories.insert(request_id, sender);
+                    }
+                    Some(ShellData::Close) => {
+                        let request_id = client.close_terminal(&terminal_id).await?;
+                        match receive_host_response(&mut client, request_id).await? {
+                            HostMessage::Ack(_) => {}
+                            HostMessage::Error(error) => {
+                                bail!("terminal host {}: {}", error.code, error.message)
+                            }
+                            _ => bail!("terminal host returned an invalid close response"),
+                        }
+                        host.remove_history(id.0).await?;
+                        return Ok(());
+                    }
+                    None => return Ok(()), // Daemon/controller stopped; leave the hosted PTY alive.
+                }
+            }
+        }
+
+        if finished {
+            content.reserve(decoder.max_utf8_buffer_length(0).unwrap());
+            let (result, _, _) = decoder.decode_to_string(&[], &mut content, true);
+            debug_assert!(result == CoderResult::InputEmpty);
+        }
+
+        while content_offset + content.len() > seq {
+            let start = prev_char_boundary(&content, seq.saturating_sub(content_offset));
+            let end = prev_char_boundary(&content, (start + CONTENT_CHUNK_SIZE).min(content.len()));
+            let data = encrypt.segment(
+                0x100000000 | id.0 as u64,
+                (content_offset + start) as u64,
+                &content.as_bytes()[start..end],
+            );
+            output_tx
+                .send(ClientMessage::Data(TerminalData {
+                    id: id.0,
+                    data: data.into(),
+                    seq: (content_offset + start) as u64,
+                }))
+                .await?;
+            seq = content_offset + end;
+            seq_outdated = 0;
+        }
+
+        if content.len() > CONTENT_PRUNE_BYTES
+            && seq.saturating_sub(CONTENT_ROLLING_BYTES) > content_offset
+        {
+            let pruned = (seq - CONTENT_ROLLING_BYTES) - content_offset;
+            let pruned = prev_char_boundary(&content, pruned);
+            content_offset += pruned;
+            content.drain(..pruned);
+        }
+    }
+    // Natural process exit is terminal: remove the retained host entry so a
+    // future shell reusing this server ID cannot attach to a dead process.
+    let request_id = client.close_terminal(&terminal_id).await?;
+    match receive_host_response(&mut client, request_id).await? {
+        HostMessage::Ack(_) => {}
+        HostMessage::Error(error) => bail!("terminal host {}: {}", error.code, error.message),
+        _ => bail!("terminal host returned an invalid close response"),
+    }
+    host.remove_history(id.0).await?;
+    Ok(())
+}
+
+async fn attach_or_create_hosted_terminal(
+    client: &mut TerminalHostClient,
+    terminal_id: &str,
+    program: &str,
+    args: Vec<String>,
+    environment: Option<HashMap<String, String>>,
+    options: &ShellOptions,
+) -> Result<()> {
+    let attach_id = client.attach_terminal(terminal_id, 0).await?;
+    match receive_host_response(client, attach_id).await? {
+        HostMessage::Ack(_) => return Ok(()),
+        HostMessage::Error(error) if error.code == "NOT_FOUND" => {}
+        HostMessage::Error(error) => bail!("terminal host {}: {}", error.code, error.message),
+        _ => bail!("terminal host returned an invalid attach response"),
+    }
+
+    let create_id = client
+        .create_terminal(CreateTerminal {
+            terminal_id: terminal_id.into(),
+            program: program.into(),
+            args,
+            working_directory: options
+                .working_directory
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            environment: environment.unwrap_or_default(),
+            rows: options.rows.into(),
+            columns: options.cols.into(),
+        })
+        .await?;
+    match receive_host_response(client, create_id).await? {
+        HostMessage::Ack(_) => {}
+        HostMessage::Error(error) if error.code == "ALREADY_EXISTS" => {}
+        HostMessage::Error(error) => bail!("terminal host {}: {}", error.code, error.message),
+        _ => bail!("terminal host returned an invalid create response"),
+    }
+
+    let attach_id = client.attach_terminal(terminal_id, 0).await?;
+    match receive_host_response(client, attach_id).await? {
+        HostMessage::Ack(_) => Ok(()),
+        HostMessage::Error(error) => bail!("terminal host {}: {}", error.code, error.message),
+        _ => bail!("terminal host returned an invalid attach response"),
+    }
+}
+
+async fn receive_host_response(
+    client: &mut TerminalHostClient,
+    request_id: u64,
+) -> Result<HostMessage> {
+    loop {
+        let frame = client
+            .receive()
+            .await?
+            .context("terminal host disconnected before acknowledging request")?;
+        if frame.request_id == request_id {
+            return frame
+                .message
+                .context("terminal host response message is empty");
+        }
+    }
+}
+
+fn history_launch_policy(
+    host: &TerminalHostConfig,
+    terminal_id: &str,
+    program: &str,
+    args: &mut Vec<String>,
+) -> HashMap<String, String> {
+    let history_path = host
+        .history_directory
+        .join(format!("{terminal_id}.history"));
+    let shell_name = std::path::Path::new(program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let mut environment = HashMap::from([
+        (
+            "HISTFILE".into(),
+            history_path.to_string_lossy().into_owned(),
+        ),
+        ("fish_history".into(), terminal_id.replace('-', "_")),
+    ]);
+    if shell_name == "bash" {
+        let append_history = "history -a";
+        let prompt_command = std::env::var("PROMPT_COMMAND")
+            .ok()
+            .filter(|command| !command.trim().is_empty())
+            .map_or_else(
+                || append_history.into(),
+                |command| format!("{command}; {append_history}"),
+            );
+        environment.insert("PROMPT_COMMAND".into(), prompt_command);
+    } else if matches!(shell_name.as_str(), "pwsh" | "powershell") {
+        let quoted_path = history_path.to_string_lossy().replace('\'', "''");
+        args.extend([
+            "-NoExit".into(),
+            "-Command".into(),
+            format!("Set-PSReadLineOption -HistorySavePath '{quoted_path}'"),
+        ]);
+    }
+    environment
+}
+
+fn terminal_environment() -> HashMap<String, String> {
+    HashMap::from([
+        ("TERM".into(), "xterm-256color".into()),
+        ("COLORTERM".into(), "truecolor".into()),
+        ("TERM_PROGRAM".into(), "sshxx-daemon".into()),
+    ])
 }
 
 pub(crate) fn ssh_command(profile: &SshProfile) -> Result<(String, Vec<String>)> {
@@ -287,6 +615,7 @@ async fn echo_task(
             ShellData::WorkingDirectory(sender) => {
                 sender.send(None).ok();
             }
+            ShellData::Close => break,
         }
     }
     Ok(())
@@ -294,9 +623,25 @@ async fn echo_task(
 
 #[cfg(test)]
 mod tests {
-    use sshx_core::proto::{SshAuthMethod, SshProfile};
+    #[cfg(unix)]
+    use std::time::Duration;
 
-    use super::{shell_quote, ssh_command};
+    use sshx_core::proto::{SshAuthMethod, SshProfile};
+    #[cfg(unix)]
+    use sshx_core::Sid;
+    #[cfg(unix)]
+    use sshxx_terminal_host::client::Client as TerminalHostClient;
+    #[cfg(unix)]
+    use sshxx_terminal_host::protocol::frame::Message as HostMessage;
+    #[cfg(unix)]
+    use tokio::sync::mpsc;
+
+    use super::{history_launch_policy, shell_quote, ssh_command, terminal_environment};
+    #[cfg(unix)]
+    use super::{Runner, ShellData, ShellOptions};
+    #[cfg(unix)]
+    use crate::encrypt::Encrypt;
+    use crate::terminal_host::TerminalHostConfig;
 
     #[test]
     fn quotes_remote_working_directories_for_the_shell() {
@@ -339,5 +684,281 @@ mod tests {
             ..Default::default()
         };
         assert!(ssh_command(&profile).is_err());
+    }
+
+    #[test]
+    fn isolates_posix_fish_and_powershell_history() {
+        let host = TerminalHostConfig {
+            endpoint: String::new(),
+            authentication_token: Vec::new(),
+            instance_id: "sshxx-history-test".into(),
+            history_directory: std::path::PathBuf::from("cache/history"),
+        };
+        let mut args = Vec::new();
+        let environment =
+            history_launch_policy(&host, "sshxx-history-test-9", "powershell.exe", &mut args);
+        assert!(environment
+            .get("HISTFILE")
+            .unwrap()
+            .ends_with("sshxx-history-test-9.history"));
+        assert_eq!(
+            environment.get("fish_history").map(String::as_str),
+            Some("sshxx_history_test_9")
+        );
+        assert!(args
+            .last()
+            .unwrap()
+            .contains("sshxx-history-test-9.history"));
+
+        let mut bash_args = Vec::new();
+        let bash_environment =
+            history_launch_policy(&host, "sshxx-history-test-10", "bash", &mut bash_args);
+        assert!(bash_environment
+            .get("PROMPT_COMMAND")
+            .unwrap()
+            .contains("history -a"));
+    }
+
+    #[test]
+    fn hosted_terminals_declare_xterm_capabilities() {
+        let environment = terminal_environment();
+        assert_eq!(
+            environment.get("TERM").map(String::as_str),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            environment.get("COLORTERM").map(String::as_str),
+            Some("truecolor")
+        );
+        assert_eq!(
+            environment.get("TERM_PROGRAM").map(String::as_str),
+            Some("sshxx-daemon")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hosted_shell_survives_runner_restart_until_explicit_close() -> anyhow::Result<()> {
+        let state = tempfile::tempdir()?;
+        let endpoint = state
+            .path()
+            .join("host.sock")
+            .to_string_lossy()
+            .into_owned();
+        let token = vec![23; 32];
+        let server_endpoint = endpoint.clone();
+        let server_token = token.clone();
+        let server = tokio::spawn(async move {
+            sshxx_terminal_host::server::serve(&server_endpoint, server_token).await
+        });
+        wait_for_host(&endpoint, &token).await?;
+
+        let history_directory = state.path().join("history");
+        std::fs::create_dir(&history_directory)?;
+        let host = TerminalHostConfig {
+            endpoint: endpoint.clone(),
+            authentication_token: token.clone(),
+            instance_id: "sshxx-runner-integration".into(),
+            history_directory,
+        };
+        let runner = Runner::HostedShell {
+            shell: "/bin/bash".into(),
+            host: host.clone(),
+        };
+
+        let (first_tx, first_rx) = mpsc::channel(4);
+        let (first_output_tx, _first_output_rx) = mpsc::channel(16);
+        let first_runner = runner.clone();
+        let first_task = tokio::spawn(async move {
+            first_runner
+                .run(
+                    Sid(7),
+                    Encrypt::new("hosted-runner-test"),
+                    first_rx,
+                    first_output_tx,
+                    test_shell_options(),
+                )
+                .await
+        });
+        let first_pid = wait_for_terminal_pid(&endpoint, &token).await?;
+
+        drop(first_tx);
+        tokio::time::timeout(Duration::from_secs(3), first_task).await???;
+        let detached_pid = wait_for_terminal_pid(&endpoint, &token).await?;
+        assert_eq!(first_pid, detached_pid);
+
+        let (second_tx, second_rx) = mpsc::channel(4);
+        let (second_output_tx, mut second_output_rx) = mpsc::channel(16);
+        let second_task = tokio::spawn(async move {
+            runner
+                .run(
+                    Sid(7),
+                    Encrypt::new("hosted-runner-test"),
+                    second_rx,
+                    second_output_tx,
+                    test_shell_options(),
+                )
+                .await
+        });
+        second_tx
+            .send(ShellData::Data(
+                b"printf 'RUNNER_REATTACHED TERM=%s COLORTERM=%s\\n' \"$TERM\" \"$COLORTERM\"\r"
+                    .to_vec(),
+            ))
+            .await?;
+        let output = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(sshx_core::proto::client_update::ClientMessage::Data(data)) =
+                    second_output_rx.recv().await
+                {
+                    let plaintext = Encrypt::new("hosted-runner-test").segment(
+                        0x100000000 | 7,
+                        data.seq,
+                        &data.data,
+                    );
+                    if String::from_utf8_lossy(&plaintext)
+                        .contains("RUNNER_REATTACHED TERM=xterm-256color COLORTERM=truecolor")
+                    {
+                        break;
+                    }
+                }
+            }
+        })
+        .await;
+        assert!(
+            output.is_ok(),
+            "reattached runner did not receive PTY output"
+        );
+        assert_eq!(wait_for_terminal_pid(&endpoint, &token).await?, first_pid);
+        let history_path = host.history_path(7);
+        let saved = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if tokio::fs::read_to_string(&history_path)
+                    .await
+                    .is_ok_and(|history| history.contains("RUNNER_REATTACHED"))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(saved.is_ok(), "interactive Bash history was not persisted");
+
+        second_tx.send(ShellData::Close).await?;
+        tokio::time::timeout(Duration::from_secs(3), second_task).await???;
+        wait_for_no_terminals(&endpoint, &token).await?;
+        assert!(
+            !history_path.exists(),
+            "closed terminal history was retained"
+        );
+
+        let mut client =
+            TerminalHostClient::connect(&endpoint, token, env!("CARGO_PKG_VERSION")).await?;
+        let shutdown = client.shutdown(false).await?;
+        wait_for_ack(&mut client, shutdown).await?;
+        tokio::time::timeout(Duration::from_secs(3), server).await???;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn test_shell_options() -> ShellOptions {
+        ShellOptions {
+            working_directory: None,
+            ssh_profile: None,
+            rows: 24,
+            cols: 80,
+            theme: String::new(),
+            background: String::new(),
+            width: 0,
+            height: 0,
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_host(endpoint: &str, token: &[u8]) -> anyhow::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if TerminalHostClient::connect(endpoint, token.to_vec(), env!("CARGO_PKG_VERSION"))
+                    .await
+                    .is_ok()
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_terminal_pid(endpoint: &str, token: &[u8]) -> anyhow::Result<u32> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let mut client = TerminalHostClient::connect(
+                    endpoint,
+                    token.to_vec(),
+                    env!("CARGO_PKG_VERSION"),
+                )
+                .await?;
+                let request_id = client.list_terminals().await?;
+                loop {
+                    let frame = client.receive().await?.unwrap();
+                    if frame.request_id != request_id {
+                        continue;
+                    }
+                    if let Some(HostMessage::TerminalList(list)) = frame.message {
+                        if let Some(terminal) = list.terminals.first() {
+                            return Ok(terminal.process_id);
+                        }
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_no_terminals(endpoint: &str, token: &[u8]) -> anyhow::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let mut client = TerminalHostClient::connect(
+                    endpoint,
+                    token.to_vec(),
+                    env!("CARGO_PKG_VERSION"),
+                )
+                .await?;
+                let request_id = client.list_terminals().await?;
+                loop {
+                    let frame = client.receive().await?.unwrap();
+                    if frame.request_id != request_id {
+                        continue;
+                    }
+                    if let Some(HostMessage::TerminalList(list)) = frame.message {
+                        if list.terminals.is_empty() {
+                            return Ok::<(), anyhow::Error>(());
+                        }
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_ack(client: &mut TerminalHostClient, request_id: u64) -> anyhow::Result<()> {
+        loop {
+            let frame = client.receive().await?.unwrap();
+            if frame.request_id == request_id {
+                assert!(matches!(frame.message, Some(HostMessage::Ack(_))));
+                return Ok(());
+            }
+        }
     }
 }

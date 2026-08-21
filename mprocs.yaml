@@ -9,6 +9,7 @@ procs:
       --redis-url redis://localhost:12601
   daemon:
     shell: >-
+      cargo build --bin sshxx-terminal-host &&
       cargo run --bin sshxx-daemon --
       --server http://[::1]:8051
       --test-encryption-key localdevkey

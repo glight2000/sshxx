@@ -12,5 +12,6 @@ mod file_browser;
 pub mod runner;
 mod ssh_profiles;
 pub mod terminal;
+pub mod terminal_host;
 mod uploads;
 mod workspace;

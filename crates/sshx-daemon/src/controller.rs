@@ -556,6 +556,10 @@ impl Controller {
                     let source_id = new_shell.source_id.map(Sid);
                     let explicit_working_directory = (!new_shell.working_directory.is_empty())
                         .then(|| PathBuf::from(new_shell.working_directory));
+                    // CloneWindowed has a source without an explicit path. CreateAt also
+                    // has a source, but opens a directory and must start with fresh history.
+                    let copies_source_history =
+                        source_id.is_some() && explicit_working_directory.is_none();
                     let ssh_profile = new_shell.ssh_profile.or_else(|| {
                         source_id
                             .and_then(|source_id| self.remote_profiles.get(&source_id).cloned())
@@ -585,6 +589,19 @@ impl Controller {
                         } else {
                             None
                         };
+                        if !is_remote && copies_source_history {
+                            if let Some(source_id) = source_id {
+                                match self.runner.clone_history(source_id, id).await {
+                                    Ok(true) => debug!(%source_id, %id, "copied terminal history"),
+                                    Ok(false) => {
+                                        debug!(%source_id, %id, "source terminal history is not persisted yet")
+                                    }
+                                    Err(err) => {
+                                        warn!(%source_id, %id, ?err, "failed to copy terminal history")
+                                    }
+                                }
+                            }
+                        }
                         self.spawn_shell_task(
                             id,
                             center,
@@ -610,8 +627,11 @@ impl Controller {
                     }
                 }
                 ServerMessage::CloseShell(id) => {
-                    // Closes the channel when it is dropped, notifying the task to shut down.
-                    self.shells_tx.remove(&Sid(id));
+                    // Explicit close is distinct from dropping the controller: hosted PTYs
+                    // survive daemon restarts and are only killed by this message.
+                    if let Some(sender) = self.shells_tx.remove(&Sid(id)) {
+                        sender.send(ShellData::Close).await.ok();
+                    }
                     self.remote_profiles.remove(&Sid(id));
                     send_msg(&tx, ClientMessage::ClosedShell(id)).await?;
                 }

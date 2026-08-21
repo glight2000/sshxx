@@ -29,6 +29,7 @@ openssh-sftp-client = "0.15.7"
 serde.workspace = true
 serde_json = "1.0.149"
 sshx-core.workspace = true
+sshxx-terminal-host.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true
@@ -42,3 +43,7 @@ nix = { version = "0.31.3", features = ["ioctl", "process", "signal", "term"] }
 
 [target.'cfg(windows)'.dependencies]
 conpty = "0.7.0"
+
+[dev-dependencies]
+sshxx-terminal-host = { workspace = true, features = ["host"] }
+tempfile = "3.27.0"

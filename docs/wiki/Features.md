@@ -21,8 +21,10 @@ bottom pager creates, renames, and switches independent canvas pages.
 
 ## Persistent terminals
 
-- Terminal processes belong to `sshxx-daemon`; closing or refreshing a browser
-  does not stop them.
+- Terminal processes belong to `sshxx-terminal-host`; closing or refreshing a
+  browser, or restarting `sshxx-daemon`, does not stop them.
+- Local shell history uses a stable per-terminal history file/namespace. A
+  nested remote shell still follows that remote account's history policy.
 - Local shells and OpenSSH terminals share xterm.js rendering, scrollback,
   selection, WebGL acceleration with DOM fallback, and isolated TypeAhead local
   echo.
@@ -92,21 +94,31 @@ a paragraph” never become ambiguous.
   an outside click ends editing.
 - Enter inserts a line break inside the current paragraph. `Ctrl`/`Cmd` + Enter
   adds a separate paragraph.
-- Four-dot handles keep paragraph boundaries visible and expose delete, insert,
-  and delivery actions.
+- Four-dot handles keep paragraph boundaries visible and expose delete, copy,
+  insert, and delivery actions. `Ctrl`/`Cmd`-click toggles paragraphs and
+  Shift-click selects a range. A pointer drag across paragraph bodies paints a
+  contiguous block selection; it never becomes a cross-paragraph browser text
+  selection.
 - Delivery can target every linked item, linked notes, linked terminals, linked
   terminals followed by execution input, or linked writable file editors.
-- Dragging a handle carries a translucent text preview and copies the paragraph
-  at the indicated insertion point in another note, terminal, or file editor.
+- Dragging any selected handle moves the selected group as a stable block inside
+  its note. Dropping elsewhere preserves separate paragraphs in another note;
+  terminals and file editors receive a multiline plain-text projection.
+- Copy and paste use a versioned structured clipboard payload between notes,
+  with a plain-text clipboard representation for other applications and canvas
+  targets.
 - Undo/redo is available while the local note editor is active. The resulting
   text changes synchronize, but the undo stack itself remains local.
 
-The plus button in a note's relationship strip starts target selection. A note
-can link to terminals, other notes, and file editors on the same page. Selecting
-anything incompatible, pressing Escape, or using another canvas action cancels
-selection. Relationship icons navigate to a target; right-click removes the
-link. Focusing either side gives related windows a type-specific subtle pulse
-without changing their saved appearance.
+Paragraph selection and clipboard fallback state remain local to the viewer;
+only the resulting paragraph changes synchronize. The plus button in a note's
+relationship strip starts target selection. A note can link to terminals, other
+notes, and file editors on the same page. Selecting anything incompatible,
+pressing Escape, or using another canvas action cancels selection. Relationship
+icons navigate to a target; right-click removes the link. Focusing a terminal
+highlights its related notes with the terminal focus color at 50% opacity;
+focusing a note applies the reciprocal treatment to related terminals. The
+stronger pulse does not change either window's saved appearance.
 
 Note text uses character-level collaborative updates. Paragraphs, relationships,
 and edits always carry their page and object identity to prevent cross-page
@@ -201,7 +213,7 @@ design.
 | Capability                              | Durable at daemon      | Shared with session                  | Viewer-local only               |
 | --------------------------------------- | ---------------------- | ------------------------------------ | ------------------------------- |
 | Pages and canvas window content/layout  | Yes                    | Yes                                  | Active page and viewport        |
-| Terminal process                        | Until daemon restart   | Stream/input                         | Focus and selection             |
+| Terminal process                        | Until host/OS restart  | Stream/input                         | Focus and selection             |
 | Note paragraphs and relationships       | Yes                    | Character-level updates              | Undo stack and active editor    |
 | File tree/editor navigation and content | Yes                    | Yes                                  | Menus, hover, undo, full-screen |
 | SSH profiles                            | Encrypted file         | Metadata; writer mutation            | Password prompt input           |

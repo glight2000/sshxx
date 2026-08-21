@@ -59,6 +59,24 @@ async fn test_fixed_session_name() -> Result<()> {
 
     assert_eq!(resp.name, "dev");
     assert_eq!(resp.url, "http://localhost:5173/s/dev");
+
+    let original_session = server.state().lookup("dev").unwrap();
+    client
+        .open(OpenRequest {
+            origin: "http://localhost:5173".into(),
+            encrypted_zeros: Encrypt::new("localdevkey").zeros().into(),
+            name: String::new(),
+            write_password_hash: None,
+            daemon_version: "restarted-daemon".into(),
+            workspace: None,
+            ssh_profiles: None,
+        })
+        .await?;
+    let replacement_session = server.state().lookup("dev").unwrap();
+    assert!(!std::sync::Arc::ptr_eq(
+        &original_session,
+        &replacement_session
+    ));
     Ok(())
 }
 

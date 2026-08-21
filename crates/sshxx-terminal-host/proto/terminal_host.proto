@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package sshxx.terminal_host.v1;
+
+// The envelope is intentionally small and versioned. New optional messages and
+// fields may be added without forcing a terminal-host restart.
+message Frame {
+  uint32 protocol_version = 1;
+  uint64 request_id = 2;
+
+  oneof message {
+    Hello hello = 10;
+    HelloAck hello_ack = 11;
+    CreateTerminal create_terminal = 12;
+    AttachTerminal attach_terminal = 13;
+    TerminalInput terminal_input = 14;
+    ResizeTerminal resize_terminal = 15;
+    CloseTerminal close_terminal = 16;
+    ListTerminals list_terminals = 17;
+    ShutdownHost shutdown_host = 18;
+    GetWorkingDirectory get_working_directory = 19;
+
+    Ack ack = 30;
+    TerminalOutput terminal_output = 31;
+    TerminalExited terminal_exited = 32;
+    TerminalList terminal_list = 33;
+    Error error = 34;
+    WorkingDirectory working_directory = 35;
+  }
+}
+
+message Hello {
+  uint32 minimum_protocol_version = 1;
+  uint32 maximum_protocol_version = 2;
+  string client_version = 3;
+  bytes authentication_token = 4;
+}
+
+message HelloAck {
+  uint32 selected_protocol_version = 1;
+  string host_version = 2;
+  // Applying a different host executable requires stopping this process and
+  // therefore disconnects all processes owned by it.
+  bool host_restart_is_disruptive = 3;
+}
+
+message CreateTerminal {
+  // Stable opaque ID chosen by sshxx-daemon. It must survive daemon restarts.
+  string terminal_id = 1;
+  string program = 2;
+  repeated string args = 3;
+  string working_directory = 4;
+  map<string, string> environment = 5;
+  uint32 rows = 6;
+  uint32 columns = 7;
+}
+
+message AttachTerminal {
+  string terminal_id = 1;
+  // Replay starts at this raw PTY byte offset. The host may start later if the
+  // bounded rolling buffer has already discarded older bytes.
+  uint64 after_sequence = 2;
+}
+
+message TerminalInput {
+  string terminal_id = 1;
+  bytes data = 2;
+}
+
+message ResizeTerminal {
+  string terminal_id = 1;
+  uint32 rows = 2;
+  uint32 columns = 3;
+}
+
+message CloseTerminal {
+  string terminal_id = 1;
+}
+
+message ListTerminals {}
+
+message ShutdownHost {
+  // A non-forced shutdown is rejected while any terminal process is active.
+  bool force = 1;
+}
+
+message GetWorkingDirectory {
+  string terminal_id = 1;
+}
+
+message Ack {
+  string terminal_id = 1;
+}
+
+message TerminalOutput {
+  string terminal_id = 1;
+  uint64 sequence = 2;
+  bytes data = 3;
+  bool replay = 4;
+}
+
+message TerminalExited {
+  string terminal_id = 1;
+  uint32 exit_code = 2;
+  string signal = 3;
+}
+
+message TerminalSummary {
+  string terminal_id = 1;
+  uint64 retained_sequence = 2;
+  uint64 next_sequence = 3;
+  bool running = 4;
+  uint32 process_id = 5;
+  uint32 rows = 6;
+  uint32 columns = 7;
+}
+
+message TerminalList {
+  repeated TerminalSummary terminals = 1;
+}
+
+message WorkingDirectory {
+  string terminal_id = 1;
+  // Empty when the operating system cannot report the foreground process CWD.
+  string path = 2;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+  string terminal_id = 3;
+}

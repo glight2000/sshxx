@@ -12,11 +12,12 @@ use sshx_core::{
     Sid, Uid, SSH_PROFILE_FORMAT_VERSION,
 };
 
-use super::{
+use super::validation::{
     normalize_linked_shell_ids, normalize_note_canvas_links, normalize_note_paragraphs,
     validate_file_editor_total, validate_file_window, validate_note_content, validate_page_name,
-    validate_terminal_window_size, Metadata, Session, State,
+    validate_terminal_window_size,
 };
+use super::{Metadata, Session, State};
 use crate::web::protocol::{WsFileWindow, WsNote, WsPage, WsWinsize};
 
 /// Persist at most this many bytes of output in storage, per shell.
