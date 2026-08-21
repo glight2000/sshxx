@@ -1,11 +1,17 @@
-# sshxx
+<p align="center">
+  <img src="static/favicon.svg" width="96" height="96" alt="sshxx 图标">
+</p>
 
-[English](README.md) | 简体中文
+<h1 align="center">sshxx</h1>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
 可自建的持久化协作终端：在多页面画布中组织终端、便利贴和文件窗口，通过浏览器或 Tauri 客户端访问同一个工作区；Shell 由
 `sshxx-daemon` 持有，不依赖任何浏览端持续在线。
 
-![包含终端、结构化便利贴、文件编辑器、页面和在线协作者的 sshxx 发布工作区](docs/images/sshxx-workspace.png)
+![包含持久终端、文件编辑器和段落操作菜单的 sshxx 便利贴工作区](docs/images/sshxx-notes.png)
 
 sshxx 派生自 [ekzhang/sshx](https://github.com/ekzhang/sshx)。感谢 Eric
 Zhang 和所有上游贡献者完成了原始架构与实现。本仓库保留上游 Git 历史和 MIT 许可证，并针对另一套个人工作流继续扩展。
@@ -20,8 +26,6 @@ Zhang 和所有上游贡献者完成了原始架构与实现。本仓库保留�
 | 终端旁的文件能力 | 同步文件夹导航、预览、CodeMirror 编辑、上传和文件操作           |
 | 多种浏览端       | Web 与 Tauri 打包客户端共用同一套 Svelte 界面                   |
 | 本地视图控制     | 当前页面、视口、全屏、界面模式、焦点及撤销/重做仅属于当前浏览端 |
-
-![关联终端和文件编辑器的 sshxx 便利贴段落操作](docs/images/sshxx-notes.png)
 
 README 只保留项目级介绍。完整功能和全量截图请查看
 **[功能指南](https://github.com/glight2000/sshxx/wiki/Features)**，或从

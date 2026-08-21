@@ -1,12 +1,18 @@
-# sshxx
+<p align="center">
+  <img src="static/favicon.svg" width="96" height="96" alt="sshxx icon">
+</p>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<h1 align="center">sshxx</h1>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
 Self-hosted persistent terminals on a collaborative, multi-page canvas. Use the
 same workspace from a browser or the Tauri client while `sshxx-daemon` keeps the
 shells alive independently of every viewer.
 
-![sshxx release workspace with a terminal, structured note, file editor, pages, and online collaborators](docs/images/sshxx-workspace.png)
+![sshxx note actions connected to a persistent terminal and file editor](docs/images/sshxx-notes.png)
 
 sshxx is derived from [ekzhang/sshx](https://github.com/ekzhang/sshx). Thank you
 to Eric Zhang and all upstream contributors for the original architecture and
@@ -23,8 +29,6 @@ license, then extends the project for a different set of personal workflows.
 | Files beside shells  | Synchronized folder navigation, previews, CodeMirror editing, uploads, and file operations |
 | Viewer choice        | One Svelte interface for the Web and Tauri-based packaged client                           |
 | Local control        | Browser-local page, viewport, full-screen, theme, focus, and undo/redo state               |
-
-![sshxx note actions connected to a terminal and file editor](docs/images/sshxx-notes.png)
 
 The README intentionally stays at project level. See the
 **[complete Feature Guide](https://github.com/glight2000/sshxx/wiki/Features)**
