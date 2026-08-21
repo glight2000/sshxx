@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
+import { URL } from "node:url";
 
 import {
+  isUpstreamSshxUrl,
   resolveWebSocketUrl,
   viewerRouteFromShareUrl,
 } from "../src/lib/runtime.ts";
@@ -86,20 +88,22 @@ test("rejects non-HTTP links and malformed session paths", () => {
   );
 });
 
-test("rejects upstream sshx public-service links", () => {
-  for (const origin of [
-    "https://sshx.io",
-    "https://SSHX.IO.",
-    "https://edge.sshx.io",
-  ]) {
-    assert.throws(
-      () => viewerRouteFromShareUrl(`${origin}/s/demo#secret`),
-      /public sshx\.io service is not supported/,
-    );
-  }
+test("identifies upstream sshx public-service links for explicit consent", () => {
+  assert.equal(isUpstreamSshxUrl(new URL("https://sshx.io/s/demo")), true);
+  assert.equal(isUpstreamSshxUrl(new URL("https://SSHX.IO./s/demo")), true);
+  assert.equal(isUpstreamSshxUrl(new URL("https://edge.sshx.io/s/demo")), true);
+  assert.equal(
+    isUpstreamSshxUrl(new URL("https://sshx.io.example/s/demo")),
+    false,
+  );
 });
 
-test("rejects the upstream service selected in the packaged app", () => {
+test("allows an explicitly selected upstream service in the packaged app", () => {
+  assert.equal(
+    viewerRouteFromShareUrl("https://sshx.io/s/demo#secret"),
+    "/s/demo?server=https%3A%2F%2Fsshx.io#secret",
+  );
+
   globalThis.window = {
     __TAURI_INTERNALS__: {},
     location: {
@@ -108,8 +112,5 @@ test("rejects the upstream service selected in the packaged app", () => {
     },
   };
 
-  assert.throws(
-    () => resolveWebSocketUrl("/api/s/demo"),
-    /public sshx\.io service is not supported/,
-  );
+  assert.equal(resolveWebSocketUrl("/api/s/demo"), "wss://sshx.io/api/s/demo");
 });

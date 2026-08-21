@@ -2,14 +2,20 @@
   import { goto } from "$app/navigation";
 
   import logo from "$lib/assets/logo.svg";
-  import { viewerRouteFromShareUrl } from "$lib/runtime";
+  import { isUpstreamSshxUrl, viewerRouteFromShareUrl } from "$lib/runtime";
 
   let sessionUrl = "";
   let error = "";
+  let upstreamConsentFor = "";
 
   async function connect() {
     error = "";
     try {
+      const url = new URL(sessionUrl.trim());
+      if (isUpstreamSshxUrl(url) && upstreamConsentFor !== url.origin) {
+        upstreamConsentFor = url.origin;
+        return;
+      }
       await goto(viewerRouteFromShareUrl(sessionUrl));
     } catch (cause) {
       error = cause instanceof Error ? cause.message : "invalid session link";
@@ -28,9 +34,10 @@
 
     <h1 class="text-2xl font-medium mb-3">Connect to a terminal</h1>
     <p class="text-zinc-400 mb-8">
-      Paste a session link from your self-hosted sshxx-server. The upstream
-      public sshx service is intentionally unsupported. The terminal continues
-      running on its host when this application is closed.
+      Paste a session link from your sshxx-server. Self-hosting is the supported
+      default; an upstream public-service link requires explicit confirmation.
+      The terminal continues running on its host when this application is
+      closed.
     </p>
 
     <form on:submit|preventDefault={connect}>
@@ -46,6 +53,10 @@
         autocomplete="off"
         placeholder="http://192.168.1.25:8051/s/session#key"
         class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-4 py-3 outline-none focus:border-fuchsia-500"
+        on:input={() => {
+          upstreamConsentFor = "";
+          error = "";
+        }}
       />
 
       <p class="mt-3 text-sm text-zinc-500">
@@ -56,11 +67,22 @@
         <p class="mt-3 text-sm text-red-400" role="alert">{error}</p>
       {/if}
 
+      {#if upstreamConsentFor}
+        <div
+          class="mt-4 rounded-lg border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm leading-5 text-amber-100"
+          role="alert"
+        >
+          This link uses the upstream sshx public service. sshxx does not select
+          it by default and cannot guarantee compatibility or provide support.
+          Continue only if you intentionally chose this service.
+        </div>
+      {/if}
+
       <button
         type="submit"
         class="mt-6 bg-pink-700 hover:bg-pink-600 active:ring-4 active:ring-pink-500/50 font-medium px-6 py-2.5 rounded-full"
       >
-        Connect
+        {upstreamConsentFor ? "Continue with upstream service" : "Connect"}
       </button>
     </form>
 

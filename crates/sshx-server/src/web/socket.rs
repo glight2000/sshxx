@@ -14,7 +14,7 @@ use sshx_core::proto::{
     server_update::ServerMessage, FileRequest as ProtoFileRequest, ImageUploadChunk, NewShell,
     TerminalInput, TerminalSize,
 };
-use sshx_core::{Sid, PRODUCT_ID};
+use sshx_core::Sid;
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
@@ -151,7 +151,6 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
             metadata.name.clone(),
             env!("CARGO_PKG_VERSION").into(),
             metadata.daemon_version.clone(),
-            PRODUCT_ID.into(),
         ),
     )
     .await?;

@@ -10,7 +10,7 @@ use sshx_core::proto::{
     ClientUpdate, CloseRequest, CloseResponse, OpenRequest, OpenResponse, ServerUpdate,
     TerminalSize,
 };
-use sshx_core::{rand_alphanumeric, Sid, PRODUCT_ID};
+use sshx_core::{rand_alphanumeric, Sid};
 use tokio::sync::mpsc;
 use tokio::time::{self, MissedTickBehavior};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -93,7 +93,6 @@ impl SshxService for GrpcServer {
             name,
             token: BASE64_STANDARD.encode(token.into_bytes()),
             url,
-            product: PRODUCT_ID.into(),
         }))
     }
 

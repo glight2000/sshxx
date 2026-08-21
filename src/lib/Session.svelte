@@ -292,8 +292,6 @@
   let failureStage: "server" | "session" | null = null;
   let readinessTimer: number | null = null;
   let lastNotifiedConnectionIssue = "";
-  const incompatibleServerMessage =
-    "This server is not sshxx-server. The upstream public sshx service is intentionally unsupported; use a self-hosted sshxx-server.";
 
   function clearReadinessTimer() {
     if (readinessTimer !== null) {
@@ -523,12 +521,6 @@
     srocket = new Srocket<WsServer, WsClient>(`/api/s/${id}`, {
       onMessage(message) {
         if (message.hello) {
-          if (message.hello[4] !== "sshxx") {
-            clearReadinessTimer();
-            reportConnectionIssue(incompatibleServerMessage, "server");
-            srocket?.dispose();
-            return;
-          }
           userId = message.hello[0];
           dispatch("receiveName", message.hello[1]);
           serverVersion = message.hello[2] || "unknown";

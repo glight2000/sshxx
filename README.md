@@ -19,9 +19,12 @@ to Eric Zhang and all upstream contributors for the original architecture and
 implementation. This repository preserves the upstream Git history and MIT
 license, then extends the project for a different set of personal workflows.
 
-> **Self-hosted only:** sshxx does not use or support the public service at
-> `sshx.io`. Current sshxx clients and daemons intentionally reject upstream
-> sshx servers and services. Deploy and connect to your own `sshxx-server`.
+> **Self-hosted by default:** sshxx never selects or recommends the upstream
+> public service at `sshx.io`, and this project does not guarantee compatibility
+> with or provide support for it. A user may still connect intentionally after
+> explicit acknowledgement: pass `--allow-upstream-service` to `sshxx-daemon` or
+> confirm the warning shown by the packaged client. For supported operation,
+> deploy and connect to your own `sshxx-server`.
 
 ## At a glance
 

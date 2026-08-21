@@ -11,7 +11,7 @@ use sshx_core::proto::{
     sshx_service_client::SshxServiceClient, ClientUpdate, CloseRequest, FileResponse, NewShell,
     OpenRequest, WorkspacePage, WorkspaceState,
 };
-use sshx_core::{rand_alphanumeric, Sid, PRODUCT_ID, WORKSPACE_FORMAT_VERSION};
+use sshx_core::{rand_alphanumeric, Sid, WORKSPACE_FORMAT_VERSION};
 use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task;
 use tokio::time::{self, Duration, Instant, MissedTickBehavior};
@@ -44,7 +44,8 @@ fn server_hostname(origin: &str) -> Option<&str> {
     Some(authority.split(':').next().unwrap_or(authority))
 }
 
-fn is_upstream_sshx_origin(origin: &str) -> bool {
+/// Returns whether an origin targets the upstream project's public service.
+pub fn is_upstream_sshx_origin(origin: &str) -> bool {
     let Some(hostname) = server_hostname(origin) else {
         return false;
     };
@@ -145,10 +146,6 @@ impl Controller {
         encryption_key: Option<&str>,
         persistence: Option<PersistencePaths>,
     ) -> Result<Self> {
-        anyhow::ensure!(
-            !is_upstream_sshx_origin(origin),
-            "the public sshx.io service is not supported; use a self-hosted sshxx-server"
-        );
         let (workspace_path, ssh_profiles_path, uploads_path) = match persistence {
             Some(paths) => (
                 Some(paths.workspace),
@@ -259,10 +256,6 @@ impl Controller {
             ssh_profiles: ssh_profile_state,
         };
         let mut resp = client.open(req).await?.into_inner();
-        anyhow::ensure!(
-            resp.product == PRODUCT_ID,
-            "the selected server is not sshxx-server; upstream sshx services are not supported"
-        );
         resp.url = resp.url + "#" + &encryption_key;
 
         let write_url = if let Some(write_password) = write_password {
@@ -777,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_upstream_public_service_origins() {
+    fn identifies_upstream_public_service_origins() {
         for origin in [
             "https://sshx.io",
             "https://SSHX.IO.",

@@ -3,9 +3,13 @@ use std::process::ExitCode;
 use ansi_term::Color::{Cyan, Fixed, Green};
 use anyhow::Result;
 use clap::Parser;
-use sshx_daemon::{controller::Controller, runner::Runner, terminal::get_default_shell};
+use sshx_daemon::{
+    controller::{is_upstream_sshx_origin, Controller},
+    runner::Runner,
+    terminal::get_default_shell,
+};
 use tokio::signal;
-use tracing::error;
+use tracing::{error, warn};
 
 /// A self-hosted, persistent, collaborative terminal daemon.
 #[derive(Parser, Debug)]
@@ -14,6 +18,11 @@ struct Args {
     /// Address of the remote sshxx server.
     #[clap(long, default_value = "http://localhost:8051", env = "SSHXX_SERVER")]
     server: String,
+
+    /// Explicitly allow use of the upstream sshx public service. This service
+    /// is not selected by default and compatibility is not supported by sshxx.
+    #[clap(long, env = "SSHXX_ALLOW_UPSTREAM_SERVICE")]
+    allow_upstream_service: bool,
 
     /// Local shell command to run in the terminal.
     #[clap(long)]
@@ -75,8 +84,26 @@ fn print_greeting(shell: &str, controller: &Controller) {
     }
 }
 
+fn validate_server_selection(server: &str, allow_upstream_service: bool) -> Result<bool> {
+    let uses_upstream_service = is_upstream_sshx_origin(server);
+    anyhow::ensure!(
+        !uses_upstream_service || allow_upstream_service,
+        "connecting to the upstream sshx public service requires explicit consent; add --allow-upstream-service after reviewing the compatibility and support notice"
+    );
+    Ok(uses_upstream_service)
+}
+
 #[tokio::main]
 async fn start(args: Args) -> Result<()> {
+    let uses_upstream_service =
+        validate_server_selection(&args.server, args.allow_upstream_service)?;
+    if uses_upstream_service {
+        warn!(
+            server = %args.server,
+            "using the upstream sshx public service by explicit request; sshxx does not guarantee compatibility or provide support for this connection"
+        );
+    }
+
     let shell = match args.shell {
         Some(shell) => shell,
         None => get_default_shell().await,
@@ -139,5 +166,17 @@ fn main() -> ExitCode {
             error!("{err:?}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_server_selection;
+
+    #[test]
+    fn upstream_service_requires_explicit_consent() {
+        assert!(validate_server_selection("https://sshx.io", false).is_err());
+        assert!(validate_server_selection("https://sshx.io", true).unwrap());
+        assert!(!validate_server_selection("http://localhost:8051", false).unwrap());
     }
 }

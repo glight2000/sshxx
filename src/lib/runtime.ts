@@ -3,17 +3,13 @@
 const SERVER_QUERY_PARAM = "server";
 const UPSTREAM_SSHX_HOST = "sshx.io";
 
-/** Rejects the upstream public service before opening a network connection. */
-function assertSupportedServerOrigin(url: URL): void {
+/** Returns whether a URL targets the upstream project's public service. */
+export function isUpstreamSshxUrl(url: URL): boolean {
   const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
-  if (
+  return (
     hostname === UPSTREAM_SSHX_HOST ||
     hostname.endsWith(`.${UPSTREAM_SSHX_HOST}`)
-  ) {
-    throw new Error(
-      "the public sshx.io service is not supported; use a self-hosted sshxx-server",
-    );
-  }
+  );
 }
 
 /** Returns whether the frontend is running inside a Tauri webview. */
@@ -40,7 +36,6 @@ export function resolveWebSocketUrl(path: string): string {
   if (base.protocol !== "http:" && base.protocol !== "https:") {
     throw new Error("an sshxx server origin is required in the packaged app");
   }
-  assertSupportedServerOrigin(base);
 
   const url = new URL(path, base);
   url.protocol = base.protocol === "https:" ? "wss:" : "ws:";
@@ -53,7 +48,6 @@ export function viewerRouteFromShareUrl(value: string): string {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("the session link must use http or https");
   }
-  assertSupportedServerOrigin(url);
 
   const match = /^\/s\/([^/]+)\/?$/.exec(url.pathname);
   if (!match) {
