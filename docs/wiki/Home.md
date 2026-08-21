@@ -11,7 +11,7 @@ render the same canvas.
 
 - [Feature guide](Features.md)
 - [Keyboard and mouse controls](Keyboard-and-Mouse.md)
-- [Architecture, synchronization, and persistence](Architecture-and-State.md)
+- [Architecture, synchronization, persistence, and security](Architecture-and-State.md)
 
 ## Important limitations
 
