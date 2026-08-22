@@ -49,6 +49,12 @@
   } from "./ui/CodeEditor.svelte";
   import Avatars from "./ui/Avatars.svelte";
   import LiveCursor from "./ui/LiveCursor.svelte";
+  import {
+    canvasCameraCss,
+    canvasViewportAnchor,
+    screenToCanvasPosition,
+  } from "./canvasCamera";
+  import { portal } from "./action/portal";
   import { slide } from "./action/slide";
   import { TouchZoom, INITIAL_ZOOM } from "./action/touchZoom";
   import {
@@ -87,10 +93,6 @@
   const CONSTANT_OFFSET_LEFT = 378;
   const CONSTANT_OFFSET_TOP = 240;
 
-  const OFFSET_LEFT_CSS = `calc(50vw - ${CONSTANT_OFFSET_LEFT}px)`;
-  const OFFSET_TOP_CSS = `calc(50vh - ${CONSTANT_OFFSET_TOP}px)`;
-  const OFFSET_TRANSFORM_ORIGIN_CSS = `calc(-1 * ${OFFSET_LEFT_CSS}) calc(-1 * ${OFFSET_TOP_CSS})`;
-
   // Terminal width and height limits.
   const TERM_INITIAL_ROWS = 26;
   const TERM_INITIAL_COLS = 79;
@@ -125,13 +127,16 @@
           : "nwse-resize";
 
   function getConstantOffset() {
-    return [
-      0.5 * window.innerWidth - CONSTANT_OFFSET_LEFT,
-      0.5 * window.innerHeight - CONSTANT_OFFSET_TOP,
-    ];
+    return canvasViewportAnchor(
+      window.innerWidth,
+      window.innerHeight,
+      CONSTANT_OFFSET_LEFT,
+      CONSTANT_OFFSET_TOP,
+    );
   }
 
   let fabricEl: HTMLElement;
+  let fullscreenLayer: HTMLElement | null = null;
   let touchZoom: TouchZoom;
   let center = [0, 0];
   let zoom = INITIAL_ZOOM;
@@ -475,11 +480,12 @@
 
   /** Returns the mouse position in infinite grid coordinates, offset transformations and zoom. */
   function normalizePosition(event: MouseEvent): [number, number] {
-    const [ox, oy] = getConstantOffset();
-    return [
-      Math.round(center[0] + event.pageX / zoom - ox),
-      Math.round(center[1] + event.pageY / zoom - oy),
-    ];
+    return screenToCanvasPosition(
+      [event.pageX, event.pageY],
+      center,
+      zoom,
+      getConstantOffset(),
+    );
   }
 
   function handlePageContextMenu(event: MouseEvent) {
@@ -623,6 +629,7 @@
 
   // Browser-local view state: never sent to server or persisted by daemon.
   let activePageId = 1;
+  let switchingPage = false;
   let preferredPageId = 1;
   let selectCreatedPage = false;
   const pageViews: Record<number, { center: number[]; zoom: number }> = {
@@ -1385,6 +1392,7 @@
     pendingCanvasSelection = null;
     pendingCanvasTitleFocus = null;
     selectionMarquee = null;
+    switchingPage = true;
     activePageId = pageId;
     const view = pageViews[pageId] ?? {
       center: [0, 0],
@@ -1394,6 +1402,9 @@
     center = [...view.center];
     zoom = view.zoom;
     touchZoom?.setView(center, zoom);
+    void tick().then(() => {
+      switchingPage = false;
+    });
     scheduleLocalViewSave();
     srocket?.send({ setCursor: [pageId, null] });
     if (document.activeElement instanceof HTMLElement) {
@@ -2941,21 +2952,26 @@
     }}
   />
 
-  <!--
-    Dotted circle background appears underneath the rest of the elements, but
-    moves and zooms with the fabric of the canvas.
-  -->
   <div
-    class="absolute inset-0 -z-10"
-    style:background-image="radial-gradient(var(--canvas-grid-dot) {zoom}px,
-    transparent 0)"
-    style:background-size="{GRID_SIZE * zoom}px {GRID_SIZE * zoom}px"
-    style:background-position="calc({zoom * 50}vw - {zoom *
-      (CONSTANT_OFFSET_LEFT + center[0])}px) calc({zoom * 50}vh - {zoom *
-      (CONSTANT_OFFSET_TOP + center[1])}px)"
-  ></div>
+    class="absolute inset-0 overflow-hidden touch-none"
+    style={canvasCameraCss(
+      center,
+      zoom,
+      CONSTANT_OFFSET_LEFT,
+      CONSTANT_OFFSET_TOP,
+      GRID_SIZE,
+    )}
+    bind:this={fabricEl}
+  >
+    <!-- The grid and world consume the same camera variables from one node. -->
+    <div class="canvas-grid pointer-events-none absolute inset-0"></div>
 
-  <div class="absolute inset-0 overflow-hidden touch-none" bind:this={fabricEl}>
+    <!-- Fullscreen items are portaled here to escape the world transform. -->
+    <div
+      class="canvas-fullscreen-layer pointer-events-none absolute inset-0"
+      bind:this={fullscreenLayer}
+    ></div>
+
     {#if selectionMarquee?.moved}
       {@const selectionRect = marqueeRect(
         selectionMarquee.startX,
@@ -2973,585 +2989,635 @@
       ></div>
     {/if}
 
-    {#each shells.filter(([, winsize]) => winsize.pageId === activePageId) as [id, winsize] (id)}
-      {@const ws =
-        groupTerminalStates[id] ??
-        (id === moving ? movingSize : id === resizing ? resizingSize : winsize)}
-      {@const terminalKey = canvasItemKey("terminal", id)}
-      {@const terminalDropOffset = canvasDropPreviewOffsets[terminalKey]}
-      <div
-        class="absolute"
-        data-canvas-terminal={id}
-        class:canvas-active={focusedTerminalId === id}
-        class:canvas-selected={selectedCanvasItems.includes(terminalKey)}
-        class:canvas-page-drop-preview={terminalDropOffset !== undefined}
-        class:canvas-interacting={groupTerminalStates[id] !== undefined ||
-          moving === id ||
-          resizing === id}
-        class:canvas-fullscreen={fullscreenItems[`terminal:${id}`]}
-        class:canvas-floating={terminalFloating[id]}
-        style:left={OFFSET_LEFT_CSS}
-        style:top={OFFSET_TOP_CSS}
-        style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
-        style:--canvas-drop-x={terminalDropOffset
-          ? `${terminalDropOffset[0]}px`
-          : "0px"}
-        style:--canvas-drop-y={terminalDropOffset
-          ? `${terminalDropOffset[1]}px`
-          : "0px"}
-        transition:fade|local
-        use:slide={{
-          x: ws.x,
-          y: ws.y,
-          center,
-          zoom,
-          immediate:
-            groupTerminalStates[id] !== undefined ||
-            id === moving ||
-            id === resizing,
-        }}
-        bind:this={termWrappers[id]}
-      >
-        <XTerm
-          rows={ws.rows}
-          cols={ws.cols}
-          windowWidth={ws.width}
-          windowHeight={ws.height}
-          canvasZoom={zoom}
-          title={ws.title}
-          background={ws.background}
-          colorTheme={ws.theme}
-          opacity={ws.opacity}
-          fullscreen={fullscreenItems[`terminal:${id}`] ?? false}
-          linkedNotes={notes
-            .filter(([, note]) => note.linkedShellIds.includes(id))
-            .map(([noteId, note]) => ({
-              id: noteId,
-              label: noteTitle(noteId, note),
-              kind: "note" as const,
-            }))}
-          linkedHighlight={focusedNoteId !== null &&
-            (notes
-              .find(([noteId]) => noteId === focusedNoteId)?.[1]
-              .linkedShellIds.includes(id) ??
-              false)}
-          paragraphDropActive={paragraphDropTarget?.kind === "terminal" &&
-            paragraphDropTarget.id === id}
-          {hasWriteAccess}
-          bind:write={writers[id]}
-          bind:sendText={terminalTextSenders[id]}
-          bind:termEl={termElements[id]}
-          on:data={({ detail: data }) =>
-            hasWriteAccess && queueTerminalInput(id, ws.pageId, data)}
-          on:uploadImage={({ detail: file }) =>
-            hasWriteAccess && queueImageUpload(id, ws.pageId, file)}
-          on:close={() => srocket?.send({ close: [id, ws.pageId] })}
-          on:duplicate={(event) => handleDuplicate(id, event.detail)}
-          on:toggleFullscreen={() => toggleFullscreen("terminal", id)}
-          on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
-          on:unlinkNote={(event) =>
-            removeCanvasRelation(event.detail.id, {
-              id,
-              kind: "terminal",
-              label: terminalTitle(id, ws),
-            })}
-          on:openFiles={(event) => {
-            openFileWindow(
-              id,
-              ws.pageId,
-              event.detail,
-              ws.title || terminalTitles[id] || `Terminal ${id}`,
-            );
-          }}
-          on:appearance={(event) =>
-            srocket?.send({
-              move: [id, ws.pageId, { ...ws, ...event.detail }],
-            })}
-          on:floatingChange={(event) =>
-            (terminalFloating = {
-              ...terminalFloating,
-              [id]: event.detail,
-            })}
-          on:title={(event) => {
-            terminalTitles = { ...terminalTitles, [id]: event.detail };
-          }}
-          on:bringToFront={() => {
-            if (!hasWriteAccess) return;
-            showNetworkInfo = false;
-            srocket?.send({ move: [id, ws.pageId, null] });
-          }}
-          on:startMove={({ detail: event }) => {
-            if (
-              event.button !== 0 ||
-              !hasWriteAccess ||
-              fullscreenItems[`terminal:${id}`]
-            )
-              return;
-            if (startCanvasGroupMove("terminal", id, event)) return;
-            const startingSize = ws;
-            const [x, y] = normalizePosition(event);
-            movingOrigin = [x - startingSize.x, y - startingSize.y];
-            movingStartClient = [event.clientX, event.clientY];
-            movingDidMove = false;
-            movingStartSize = startingSize;
-            movingSize = startingSize;
-            movingIsDone = false;
-            moving = id;
-          }}
-          on:focus={() => {
-            clearCanvasSelection();
-            if (!hasWriteAccess) return;
-            focusedTerminalId = id;
-            focusedNoteId = null;
-            focusedFileWindowId = null;
-            focused = [...focused, [id, ws.pageId]];
-          }}
-          on:blur={() => {
-            if (focusedTerminalId === id) focusedTerminalId = null;
-            focused = focused.filter(([focusedId]) => focusedId !== id);
-          }}
-        />
+    <div class="canvas-world pointer-events-none absolute inset-0">
+      {#each shells.filter(([, winsize]) => winsize.pageId === activePageId) as [id, winsize] (id)}
+        {@const ws =
+          groupTerminalStates[id] ??
+          (id === moving
+            ? movingSize
+            : id === resizing
+              ? resizingSize
+              : winsize)}
+        {@const terminalKey = canvasItemKey("terminal", id)}
+        {@const terminalDropOffset = canvasDropPreviewOffsets[terminalKey]}
+        <div class="canvas-world-slot">
+          <div
+            class="canvas-world-item absolute"
+            data-canvas-terminal={id}
+            class:canvas-active={focusedTerminalId === id}
+            class:canvas-selected={selectedCanvasItems.includes(terminalKey)}
+            class:canvas-page-drop-preview={terminalDropOffset !== undefined}
+            class:canvas-interacting={groupTerminalStates[id] !== undefined ||
+              moving === id ||
+              resizing === id}
+            class:canvas-fullscreen={fullscreenItems[`terminal:${id}`]}
+            class:canvas-floating={terminalFloating[id]}
+            style:--canvas-drop-x={terminalDropOffset
+              ? `${terminalDropOffset[0]}px`
+              : "0px"}
+            style:--canvas-drop-y={terminalDropOffset
+              ? `${terminalDropOffset[1]}px`
+              : "0px"}
+            transition:fade|local={{ duration: switchingPage ? 0 : 400 }}
+            use:portal={{
+              active: fullscreenItems[`terminal:${id}`] ?? false,
+              target: fullscreenLayer,
+            }}
+            use:slide={{
+              x: ws.x,
+              y: ws.y,
+              immediate:
+                groupTerminalStates[id] !== undefined ||
+                id === moving ||
+                id === resizing,
+            }}
+            bind:this={termWrappers[id]}
+          >
+            <XTerm
+              rows={ws.rows}
+              cols={ws.cols}
+              windowWidth={ws.width}
+              windowHeight={ws.height}
+              canvasZoom={zoom}
+              title={ws.title}
+              background={ws.background}
+              colorTheme={ws.theme}
+              opacity={ws.opacity}
+              fullscreen={fullscreenItems[`terminal:${id}`] ?? false}
+              linkedNotes={notes
+                .filter(([, note]) => note.linkedShellIds.includes(id))
+                .map(([noteId, note]) => ({
+                  id: noteId,
+                  label: noteTitle(noteId, note),
+                  kind: "note" as const,
+                }))}
+              linkedHighlight={focusedNoteId !== null &&
+                (notes
+                  .find(([noteId]) => noteId === focusedNoteId)?.[1]
+                  .linkedShellIds.includes(id) ??
+                  false)}
+              paragraphDropActive={paragraphDropTarget?.kind === "terminal" &&
+                paragraphDropTarget.id === id}
+              {hasWriteAccess}
+              bind:write={writers[id]}
+              bind:sendText={terminalTextSenders[id]}
+              bind:termEl={termElements[id]}
+              on:data={({ detail: data }) =>
+                hasWriteAccess && queueTerminalInput(id, ws.pageId, data)}
+              on:uploadImage={({ detail: file }) =>
+                hasWriteAccess && queueImageUpload(id, ws.pageId, file)}
+              on:close={() => srocket?.send({ close: [id, ws.pageId] })}
+              on:duplicate={(event) => handleDuplicate(id, event.detail)}
+              on:toggleFullscreen={() => toggleFullscreen("terminal", id)}
+              on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
+              on:unlinkNote={(event) =>
+                removeCanvasRelation(event.detail.id, {
+                  id,
+                  kind: "terminal",
+                  label: terminalTitle(id, ws),
+                })}
+              on:openFiles={(event) => {
+                openFileWindow(
+                  id,
+                  ws.pageId,
+                  event.detail,
+                  ws.title || terminalTitles[id] || `Terminal ${id}`,
+                );
+              }}
+              on:appearance={(event) =>
+                srocket?.send({
+                  move: [id, ws.pageId, { ...ws, ...event.detail }],
+                })}
+              on:floatingChange={(event) =>
+                (terminalFloating = {
+                  ...terminalFloating,
+                  [id]: event.detail,
+                })}
+              on:title={(event) => {
+                terminalTitles = { ...terminalTitles, [id]: event.detail };
+              }}
+              on:bringToFront={() => {
+                if (!hasWriteAccess) return;
+                showNetworkInfo = false;
+                srocket?.send({ move: [id, ws.pageId, null] });
+              }}
+              on:startMove={({ detail: event }) => {
+                if (
+                  event.button !== 0 ||
+                  !hasWriteAccess ||
+                  fullscreenItems[`terminal:${id}`]
+                )
+                  return;
+                if (startCanvasGroupMove("terminal", id, event)) return;
+                const startingSize = ws;
+                const [x, y] = normalizePosition(event);
+                movingOrigin = [x - startingSize.x, y - startingSize.y];
+                movingStartClient = [event.clientX, event.clientY];
+                movingDidMove = false;
+                movingStartSize = startingSize;
+                movingSize = startingSize;
+                movingIsDone = false;
+                moving = id;
+              }}
+              on:focus={() => {
+                clearCanvasSelection();
+                if (!hasWriteAccess) return;
+                focusedTerminalId = id;
+                focusedNoteId = null;
+                focusedFileWindowId = null;
+                focused = [...focused, [id, ws.pageId]];
+              }}
+              on:blur={() => {
+                if (focusedTerminalId === id) focusedTerminalId = null;
+                focused = focused.filter(([focusedId]) => focusedId !== id);
+              }}
+            />
 
-        <!-- User avatars -->
-        <div class="absolute bottom-2.5 right-2.5 pointer-events-none">
-          <Avatars
-            users={users.filter(
-              ([uid, user]) =>
-                uid !== userId &&
-                user.pageId === ws.pageId &&
-                user.focus === id,
-            )}
-          />
+            <!-- User avatars -->
+            <div class="absolute bottom-2.5 right-2.5 pointer-events-none">
+              <Avatars
+                users={users.filter(
+                  ([uid, user]) =>
+                    uid !== userId &&
+                    user.pageId === ws.pageId &&
+                    user.focus === id,
+                )}
+              />
+            </div>
+
+            <ResizeHandles
+              disabled={!hasWriteAccess || fullscreenItems[`terminal:${id}`]}
+              on:start={({ detail }) => {
+                pendingCanvasSelection = null;
+                clearCanvasSelection();
+                const canvasEl =
+                  termElements[id].querySelector(".xterm-screen");
+                if (canvasEl) {
+                  const screenRect = canvasEl.getBoundingClientRect();
+                  const wrapperRect = termWrappers[id].getBoundingClientRect();
+                  const canvasWidth = ws.width || wrapperRect.width / zoom;
+                  const canvasHeight = ws.height || wrapperRect.height / zoom;
+                  resizingStartPointer = normalizePosition(detail.event);
+                  resizingStartEdges = [
+                    ws.x,
+                    ws.y,
+                    ws.x + canvasWidth,
+                    ws.y + canvasHeight,
+                  ];
+                  resizingStartPixels = [canvasWidth, canvasHeight];
+                  resizingStartSize = ws;
+                  resizingCanvasCell = [
+                    screenRect.width / zoom / ws.cols,
+                    screenRect.height / zoom / ws.rows,
+                  ];
+                  resizingSize = ws;
+                  resizingDirection = detail.direction;
+                  resizing = id;
+                }
+              }}
+            />
+          </div>
         </div>
+      {/each}
 
-        <ResizeHandles
-          disabled={!hasWriteAccess || fullscreenItems[`terminal:${id}`]}
-          on:start={({ detail }) => {
-            pendingCanvasSelection = null;
-            clearCanvasSelection();
-            const canvasEl = termElements[id].querySelector(".xterm-screen");
-            if (canvasEl) {
-              const screenRect = canvasEl.getBoundingClientRect();
-              const wrapperRect = termWrappers[id].getBoundingClientRect();
-              const canvasWidth = ws.width || wrapperRect.width / zoom;
-              const canvasHeight = ws.height || wrapperRect.height / zoom;
-              resizingStartPointer = normalizePosition(detail.event);
-              resizingStartEdges = [
-                ws.x,
-                ws.y,
-                ws.x + canvasWidth,
-                ws.y + canvasHeight,
-              ];
-              resizingStartPixels = [canvasWidth, canvasHeight];
-              resizingStartSize = ws;
-              resizingCanvasCell = [
-                screenRect.width / zoom / ws.cols,
-                screenRect.height / zoom / ws.rows,
-              ];
-              resizingSize = ws;
-              resizingDirection = detail.direction;
-              resizing = id;
-            }
-          }}
-        />
-      </div>
-    {/each}
-
-    {#each notes.filter(([, note]) => note.pageId === activePageId) as [id, note] (id)}
-      {@const displayNote =
-        groupNoteStates[id] ??
-        (id === movingNote
-          ? movingNoteState
-          : id === resizingNote
-            ? resizingNoteState
-            : note)}
-      {@const noteKey = canvasItemKey("note", id)}
-      {@const noteDropOffset = canvasDropPreviewOffsets[noteKey]}
-      <div
-        class="absolute"
-        data-canvas-note-wrapper={id}
-        class:canvas-active={focusedNoteId === id}
-        class:canvas-selected={selectedCanvasItems.includes(noteKey)}
-        class:canvas-page-drop-preview={noteDropOffset !== undefined}
-        class:canvas-interacting={groupNoteStates[id] !== undefined ||
-          movingNote === id ||
-          resizingNote === id}
-        class:canvas-fullscreen={fullscreenItems[`note:${id}`]}
-        class:canvas-floating={noteFloating[id]}
-        style:left={OFFSET_LEFT_CSS}
-        style:top={OFFSET_TOP_CSS}
-        style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
-        style:--canvas-drop-x={noteDropOffset
-          ? `${noteDropOffset[0]}px`
-          : "0px"}
-        style:--canvas-drop-y={noteDropOffset
-          ? `${noteDropOffset[1]}px`
-          : "0px"}
-        style:opacity={displayNote.opacity / 100}
-        transition:fade|local
-        use:slide={{
-          x: displayNote.x,
-          y: displayNote.y,
-          center,
-          zoom,
-          immediate:
-            groupNoteStates[id] !== undefined ||
-            id === movingNote ||
-            id === resizingNote,
-        }}
-        bind:this={noteWrappers[id]}
-      >
-        <Note
-          noteId={id}
-          note={displayNote}
-          {hasWriteAccess}
-          {userId}
-          editingBy={noteEditors[id]?.pageId === note.pageId
-            ? noteEditors[id].userId
-            : null}
-          editingName={users.find(
-            ([uid]) => uid === noteEditors[id]?.userId,
-          )?.[1].name ?? ""}
-          fullscreen={fullscreenItems[`note:${id}`] ?? false}
-          linkedItems={[
-            ...displayNote.linkedShellIds.flatMap((shellId) => {
-              const shell = shells.find(([id]) => id === shellId)?.[1];
-              return shell
-                ? [
-                    {
-                      id: shellId,
-                      label: terminalTitle(shellId, shell),
-                      kind: "terminal" as const,
-                    },
-                  ]
-                : [];
-            }),
-            ...associatedNoteIds(id).flatMap((linkedNoteId) => {
-              const linkedNote = notes.find(
-                ([noteId]) => noteId === linkedNoteId,
-              )?.[1];
-              return linkedNote
-                ? [
-                    {
-                      id: linkedNoteId,
-                      label: noteTitle(linkedNoteId, linkedNote),
-                      kind: "note" as const,
-                    },
-                  ]
-                : [];
-            }),
-            ...displayNote.linkedFileWindowIds.flatMap((windowId) => {
-              const fileWindow = fileWindows.find(
-                ([id]) => id === windowId,
-              )?.[1];
-              return fileWindow
-                ? [
-                    {
-                      id: windowId,
-                      label: fileWindowTitle(windowId, fileWindow),
-                      kind: "file" as const,
-                    },
-                  ]
-                : [];
-            }),
-          ]}
-          linkSelecting={linkingNoteId === id}
-          linkedHighlight={(focusedTerminalId !== null &&
-            displayNote.linkedShellIds.includes(focusedTerminalId)) ||
-            (focusedFileWindowId !== null &&
-              displayNote.linkedFileWindowIds.includes(focusedFileWindowId)) ||
-            (focusedNoteId !== null &&
-              focusedNoteId !== id &&
-              associatedNoteIds(id).includes(focusedNoteId))}
-          linkedHighlightSource={focusedTerminalId !== null &&
-          displayNote.linkedShellIds.includes(focusedTerminalId)
-            ? "terminal"
-            : focusedFileWindowId !== null &&
-                displayNote.linkedFileWindowIds.includes(focusedFileWindowId)
-              ? "file"
-              : focusedNoteId !== null &&
-                  focusedNoteId !== id &&
-                  associatedNoteIds(id).includes(focusedNoteId)
-                ? "note"
+      {#each notes.filter(([, note]) => note.pageId === activePageId) as [id, note] (id)}
+        {@const displayNote =
+          groupNoteStates[id] ??
+          (id === movingNote
+            ? movingNoteState
+            : id === resizingNote
+              ? resizingNoteState
+              : note)}
+        {@const noteKey = canvasItemKey("note", id)}
+        {@const noteDropOffset = canvasDropPreviewOffsets[noteKey]}
+        <div class="canvas-world-slot">
+          <div
+            class="canvas-world-item absolute"
+            data-canvas-note-wrapper={id}
+            class:canvas-active={focusedNoteId === id}
+            class:canvas-selected={selectedCanvasItems.includes(noteKey)}
+            class:canvas-page-drop-preview={noteDropOffset !== undefined}
+            class:canvas-interacting={groupNoteStates[id] !== undefined ||
+              movingNote === id ||
+              resizingNote === id}
+            class:canvas-fullscreen={fullscreenItems[`note:${id}`]}
+            class:canvas-floating={noteFloating[id]}
+            style:--canvas-drop-x={noteDropOffset
+              ? `${noteDropOffset[0]}px`
+              : "0px"}
+            style:--canvas-drop-y={noteDropOffset
+              ? `${noteDropOffset[1]}px`
+              : "0px"}
+            style:opacity={displayNote.opacity / 100}
+            transition:fade|local={{ duration: switchingPage ? 0 : 400 }}
+            use:portal={{
+              active: fullscreenItems[`note:${id}`] ?? false,
+              target: fullscreenLayer,
+            }}
+            use:slide={{
+              x: displayNote.x,
+              y: displayNote.y,
+              immediate:
+                groupNoteStates[id] !== undefined ||
+                id === movingNote ||
+                id === resizingNote,
+            }}
+            bind:this={noteWrappers[id]}
+          >
+            <Note
+              noteId={id}
+              note={displayNote}
+              {hasWriteAccess}
+              {userId}
+              editingBy={noteEditors[id]?.pageId === note.pageId
+                ? noteEditors[id].userId
                 : null}
-          paragraphDropIndex={paragraphDropTarget?.kind === "note" &&
-          paragraphDropTarget.id === id
-            ? (paragraphDropTarget.noteInsertIndex ?? null)
-            : null}
-          on:toggleFullscreen={() => toggleFullscreen("note", id)}
-          on:floatingChange={(event) =>
-            (noteFloating = { ...noteFloating, [id]: event.detail })}
-          on:toggleLink={() => toggleCanvasLinkSelection(id)}
-          on:navigateRelation={(event) => navigateCanvasRelation(event.detail)}
-          on:unlinkRelation={(event) => removeCanvasRelation(id, event.detail)}
-          on:sendParagraph={(event) => sendNoteParagraph(id, event.detail)}
-          on:paragraphDragStart={(event) => {
-            linkingNoteId = null;
-            paragraphDrag = event.detail;
-          }}
-          on:paragraphDragEnd={finishParagraphDrag}
-          on:close={() => srocket?.send({ closeNote: [id, note.pageId] })}
-          on:update={(event) =>
-            srocket?.send({
-              updateNote: [id, note.pageId, event.detail],
-            })}
-          on:editing={(event) =>
-            srocket?.send({
-              setNoteEditing: [id, note.pageId, event.detail],
-            })}
-          on:paragraphs={(event) => {
-            const paragraphs = event.detail;
-            notes = notes.map(([noteId, note]) =>
-              noteId === id
-                ? [noteId, { ...note, paragraphs, text: paragraphs.join("\n") }]
-                : [noteId, note],
-            );
-            srocket?.send({
-              updateNoteParagraphs: [id, note.pageId, paragraphs],
-            });
-          }}
-          on:focus={() => {
-            clearCanvasSelection();
-            focusedNoteId = id;
-            focusedTerminalId = null;
-            focusedFileWindowId = null;
-          }}
-          on:blur={() => {
-            if (focusedNoteId === id) focusedNoteId = null;
-          }}
-          on:bringToFront={() =>
-            srocket?.send({ updateNote: [id, note.pageId, null] })}
-          on:startMove={({ detail: event }) => {
-            if (fullscreenItems[`note:${id}`]) return;
-            if (startCanvasGroupMove("note", id, event)) return;
-            const startingNote = displayNote;
-            const [x, y] = normalizePosition(event);
-            movingNoteOrigin = [x - startingNote.x, y - startingNote.y];
-            movingNoteStartClient = [event.clientX, event.clientY];
-            movingNoteDidMove = false;
-            movingNoteStartState = startingNote;
-            movingNoteState = startingNote;
-            movingNote = id;
-          }}
-          on:startResize={({ detail }) => {
-            if (fullscreenItems[`note:${id}`]) return;
-            pendingCanvasSelection = null;
-            clearCanvasSelection();
-            const startingNote = displayNote;
-            resizingNoteStartPointer = normalizePosition(detail.event);
-            resizingNoteStartState = startingNote;
-            resizingNoteState = startingNote;
-            resizingNoteDirection = detail.direction;
-            srocket?.send({ updateNote: [id, note.pageId, null] });
-            resizingNote = id;
-          }}
-        />
-      </div>
-    {/each}
-
-    {#each fileWindows.filter(([, window]) => window.pageId === activePageId) as [id, fileWindow] (id)}
-      {@const displayFileWindow =
-        groupFileStates[id] ??
-        (id === movingFile
-          ? movingFileState
-          : id === resizingFile
-            ? resizingFileState
-            : fileWindow)}
-      {@const fileKey = canvasItemKey("file", id)}
-      {@const fileDropOffset = canvasDropPreviewOffsets[fileKey]}
-      <div
-        class="absolute"
-        data-canvas-file-window={id}
-        class:canvas-active={focusedFileWindowId === id}
-        class:canvas-selected={selectedCanvasItems.includes(fileKey)}
-        class:canvas-page-drop-preview={fileDropOffset !== undefined}
-        class:canvas-interacting={groupFileStates[id] !== undefined ||
-          movingFile === id ||
-          resizingFile === id}
-        class:canvas-fullscreen={fullscreenItems[`file:${id}`]}
-        class:canvas-floating={fileFloating[id]}
-        style:left={OFFSET_LEFT_CSS}
-        style:top={OFFSET_TOP_CSS}
-        style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
-        style:--canvas-drop-x={fileDropOffset
-          ? `${fileDropOffset[0]}px`
-          : "0px"}
-        style:--canvas-drop-y={fileDropOffset
-          ? `${fileDropOffset[1]}px`
-          : "0px"}
-        transition:fade|local
-        use:slide={{
-          x: displayFileWindow.x,
-          y: displayFileWindow.y,
-          center,
-          zoom,
-          immediate:
-            groupFileStates[id] !== undefined ||
-            id === movingFile ||
-            id === resizingFile,
-        }}
-        bind:this={fileWrappers[id]}
-      >
-        {#await loadFileExplorer()}
-          <div
-            class="flex h-full w-full items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-sm text-zinc-500 shadow-sm shadow-black/20"
-            style:width={`${displayFileWindow.width}px`}
-            style:height={`${displayFileWindow.height}px`}
-          >
-            Loading files…
+              editingName={users.find(
+                ([uid]) => uid === noteEditors[id]?.userId,
+              )?.[1].name ?? ""}
+              fullscreen={fullscreenItems[`note:${id}`] ?? false}
+              linkedItems={[
+                ...displayNote.linkedShellIds.flatMap((shellId) => {
+                  const shell = shells.find(([id]) => id === shellId)?.[1];
+                  return shell
+                    ? [
+                        {
+                          id: shellId,
+                          label: terminalTitle(shellId, shell),
+                          kind: "terminal" as const,
+                        },
+                      ]
+                    : [];
+                }),
+                ...associatedNoteIds(id).flatMap((linkedNoteId) => {
+                  const linkedNote = notes.find(
+                    ([noteId]) => noteId === linkedNoteId,
+                  )?.[1];
+                  return linkedNote
+                    ? [
+                        {
+                          id: linkedNoteId,
+                          label: noteTitle(linkedNoteId, linkedNote),
+                          kind: "note" as const,
+                        },
+                      ]
+                    : [];
+                }),
+                ...displayNote.linkedFileWindowIds.flatMap((windowId) => {
+                  const fileWindow = fileWindows.find(
+                    ([id]) => id === windowId,
+                  )?.[1];
+                  return fileWindow
+                    ? [
+                        {
+                          id: windowId,
+                          label: fileWindowTitle(windowId, fileWindow),
+                          kind: "file" as const,
+                        },
+                      ]
+                    : [];
+                }),
+              ]}
+              linkSelecting={linkingNoteId === id}
+              linkedHighlight={(focusedTerminalId !== null &&
+                displayNote.linkedShellIds.includes(focusedTerminalId)) ||
+                (focusedFileWindowId !== null &&
+                  displayNote.linkedFileWindowIds.includes(
+                    focusedFileWindowId,
+                  )) ||
+                (focusedNoteId !== null &&
+                  focusedNoteId !== id &&
+                  associatedNoteIds(id).includes(focusedNoteId))}
+              linkedHighlightSource={focusedTerminalId !== null &&
+              displayNote.linkedShellIds.includes(focusedTerminalId)
+                ? "terminal"
+                : focusedFileWindowId !== null &&
+                    displayNote.linkedFileWindowIds.includes(
+                      focusedFileWindowId,
+                    )
+                  ? "file"
+                  : focusedNoteId !== null &&
+                      focusedNoteId !== id &&
+                      associatedNoteIds(id).includes(focusedNoteId)
+                    ? "note"
+                    : null}
+              paragraphDropIndex={paragraphDropTarget?.kind === "note" &&
+              paragraphDropTarget.id === id
+                ? (paragraphDropTarget.noteInsertIndex ?? null)
+                : null}
+              on:toggleFullscreen={() => toggleFullscreen("note", id)}
+              on:floatingChange={(event) =>
+                (noteFloating = { ...noteFloating, [id]: event.detail })}
+              on:toggleLink={() => toggleCanvasLinkSelection(id)}
+              on:navigateRelation={(event) =>
+                navigateCanvasRelation(event.detail)}
+              on:unlinkRelation={(event) =>
+                removeCanvasRelation(id, event.detail)}
+              on:sendParagraph={(event) => sendNoteParagraph(id, event.detail)}
+              on:paragraphDragStart={(event) => {
+                linkingNoteId = null;
+                paragraphDrag = event.detail;
+              }}
+              on:paragraphDragEnd={finishParagraphDrag}
+              on:close={() => srocket?.send({ closeNote: [id, note.pageId] })}
+              on:update={(event) =>
+                srocket?.send({
+                  updateNote: [id, note.pageId, event.detail],
+                })}
+              on:editing={(event) =>
+                srocket?.send({
+                  setNoteEditing: [id, note.pageId, event.detail],
+                })}
+              on:paragraphs={(event) => {
+                const paragraphs = event.detail;
+                notes = notes.map(([noteId, note]) =>
+                  noteId === id
+                    ? [
+                        noteId,
+                        { ...note, paragraphs, text: paragraphs.join("\n") },
+                      ]
+                    : [noteId, note],
+                );
+                srocket?.send({
+                  updateNoteParagraphs: [id, note.pageId, paragraphs],
+                });
+              }}
+              on:focus={() => {
+                clearCanvasSelection();
+                focusedNoteId = id;
+                focusedTerminalId = null;
+                focusedFileWindowId = null;
+              }}
+              on:blur={() => {
+                if (focusedNoteId === id) focusedNoteId = null;
+              }}
+              on:bringToFront={() =>
+                srocket?.send({ updateNote: [id, note.pageId, null] })}
+              on:startMove={({ detail: event }) => {
+                if (fullscreenItems[`note:${id}`]) return;
+                if (startCanvasGroupMove("note", id, event)) return;
+                const startingNote = displayNote;
+                const [x, y] = normalizePosition(event);
+                movingNoteOrigin = [x - startingNote.x, y - startingNote.y];
+                movingNoteStartClient = [event.clientX, event.clientY];
+                movingNoteDidMove = false;
+                movingNoteStartState = startingNote;
+                movingNoteState = startingNote;
+                movingNote = id;
+              }}
+              on:startResize={({ detail }) => {
+                if (fullscreenItems[`note:${id}`]) return;
+                pendingCanvasSelection = null;
+                clearCanvasSelection();
+                const startingNote = displayNote;
+                resizingNoteStartPointer = normalizePosition(detail.event);
+                resizingNoteStartState = startingNote;
+                resizingNoteState = startingNote;
+                resizingNoteDirection = detail.direction;
+                srocket?.send({ updateNote: [id, note.pageId, null] });
+                resizingNote = id;
+              }}
+            />
           </div>
-        {:then fileExplorerModule}
-          <svelte:component
-            this={fileExplorerModule.default}
-            title={displayFileWindow.title}
-            background={displayFileWindow.background}
-            initialPath={displayFileWindow.path}
-            currentPath={displayFileWindow.currentPath}
-            expandedPaths={displayFileWindow.expandedPaths}
-            selectedPath={displayFileWindow.selectedPath}
-            selectedKind={displayFileWindow.selectedKind}
-            treeScrollTop={displayFileWindow.treeScrollTop}
-            editorPath={displayFileWindow.editorPath}
-            sharedEditorContent={fileEditorBuffers[id]?.path ===
-            displayFileWindow.editorPath
-              ? fileEditorBuffers[id].content
-              : null}
-            sharedEditorDirty={displayFileWindow.editorDirty}
-            width={displayFileWindow.width}
-            height={displayFileWindow.height}
-            sidebarWidth={displayFileWindow.sidebarWidth}
-            treeRevision={displayFileWindow.treeRevision}
-            online={sessionReady}
-            linkedNotes={notes
-              .filter(([, note]) => note.linkedFileWindowIds.includes(id))
-              .map(([noteId, note]) => ({
-                id: noteId,
-                label: noteTitle(noteId, note),
-                kind: "note" as const,
-              }))}
-            linkedHighlight={focusedNoteId !== null &&
-              (notes
-                .find(([noteId]) => noteId === focusedNoteId)?.[1]
-                .linkedFileWindowIds.includes(id) ??
-                false)}
-            paragraphDropState={paragraphDropTarget?.kind === "file" &&
-            paragraphDropTarget.id === id
-              ? paragraphDropTarget.fileReady
-                ? "ready"
-                : "blocked"
-              : "none"}
-            fullscreen={fullscreenItems[`file:${id}`] ?? false}
-            {hasWriteAccess}
-            bind:insertText={fileTextSenders[id]}
-            bind:previewTextDrop={fileDropPreviewers[id]}
-            bind:cancelTextDropPreview={fileDropPreviewCancelers[id]}
-            updateSharedState={(update) =>
-              updateFileWindowSharedState(id, displayFileWindow.pageId, update)}
-            request={(request) =>
-              requestFileOperation(
-                displayFileWindow.shellId,
-                shells.find(
-                  ([shellId]) => shellId === displayFileWindow.shellId,
-                )?.[1].pageId ?? displayFileWindow.pageId,
-                request,
-              )}
-            on:close={() =>
-              hasWriteAccess &&
-              srocket?.send({
-                closeFileWindow: [id, fileWindow.pageId],
-              })}
-            on:toggleFullscreen={() => toggleFullscreen("file", id)}
-            on:floatingChange={(event) =>
-              (fileFloating = { ...fileFloating, [id]: event.detail })}
-            on:openTerminal={(event) =>
-              handleCreateAt(
-                displayFileWindow.shellId,
-                displayFileWindow.pageId,
-                event.detail,
-                displayFileWindow,
-              )}
-            on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
-            on:unlinkNote={(event) =>
-              removeCanvasRelation(event.detail.id, {
-                id,
-                kind: "file",
-                label: fileWindowTitle(id, displayFileWindow),
-              })}
-            on:focus={() => {
-              clearCanvasSelection();
-              focusedFileWindowId = id;
-              focusedTerminalId = null;
-              focusedNoteId = null;
-            }}
-            on:blur={() => {
-              if (focusedFileWindowId === id) focusedFileWindowId = null;
-            }}
-            on:bringToFront={() =>
-              bringFileWindowToFront(id, fileWindow.pageId)}
-            on:startMove={({ detail: event }) => {
-              if (!hasWriteAccess || fullscreenItems[`file:${id}`]) return;
-              if (startCanvasGroupMove("file", id, event)) return;
-              const [x, y] = normalizePosition(event);
-              movingFileOrigin = [
-                x - displayFileWindow.x,
-                y - displayFileWindow.y,
-              ];
-              movingFileStartClient = [event.clientX, event.clientY];
-              movingFileDidMove = false;
-              movingFileStartState = displayFileWindow;
-              movingFileState = displayFileWindow;
-              movingFile = id;
-            }}
-          />
-        {:catch error}
-          <div
-            class="flex h-full w-full items-center justify-center rounded-xl border border-red-900/70 bg-zinc-950 p-6 text-center text-sm text-red-300 shadow-sm shadow-black/20"
-            style:width={`${displayFileWindow.width}px`}
-            style:height={`${displayFileWindow.height}px`}
-            role="alert"
-          >
-            Could not load the file explorer: {error instanceof Error
-              ? error.message
-              : String(error)}
-          </div>
-        {/await}
-        <ResizeHandles
-          disabled={!hasWriteAccess || fullscreenItems[`file:${id}`]}
-          on:start={({ detail }) => {
-            pendingCanvasSelection = null;
-            clearCanvasSelection();
-            resizingFileStartPointer = normalizePosition(detail.event);
-            resizingFileStartState = displayFileWindow;
-            resizingFileState = displayFileWindow;
-            resizingFileDirection = detail.direction;
-            bringFileWindowToFront(id, fileWindow.pageId);
-            resizingFile = id;
-          }}
-        />
-      </div>
-    {/each}
+        </div>
+      {/each}
 
-    {#each users.filter(([id, user]) => id !== userId && user.cursor !== null && user.pageId === activePageId) as [id, user] (id)}
-      <div
-        class="absolute"
-        style:left={OFFSET_LEFT_CSS}
-        style:top={OFFSET_TOP_CSS}
-        style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
-        transition:fade|local={{ duration: 200 }}
-        use:slide={{
-          x: user.cursor?.[0] ?? 0,
-          y: user.cursor?.[1] ?? 0,
-          center,
-          zoom,
-        }}
-      >
-        <LiveCursor userId={id} {user} />
-      </div>
-    {/each}
+      {#each fileWindows.filter(([, window]) => window.pageId === activePageId) as [id, fileWindow] (id)}
+        {@const displayFileWindow =
+          groupFileStates[id] ??
+          (id === movingFile
+            ? movingFileState
+            : id === resizingFile
+              ? resizingFileState
+              : fileWindow)}
+        {@const fileKey = canvasItemKey("file", id)}
+        {@const fileDropOffset = canvasDropPreviewOffsets[fileKey]}
+        <div class="canvas-world-slot">
+          <div
+            class="canvas-world-item absolute"
+            data-canvas-file-window={id}
+            class:canvas-active={focusedFileWindowId === id}
+            class:canvas-selected={selectedCanvasItems.includes(fileKey)}
+            class:canvas-page-drop-preview={fileDropOffset !== undefined}
+            class:canvas-interacting={groupFileStates[id] !== undefined ||
+              movingFile === id ||
+              resizingFile === id}
+            class:canvas-fullscreen={fullscreenItems[`file:${id}`]}
+            class:canvas-floating={fileFloating[id]}
+            style:--canvas-drop-x={fileDropOffset
+              ? `${fileDropOffset[0]}px`
+              : "0px"}
+            style:--canvas-drop-y={fileDropOffset
+              ? `${fileDropOffset[1]}px`
+              : "0px"}
+            transition:fade|local={{ duration: switchingPage ? 0 : 400 }}
+            use:portal={{
+              active: fullscreenItems[`file:${id}`] ?? false,
+              target: fullscreenLayer,
+            }}
+            use:slide={{
+              x: displayFileWindow.x,
+              y: displayFileWindow.y,
+              immediate:
+                groupFileStates[id] !== undefined ||
+                id === movingFile ||
+                id === resizingFile,
+            }}
+            bind:this={fileWrappers[id]}
+          >
+            {#await loadFileExplorer()}
+              <div
+                class="flex h-full w-full items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-sm text-zinc-500 shadow-sm shadow-black/20"
+                style:width={`${displayFileWindow.width}px`}
+                style:height={`${displayFileWindow.height}px`}
+              >
+                Loading files…
+              </div>
+            {:then fileExplorerModule}
+              <svelte:component
+                this={fileExplorerModule.default}
+                title={displayFileWindow.title}
+                background={displayFileWindow.background}
+                initialPath={displayFileWindow.path}
+                currentPath={displayFileWindow.currentPath}
+                expandedPaths={displayFileWindow.expandedPaths}
+                selectedPath={displayFileWindow.selectedPath}
+                selectedKind={displayFileWindow.selectedKind}
+                treeScrollTop={displayFileWindow.treeScrollTop}
+                editorPath={displayFileWindow.editorPath}
+                sharedEditorContent={fileEditorBuffers[id]?.path ===
+                displayFileWindow.editorPath
+                  ? fileEditorBuffers[id].content
+                  : null}
+                sharedEditorDirty={displayFileWindow.editorDirty}
+                width={displayFileWindow.width}
+                height={displayFileWindow.height}
+                sidebarWidth={displayFileWindow.sidebarWidth}
+                treeRevision={displayFileWindow.treeRevision}
+                online={sessionReady}
+                linkedNotes={notes
+                  .filter(([, note]) => note.linkedFileWindowIds.includes(id))
+                  .map(([noteId, note]) => ({
+                    id: noteId,
+                    label: noteTitle(noteId, note),
+                    kind: "note" as const,
+                  }))}
+                linkedHighlight={focusedNoteId !== null &&
+                  (notes
+                    .find(([noteId]) => noteId === focusedNoteId)?.[1]
+                    .linkedFileWindowIds.includes(id) ??
+                    false)}
+                paragraphDropState={paragraphDropTarget?.kind === "file" &&
+                paragraphDropTarget.id === id
+                  ? paragraphDropTarget.fileReady
+                    ? "ready"
+                    : "blocked"
+                  : "none"}
+                fullscreen={fullscreenItems[`file:${id}`] ?? false}
+                {hasWriteAccess}
+                bind:insertText={fileTextSenders[id]}
+                bind:previewTextDrop={fileDropPreviewers[id]}
+                bind:cancelTextDropPreview={fileDropPreviewCancelers[id]}
+                updateSharedState={(update) =>
+                  updateFileWindowSharedState(
+                    id,
+                    displayFileWindow.pageId,
+                    update,
+                  )}
+                request={(request) =>
+                  requestFileOperation(
+                    displayFileWindow.shellId,
+                    shells.find(
+                      ([shellId]) => shellId === displayFileWindow.shellId,
+                    )?.[1].pageId ?? displayFileWindow.pageId,
+                    request,
+                  )}
+                on:close={() =>
+                  hasWriteAccess &&
+                  srocket?.send({
+                    closeFileWindow: [id, fileWindow.pageId],
+                  })}
+                on:toggleFullscreen={() => toggleFullscreen("file", id)}
+                on:floatingChange={(event) =>
+                  (fileFloating = { ...fileFloating, [id]: event.detail })}
+                on:openTerminal={(event) =>
+                  handleCreateAt(
+                    displayFileWindow.shellId,
+                    displayFileWindow.pageId,
+                    event.detail,
+                    displayFileWindow,
+                  )}
+                on:navigateNote={(event) =>
+                  navigateCanvasRelation(event.detail)}
+                on:unlinkNote={(event) =>
+                  removeCanvasRelation(event.detail.id, {
+                    id,
+                    kind: "file",
+                    label: fileWindowTitle(id, displayFileWindow),
+                  })}
+                on:focus={() => {
+                  clearCanvasSelection();
+                  focusedFileWindowId = id;
+                  focusedTerminalId = null;
+                  focusedNoteId = null;
+                }}
+                on:blur={() => {
+                  if (focusedFileWindowId === id) focusedFileWindowId = null;
+                }}
+                on:bringToFront={() =>
+                  bringFileWindowToFront(id, fileWindow.pageId)}
+                on:startMove={({ detail: event }) => {
+                  if (!hasWriteAccess || fullscreenItems[`file:${id}`]) return;
+                  if (startCanvasGroupMove("file", id, event)) return;
+                  const [x, y] = normalizePosition(event);
+                  movingFileOrigin = [
+                    x - displayFileWindow.x,
+                    y - displayFileWindow.y,
+                  ];
+                  movingFileStartClient = [event.clientX, event.clientY];
+                  movingFileDidMove = false;
+                  movingFileStartState = displayFileWindow;
+                  movingFileState = displayFileWindow;
+                  movingFile = id;
+                }}
+              />
+            {:catch error}
+              <div
+                class="flex h-full w-full items-center justify-center rounded-xl border border-red-900/70 bg-zinc-950 p-6 text-center text-sm text-red-300 shadow-sm shadow-black/20"
+                style:width={`${displayFileWindow.width}px`}
+                style:height={`${displayFileWindow.height}px`}
+                role="alert"
+              >
+                Could not load the file explorer: {error instanceof Error
+                  ? error.message
+                  : String(error)}
+              </div>
+            {/await}
+            <ResizeHandles
+              disabled={!hasWriteAccess || fullscreenItems[`file:${id}`]}
+              on:start={({ detail }) => {
+                pendingCanvasSelection = null;
+                clearCanvasSelection();
+                resizingFileStartPointer = normalizePosition(detail.event);
+                resizingFileStartState = displayFileWindow;
+                resizingFileState = displayFileWindow;
+                resizingFileDirection = detail.direction;
+                bringFileWindowToFront(id, fileWindow.pageId);
+                resizingFile = id;
+              }}
+            />
+          </div>
+        </div>
+      {/each}
+
+      {#each users.filter(([id, user]) => id !== userId && user.cursor !== null && user.pageId === activePageId) as [id, user] (id)}
+        <div
+          class="canvas-world-cursor pointer-events-none absolute"
+          transition:fade|local={{ duration: switchingPage ? 0 : 200 }}
+          use:slide={{
+            x: user.cursor?.[0] ?? 0,
+            y: user.cursor?.[1] ?? 0,
+          }}
+        >
+          <LiveCursor userId={id} {user} />
+        </div>
+      {/each}
+    </div>
   </div>
 </main>
 
 <style>
+  .canvas-grid {
+    z-index: 0;
+    background-image: radial-gradient(
+      var(--canvas-grid-dot) var(--canvas-grid-dot-size),
+      transparent 0
+    );
+    background-position: var(--canvas-world-x) var(--canvas-world-y);
+    background-size: var(--canvas-grid-step) var(--canvas-grid-step);
+  }
+  .canvas-world {
+    z-index: 1;
+    transform: translate3d(var(--canvas-world-x), var(--canvas-world-y), 0)
+      scale(var(--canvas-world-zoom));
+    transform-origin: 0 0;
+    will-change: transform;
+  }
+  .canvas-world-slot {
+    display: contents;
+  }
+  .canvas-world-item {
+    top: 0;
+    left: 0;
+    pointer-events: auto;
+  }
+  .canvas-world-cursor {
+    top: 0;
+    left: 0;
+  }
+  .canvas-fullscreen-layer {
+    z-index: 35;
+  }
   :global(.canvas-active) {
     z-index: 1;
   }

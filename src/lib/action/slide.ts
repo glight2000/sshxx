@@ -4,8 +4,6 @@ import type { Action } from "svelte/action";
 export type SlideParams = {
   x: number;
   y: number;
-  center: number[];
-  zoom: number;
   immediate?: boolean;
 };
 
@@ -17,31 +15,19 @@ function samePosition(a: Position, b: Position) {
   return a.x === b.x && a.y === b.y;
 }
 
-function snapTranslation(value: number, zoom: number) {
-  const devicePixelRatio = window.devicePixelRatio || 1;
-  const scale = zoom * devicePixelRatio;
-  return Number.isFinite(scale) && scale > 0
-    ? Math.round(value * scale) / scale
-    : value;
-}
-
 /**
- * Position a canvas item while keeping camera updates in the same animation
- * frame as the background grid. Only remote/programmatic item movement is
- * eased; direct manipulation and camera pan/zoom render immediately.
+ * Position one item in world coordinates. The shared canvas-world element owns
+ * camera pan and zoom, so camera updates never fan out to every item action.
+ * Only remote/programmatic item movement is eased.
  */
 export const slide: Action<HTMLElement, SlideParams> = (node, params) => {
-  let center = params.center ?? [0, 0];
-  let zoom = params.zoom ?? 1;
   let current = { x: params.x ?? 0, y: params.y ?? 0 };
   let target = current;
   let animationFrame: number | null = null;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
   const render = () => {
-    const x = snapTranslation(current.x - center[0], zoom);
-    const y = snapTranslation(current.y - center[1], zoom);
-    node.style.transform = `scale(${zoom}) translate(${x}px, ${y}px)`;
+    node.style.transform = `translate3d(${current.x}px, ${current.y}px, 0)`;
   };
 
   const stopAnimation = () => {
@@ -73,20 +59,17 @@ export const slide: Action<HTMLElement, SlideParams> = (node, params) => {
 
   return {
     update(nextParams) {
-      center = nextParams.center ?? [0, 0];
-      zoom = nextParams.zoom ?? 1;
       const next = { x: nextParams.x ?? 0, y: nextParams.y ?? 0 };
 
       if (nextParams.immediate || reducedMotion.matches) {
         stopAnimation();
-        current = next;
         target = next;
-        render();
+        if (!samePosition(next, current)) {
+          current = next;
+          render();
+        }
       } else if (!samePosition(next, target)) {
         animateTo(next);
-      } else {
-        // Camera changes must never wait for the per-item position tween.
-        render();
       }
     },
 
