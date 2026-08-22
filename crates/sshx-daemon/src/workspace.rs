@@ -116,6 +116,7 @@ mod tests {
                 opacity: 75,
                 page_id: 2,
                 theme: "Tokyo Night".into(),
+                ssh_profile_id: "work-server".into(),
             }],
             notes: vec![WorkspaceNote {
                 id: 8,
@@ -128,6 +129,7 @@ mod tests {
                 linked_shell_ids: vec![7],
                 linked_note_ids: Vec::new(),
                 linked_file_window_ids: vec![9],
+                title: "Release plan".into(),
                 background: "#445566".into(),
                 opacity: 80,
                 page_id: 2,
@@ -138,6 +140,7 @@ mod tests {
                 page_id: 2,
                 path: "/tmp".into(),
                 title: "Logs".into(),
+                background: "#111827".into(),
                 x: 48,
                 y: 60,
                 width: 1040,

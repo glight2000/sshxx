@@ -49,11 +49,13 @@ README 只保留项目级介绍。完整功能和全量截图请查看
 关闭或刷新浏览端不会结束终端；daemon 重启或升级后会重新连接同一个 PTY 和进程。重启
 `sshxx-terminal-host` 仍会中断全部托管进程，因此永远不会随 daemon 自动重启。
 
+默认单 server 模式下，server 重启会让浏览端短暂断线；daemon 会从持久化工作区自动重建已丢失的 server 会话，并重新挂接 host 中的终端。配置固定会话名时 URL 保持不变；未配置时，替代会话会得到新的随机 URL。
+
 ## 状态与信任边界
 
 | 状态                                           | 持有者与生命周期                                     | 范围                                                            |
 | ---------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------- |
-| 页面、画布组件、便利贴/关联、文件浏览/编辑状态 | daemon 的 `.sshx-workspace`                          | 同一会话共享；每项画布变更都保留页面 ID                         |
+| 页面、画布组件、便利贴/关联、文件浏览/编辑状态 | daemon 的 `.sshx-workspace`                          | 同一会话共享；包含远程终端所用的非敏感 SSH 配置 ID              |
 | Shell 与 SSH 进程                              | `sshxx-terminal-host` 内存                           | 输入输出流共享；浏览端和 daemon 重启后继续，host/系统重启后停止 |
 | 每终端 Shell 历史                              | daemon 启动策略与仅所有者可读的本地 history 数据     | 本地终端各自独享；嵌套远程 Shell 仍服从远端配置                 |
 | 可复用 SSH 配置                                | `.sshx-connections` 带认证加密，密钥仅本机所有者可读 | 配置元数据在会话内可见；仅写入用户可修改；从不保存密码          |
@@ -74,9 +76,17 @@ Secret。完整的持久化、同步、通信、Redis、鉴权和数据可见性
 ```shell
 mise install
 npm ci
-docker compose up -d
 mprocs
 ```
+
+常规开发和单 server 部署不使用 Redis。仓库只为多 server 协调测试保留显式启用的可选服务：
+
+```shell
+docker compose --profile multi-server up -d
+sshxx-server --redis-url redis://localhost:12601 # 添加到每个测试 server
+```
+
+未显式启用该 profile 且未传入 `--redis-url` 时，Redis 保持禁用。
 
 默认开发会话：
 
@@ -146,6 +156,7 @@ sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2
 
 - terminal-host 或操作系统重启会中断托管进程；Codex
   resume 等应用级恢复仍需用户手动处理。
+- terminal-host 保留的是有界的原始 PTY 输出，而不是终端模拟器屏幕快照。高输出量导致早期数据滚出缓冲区后，重建渲染器可能无法精确复原原屏幕，但进程仍然存活。
 - Windows ConPTY 当前无法报告子进程工作目录，复制终端可能回退到 daemon 目录。
 - 图片粘贴目前只支持 daemon 本地 Shell；SSH 目标仍需单独的 SFTP/SCP 转发流程。
 - `Shift+Enter` 发送 LF，最终是换行还是提交由前台程序决定。

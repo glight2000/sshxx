@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
   import {
+    DownloadIcon,
     Edit2Icon,
     FilePlusIcon,
     FolderPlusIcon,
@@ -18,6 +19,7 @@
   export let directoryCount: number;
   export let dirty: boolean;
   export let loading: boolean;
+  export let downloadBusy: boolean;
   export let mutationBusy: boolean;
   export let hasWriteAccess: boolean | undefined;
   export let canMutate: boolean;
@@ -28,6 +30,7 @@
     openTerminal: FileTreeEntry;
     delete: FileTreeEntry;
     openFile: FileTreeEntry;
+    download: FileTreeEntry;
     save: void;
   }>();
 </script>
@@ -90,6 +93,15 @@
       aria-label="Open or edit file"
       on:click={() => dispatch("openFile", target!)}><Edit2Icon /></button
     >
+    {#if target.kind === "file"}
+      <button
+        class="content-action"
+        disabled={downloadBusy || mutationBusy}
+        title="Download file"
+        aria-label="Download file"
+        on:click={() => dispatch("download", target!)}><DownloadIcon /></button
+      >
+    {/if}
     <button
       class="content-action"
       title="Open terminal in containing folder"

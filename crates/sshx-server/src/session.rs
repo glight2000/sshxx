@@ -32,9 +32,9 @@ use validation::{
     normalize_linked_shell_ids, normalize_note_canvas_links, normalize_note_paragraphs,
     proto_profile_from_ws, validate_color, validate_file_editor_total, validate_file_window,
     validate_linked_file_window_ids, validate_linked_note_ids, validate_linked_shell_ids,
-    validate_note_content, validate_opacity, validate_page_name, validate_paragraphs,
-    validate_ssh_profile, validate_terminal_window_size, validate_theme, validate_title,
-    ws_profile_from_proto,
+    validate_note_content, validate_opacity, validate_optional_ssh_profile_id, validate_page_name,
+    validate_paragraphs, validate_ssh_profile, validate_terminal_window_size, validate_theme,
+    validate_title, ws_profile_from_proto,
 };
 
 /// Store a rolling buffer with at most this quantity of output, per shell.
@@ -76,6 +76,10 @@ pub struct Session {
 
     /// Watch channel source for the ordered list of open shells and sizes.
     source: watch::Sender<Vec<(Sid, WsWinsize)>>,
+
+    /// Durable SSH profile identity for each remote shell. Profile secrets stay
+    /// in the separately encrypted daemon-owned SSH profile collection.
+    shell_ssh_profiles: RwLock<HashMap<Sid, String>>,
 
     /// Watch channel source for the ordered list of notes on the canvas.
     notes: watch::Sender<Vec<(Sid, WsNote)>>,
@@ -152,6 +156,7 @@ impl Session {
             counter: IdCounter::default(),
             last_accessed: Mutex::new(now),
             source: watch::channel(Vec::new()).0,
+            shell_ssh_profiles: RwLock::new(HashMap::new()),
             notes: watch::channel(Vec::new()).0,
             file_windows: watch::channel(Vec::new()).0,
             pages: watch::channel(vec![WsPage {
@@ -317,6 +322,11 @@ impl Session {
             .context("SSH connection does not exist")
     }
 
+    /// Return the SSH profile identity associated with a terminal, if it is remote.
+    pub fn shell_ssh_profile_id(&self, id: Sid) -> Option<String> {
+        self.shell_ssh_profiles.read().get(&id).cloned()
+    }
+
     /// Return current note editors for initial WebSocket state.
     pub fn list_note_editors(&self) -> Vec<(Sid, u32, Uid)> {
         let notes = self.notes.borrow();
@@ -359,6 +369,12 @@ impl Session {
                     theme: shell.theme.clone(),
                     width: shell.width.into(),
                     height: shell.height.into(),
+                    ssh_profile_id: self
+                        .shell_ssh_profiles
+                        .read()
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_default(),
                 })
                 .collect(),
             notes: self
@@ -380,6 +396,7 @@ impl Session {
                         .iter()
                         .map(|id| id.0)
                         .collect(),
+                    title: note.title.clone(),
                     background: note.background.clone(),
                     opacity: note.opacity.into(),
                     page_id: note.page_id,
@@ -395,6 +412,7 @@ impl Session {
                     page_id: window.page_id,
                     path: window.path.clone(),
                     title: window.title.clone(),
+                    background: window.background.clone(),
                     x: window.x,
                     y: window.y,
                     width: window.width.into(),
@@ -467,12 +485,16 @@ impl Session {
         let mut ids = HashSet::new();
         let mut max_id = 0_u32;
         let mut shells = HashMap::with_capacity(workspace.shells.len());
+        let mut shell_ssh_profiles = HashMap::new();
         let mut source = Vec::with_capacity(workspace.shells.len());
         let mut requests = Vec::with_capacity(workspace.shells.len());
         for shell in workspace.shells {
             if shell.id == 0 || !ids.insert(shell.id) {
                 bail!("workspace contains an invalid or duplicate item ID");
             }
+            validate_optional_ssh_profile_id(&shell.ssh_profile_id)
+                .context("workspace contains an invalid SSH connection ID")?;
+            let ssh_profile_id = shell.ssh_profile_id.clone();
             let winsize = WsWinsize {
                 x: shell.x,
                 y: shell.y,
@@ -514,6 +536,9 @@ impl Session {
             let height = winsize.height;
             max_id = max_id.max(shell.id);
             shells.insert(id, State::default());
+            if !ssh_profile_id.is_empty() {
+                shell_ssh_profiles.insert(id, ssh_profile_id.clone());
+            }
             source.push((id, winsize));
             requests.push(NewShell {
                 id: shell.id,
@@ -523,12 +548,16 @@ impl Session {
                 page_id,
                 rows: rows.into(),
                 cols: cols.into(),
-                ssh_profile: None,
+                ssh_profile: (!ssh_profile_id.is_empty())
+                    .then(|| self.ssh_profile(&ssh_profile_id).ok())
+                    .flatten(),
                 theme,
                 width: width.into(),
                 height: height.into(),
                 background,
                 working_directory: String::new(),
+                ssh_profile_id,
+                copy_history: false,
             });
         }
 
@@ -551,6 +580,7 @@ impl Session {
                 linked_shell_ids,
                 linked_note_ids: note.linked_note_ids.into_iter().map(Sid).collect(),
                 linked_file_window_ids: note.linked_file_window_ids.into_iter().map(Sid).collect(),
+                title: note.title,
                 background: note.background,
                 opacity: note.opacity.try_into().context("note opacity overflow")?,
                 page_id,
@@ -585,6 +615,11 @@ impl Session {
                 },
                 path: window.path,
                 title: window.title,
+                background: if window.background.is_empty() {
+                    "#111113".into()
+                } else {
+                    window.background
+                },
                 x: window.x,
                 y: window.y,
                 width: window
@@ -618,19 +653,8 @@ impl Session {
             if !page_ids.contains(&state.page_id) {
                 bail!("file browser references a missing page");
             }
-            if !source
-                .iter()
-                .any(|(id, shell)| *id == state.shell_id && shell.page_id == state.page_id)
-            {
+            if !source.iter().any(|(id, _)| *id == state.shell_id) {
                 bail!("file browser references a missing terminal");
-            }
-            if file_windows
-                .iter()
-                .any(|(_, existing): &(Sid, WsFileWindow)| {
-                    existing.shell_id == state.shell_id && existing.page_id == state.page_id
-                })
-            {
-                bail!("workspace contains duplicate file browsers for a terminal");
             }
             max_id = max_id.max(window.id);
             file_windows.push((Sid(window.id), state));
@@ -642,6 +666,7 @@ impl Session {
             .checked_add(1)
             .context("workspace item ID overflow")?;
         *self.shells.write() = shells;
+        *self.shell_ssh_profiles.write() = shell_ssh_profiles;
         self.source.send_replace(source);
         self.notes.send_replace(notes);
         self.file_windows.send_replace(file_windows);
@@ -740,6 +765,21 @@ impl Session {
         }
     }
 
+    /// Ensure a terminal exists, regardless of which canvas page presents a
+    /// component explicitly linked to it.
+    pub fn check_shell_exists(&self, id: Sid) -> Result<()> {
+        if self
+            .source
+            .borrow()
+            .iter()
+            .any(|(shell_id, _)| *shell_id == id)
+        {
+            Ok(())
+        } else {
+            bail!("terminal with id={id} does not exist")
+        }
+    }
+
     /// Ensure a note exists on the page claimed by a browser event.
     pub fn check_note_page(&self, id: Sid, page_id: u32) -> Result<()> {
         match self
@@ -819,7 +859,7 @@ impl Session {
         page_id: u32,
         requested_terminal_size: (u16, u16),
         requested_window_size: (u16, u16),
-        requested_style: (String, String),
+        requested_style: (String, String, String),
     ) -> Result<Option<WsWinsize>> {
         use std::collections::hash_map::Entry::*;
         let restored = self.pending_restored_shells.lock().remove(&id);
@@ -840,7 +880,7 @@ impl Session {
         }
         let (requested_rows, requested_cols) = requested_terminal_size;
         let (requested_width, requested_height) = requested_window_size;
-        let (requested_theme, requested_background) = requested_style;
+        let (requested_theme, requested_background, ssh_profile_id) = requested_style;
         let rows = if requested_rows == 0 {
             24
         } else {
@@ -861,11 +901,15 @@ impl Session {
         }
         validate_theme(&requested_theme)?;
         validate_color(&requested_background)?;
+        validate_optional_ssh_profile_id(&ssh_profile_id)?;
 
         let _guard = match self.shells.write().entry(id) {
             Occupied(_) => bail!("shell already exists with id={id}"),
             Vacant(v) => v.insert(State::default()),
         };
+        if !ssh_profile_id.is_empty() {
+            self.shell_ssh_profiles.write().insert(id, ssh_profile_id);
+        }
         self.source.send_modify(|source| {
             let winsize = WsWinsize {
                 x: center.0,
@@ -916,6 +960,7 @@ impl Session {
             }
         });
         self.pending_restored_shells.lock().remove(&id);
+        self.shell_ssh_profiles.write().remove(&id);
         self.workspace_changed();
         Ok(())
     }
@@ -955,6 +1000,105 @@ impl Session {
         Ok(())
     }
 
+    /// Move an explicitly selected set of canvas items to another page.
+    ///
+    /// Every source relationship is validated before any watch channel is
+    /// mutated, so a stale or malformed client cannot leave a partial move.
+    pub fn move_canvas_items(
+        &self,
+        source_page_id: u32,
+        target_page_id: u32,
+        terminals: Vec<(Sid, i32, i32)>,
+        notes: Vec<(Sid, i32, i32)>,
+        file_windows: Vec<(Sid, i32, i32)>,
+    ) -> Result<()> {
+        if source_page_id == target_page_id {
+            bail!("canvas items are already on the target page");
+        }
+        if !self.page_exists(target_page_id) {
+            bail!("cannot move canvas items to a missing page");
+        }
+        let item_count = terminals.len() + notes.len() + file_windows.len();
+        if item_count == 0 || item_count > 300 {
+            bail!("canvas page move contains an invalid number of items");
+        }
+
+        let terminal_ids = terminals
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<HashSet<_>>();
+        let note_ids = notes.iter().map(|(id, _, _)| *id).collect::<HashSet<_>>();
+        let file_window_ids = file_windows
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<HashSet<_>>();
+        if terminal_ids.len() != terminals.len()
+            || note_ids.len() != notes.len()
+            || file_window_ids.len() != file_windows.len()
+        {
+            bail!("canvas page move contains duplicate items");
+        }
+        for id in &terminal_ids {
+            self.check_shell_page(*id, source_page_id)?;
+        }
+        for id in &note_ids {
+            self.check_note_page(*id, source_page_id)?;
+        }
+        for id in &file_window_ids {
+            self.check_file_window_page(*id, source_page_id)?;
+        }
+
+        let terminal_positions = terminals
+            .into_iter()
+            .map(|(id, x, y)| (id, (x, y)))
+            .collect::<HashMap<_, _>>();
+        let note_positions = notes
+            .into_iter()
+            .map(|(id, x, y)| (id, (x, y)))
+            .collect::<HashMap<_, _>>();
+        let file_positions = file_windows
+            .into_iter()
+            .map(|(id, x, y)| (id, (x, y)))
+            .collect::<HashMap<_, _>>();
+
+        self.source.send_modify(|items| {
+            for (id, state) in items {
+                if let Some(&(x, y)) = terminal_positions.get(id) {
+                    state.x = x;
+                    state.y = y;
+                    state.page_id = target_page_id;
+                }
+            }
+        });
+        self.notes.send_modify(|items| {
+            for (id, state) in items {
+                if let Some(&(x, y)) = note_positions.get(id) {
+                    state.x = x;
+                    state.y = y;
+                    state.page_id = target_page_id;
+                }
+            }
+        });
+        self.file_windows.send_modify(|items| {
+            for (id, state) in items {
+                if let Some(&(x, y)) = file_positions.get(id) {
+                    state.x = x;
+                    state.y = y;
+                    state.page_id = target_page_id;
+                }
+            }
+        });
+        for id in note_ids {
+            if let Some(editor) = self.note_editors.read().get(&id).copied() {
+                self.broadcast
+                    .send(WsServer::NoteEditing(id, target_page_id, Some(editor)))
+                    .ok();
+            }
+        }
+        self.workspace_changed();
+        Ok(())
+    }
+
     /// Add a new note to the canvas.
     pub fn add_note(
         &self,
@@ -983,6 +1127,7 @@ impl Session {
                     linked_shell_ids: Vec::new(),
                     linked_note_ids: Vec::new(),
                     linked_file_window_ids: Vec::new(),
+                    title: String::new(),
                     background: "#3f3f46".into(),
                     opacity: 80,
                     page_id,
@@ -1092,6 +1237,7 @@ impl Session {
             page_id,
             path,
             title,
+            background: "#111113".into(),
             x,
             y,
             width,
@@ -1152,7 +1298,7 @@ impl Session {
             if window.page_id != page_id {
                 bail!("file browser update cannot move between pages");
             }
-            self.check_shell_page(window.shell_id, page_id)?;
+            self.check_shell_exists(window.shell_id)?;
             let windows = self.file_windows.borrow();
             let projected = windows
                 .iter()

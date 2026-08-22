@@ -84,7 +84,7 @@ impl SshxService for GrpcServer {
         for shell in restored_shells {
             session
                 .update_tx()
-                .send(ServerMessage::CreateShell(shell))
+                .send(ServerMessage::CreateShell(Box::new(shell)))
                 .await
                 .map_err(|err| Status::internal(err.to_string()))?;
         }
@@ -247,7 +247,11 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
                 new_shell.page_id.max(1),
                 (rows, cols),
                 (width, height),
-                (new_shell.theme, new_shell.background),
+                (
+                    new_shell.theme,
+                    new_shell.background,
+                    new_shell.ssh_profile_id,
+                ),
             ) {
                 Ok(Some(winsize)) => {
                     let resize = TerminalSize {

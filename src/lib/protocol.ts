@@ -31,6 +31,8 @@ export type WsNote = {
   linkedNoteIds: Sid[];
   /** File editor windows associated with this note. */
   linkedFileWindowIds: Sid[];
+  /** User-defined title, or empty to use the generated note label. */
+  title: string;
   background: string;
   opacity: number;
   pageId: number;
@@ -42,6 +44,7 @@ export type WsFileWindow = {
   pageId: number;
   path: string;
   title: string;
+  background: string;
   x: number;
   y: number;
   width: number;
@@ -102,7 +105,7 @@ export type FileOperationRequest = {
   path: string;
   destination?: string;
   content?: string;
-  encoding?: "utf8" | "base64";
+  encoding?: "utf8" | "utf16le" | "utf16be" | "base64";
   recursive?: boolean;
 };
 
@@ -113,7 +116,7 @@ export type FileOperationResponse = {
   error?: string;
   entries?: FileTreeEntry[];
   content?: string;
-  encoding?: "utf8" | "base64";
+  encoding?: "utf8" | "utf16le" | "utf16be" | "base64";
   size?: number;
 };
 
@@ -194,6 +197,20 @@ export type WsClient = {
     number,
     string,
   ];
+  cloneWindowedAt?: [
+    Sid,
+    string,
+    string,
+    string,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    string,
+  ];
   createAt?: [
     Sid,
     string,
@@ -208,6 +225,13 @@ export type WsClient = {
   ];
   close?: [Sid, number];
   move?: [Sid, number, WsWinsize | null];
+  moveCanvasItems?: [
+    number,
+    number,
+    [Sid, number, number][],
+    [Sid, number, number][],
+    [Sid, number, number][],
+  ];
   createNote?: [number, number, number];
   createNoteSized?: [number, number, number, number, number];
   closeNote?: [Sid, number];

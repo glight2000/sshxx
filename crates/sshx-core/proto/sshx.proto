@@ -86,6 +86,8 @@ message NewShell {
   uint32 height = 11; // Exact canvas window height, or zero for legacy auto sizing.
   string background = 12; // Per-terminal background override, or empty to use the theme.
   string working_directory = 13; // Explicit local or remote working directory for the new shell.
+  string ssh_profile_id = 14; // Durable SSH connection identity, empty for local shells.
+  bool copy_history = 15; // Copy the source terminal's daemon-managed command history.
 }
 
 // End-to-end encrypted filesystem operation sent to sshxx-daemon.
@@ -157,6 +159,7 @@ message WorkspaceShell {
   string theme = 10;
   uint32 width = 11;
   uint32 height = 12;
+  string ssh_profile_id = 13; // SSH connection used by this terminal, empty for local shells.
 }
 
 message WorkspaceNote {
@@ -173,6 +176,7 @@ message WorkspaceNote {
   repeated uint32 linked_shell_ids = 11;
   repeated uint32 linked_note_ids = 12;
   repeated uint32 linked_file_window_ids = 13;
+  string title = 14;
 }
 
 message WorkspacePage {
@@ -201,6 +205,7 @@ message WorkspaceFileWindow {
   bool editor_dirty = 18;
   uint32 sidebar_width = 19; // Shared file-tree pane width in canvas pixels.
   uint32 tree_revision = 20; // Change token after filesystem mutations.
+  string background = 21;
 }
 
 // Authentication behavior for an OpenSSH connection profile.
@@ -288,6 +293,7 @@ message SerializedNote {
   repeated uint32 linked_shell_ids = 10;
   repeated uint32 linked_note_ids = 11;
   repeated uint32 linked_file_window_ids = 12;
+  string title = 13;
 }
 
 message SerializedPage {
@@ -316,4 +322,5 @@ message SerializedFileWindow {
   bool editor_dirty = 18;
   uint32 sidebar_width = 19;
   uint32 tree_revision = 20;
+  string background = 21;
 }

@@ -9,6 +9,7 @@ import {
   normalizedPath,
   parentPath,
   previewType,
+  revealDirectoryPaths,
   safeUploadPath,
   samePath,
 } from "../src/lib/filesystem.ts";
@@ -31,6 +32,19 @@ test("builds path ancestry and compares Windows paths case-insensitively", () =>
   assert.equal(samePath("C:\\USERS\\Dev", "c:/users/dev/"), true);
 });
 
+test("reveals a directory and all of its ancestors without duplicate paths", () => {
+  assert.deepEqual(revealDirectoryPaths(["/", "/srv"], "/srv/apps/sshxx"), [
+    "/",
+    "/srv",
+    "/srv/apps",
+    "/srv/apps/sshxx",
+  ]);
+  assert.deepEqual(
+    revealDirectoryPaths(["C:\\", "C:\\Users"], "c:\\users\\Dev"),
+    ["C:\\", "C:\\Users", "c:\\users\\Dev"],
+  );
+});
+
 test("rejects unsafe relative upload paths", () => {
   assert.deepEqual(safeUploadPath("images/icons/logo.svg"), [
     "images",
@@ -44,8 +58,12 @@ test("rejects unsafe relative upload paths", () => {
 
 test("classifies supported previews and MIME types", () => {
   assert.equal(previewType("photo.WEBP"), "image");
+  assert.equal(previewType("photo.avif"), "image");
+  assert.equal(previewType("recording.opus"), "audio");
+  assert.equal(previewType("screen.m4v"), "video");
   assert.equal(previewType("manual.pdf"), "pdf");
   assert.equal(previewType("archive.zip"), "binary");
   assert.equal(mimeType("clip.mp4"), "video/mp4");
+  assert.equal(mimeType("voice.aac"), "audio/aac");
   assert.equal(mimeType("archive.zip"), "application/octet-stream");
 });

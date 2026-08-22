@@ -22,6 +22,8 @@ pub mod proto {
 pub const WORKSPACE_FORMAT_VERSION: u32 = 1;
 /// Current on-disk format version for encrypted SSH connection profiles.
 pub const SSH_PROFILE_FORMAT_VERSION: u32 = 1;
+/// Maximum encoded gRPC message size, including encrypted file preview payloads.
+pub const MAX_GRPC_MESSAGE_BYTES: usize = 16 << 20;
 
 /// Generate a cryptographically-secure, random alphanumeric value.
 pub fn rand_alphanumeric(len: usize) -> String {

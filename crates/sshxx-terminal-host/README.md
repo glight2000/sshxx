@@ -24,6 +24,12 @@ process and never exits merely because daemon connections disappear. Under an OS
 service manager, use a separate host service/unit. Do not place the host in a
 daemon unit whose cgroup is killed during daemon restart.
 
+Workspace restoration may reattach to a stable terminal ID so its existing PTY
+survives a daemon restart. Source-derived creation actions, including
+file-browser “Open terminal here”, do not reuse a stale colliding host entry:
+they replace it so the requested working directory and connection profile are
+always applied.
+
 ## Disruptive upgrades
 
 Host upgrades are intentionally never automatic:
@@ -62,6 +68,10 @@ each stable terminal UUID its own launch environment, for example a unique
 `HISTFILE` for Bash/Zsh or history identifier for Fish. The host passes that
 environment to the process unchanged. This keeps the host protocol stable when
 shell-specific policy evolves.
+
+When sshxx duplicates a local terminal, the daemon copies the source history's
+last persisted snapshot to the new terminal ID before launching it. Subsequent
+history remains independent.
 
 Manually nested remote SSH shells still require corresponding remote-shell
 configuration if their command history must also be isolated.

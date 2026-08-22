@@ -1,12 +1,11 @@
-# Services used by sshxx for development. These listen on ports 126XX, to reduce the chance that they
-# conflict with other processes.
-#
-# You can start them with `docker compose up -d`.
+# Optional services for multi-server integration testing. Normal development
+# and single-server deployments do not need Redis and start no Compose service.
+# Explicitly enable it with:
+#   docker compose --profile multi-server up -d
 
 services:
   redis:
-    image: bitnami/redis:7.2
-    environment:
-      - ALLOW_EMPTY_PASSWORD=yes
+    profiles: ["multi-server"]
+    image: redis:7.2-alpine
     ports:
       - 127.0.0.1:12601:6379

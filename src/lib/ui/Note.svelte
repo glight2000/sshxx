@@ -32,6 +32,8 @@
   import CanvasRelations, {
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";
+  import BackgroundPicker from "./BackgroundPicker.svelte";
+  import InlineTitle from "./InlineTitle.svelte";
   import ResizeHandles, { type ResizeDirection } from "./ResizeHandles.svelte";
 
   export let note: WsNote;
@@ -73,6 +75,7 @@
     };
     paragraphDragEnd: void;
     toggleFullscreen: void;
+    floatingChange: boolean;
   }>();
 
   let root: HTMLElement;
@@ -83,6 +86,7 @@
   let settingsButton: HTMLButtonElement;
   let settingsPanel: HTMLDivElement;
   let paragraphMenu: number | null = null;
+  let paragraphMenuKind: "actions" | "send" = "actions";
   let paragraphMenuAnchor: HTMLButtonElement | null = null;
   let paragraphMenuPanel: HTMLDivElement | null = null;
   let paragraphMenuLeft = 0;
@@ -229,13 +233,25 @@
       suppressParagraphClick = false;
       return;
     }
-    if (!(await ensureEditing())) return;
-    dispatch("bringToFront");
+    const editor = event.currentTarget as HTMLTextAreaElement;
+    const selectionStart = editor.selectionStart;
+    const selectionEnd = editor.selectionEnd;
+    rangeSelection = null;
+    closeParagraphMenu();
     activeParagraphIndex = index;
     selectedParagraphIndexes = [index];
     selectionAnchor = index;
+    if (!(await ensureEditing())) {
+      activeParagraphIndex = null;
+      return;
+    }
+    dispatch("bringToFront");
     window.getSelection()?.removeAllRanges();
-    editors[index]?.focus({ preventScroll: true });
+    await tick();
+    const activeEditor = editors[index];
+    if (!activeEditor) return;
+    activeEditor.focus({ preventScroll: true });
+    activeEditor.setSelectionRange(selectionStart, selectionEnd);
   }
 
   function portal(node: HTMLElement) {
@@ -249,6 +265,7 @@
   function closeParagraphMenu(restoreFocus = false) {
     const anchor = paragraphMenuAnchor;
     paragraphMenu = null;
+    paragraphMenuKind = "actions";
     paragraphMenuAnchor = null;
     paragraphMenuPanel = null;
     paragraphMenuPositioned = false;
@@ -305,11 +322,33 @@
         return;
       }
       paragraphMenu = index;
+      paragraphMenuKind = "actions";
       paragraphMenuAnchor = event.currentTarget as HTMLButtonElement;
       paragraphMenuPositioned = false;
       await tick();
       positionParagraphMenu();
     }
+  }
+
+  async function openParagraphSendMenu(index: number, event: MouseEvent) {
+    if (paragraphMenu === index && paragraphMenuKind === "send") {
+      closeParagraphMenu();
+      return;
+    }
+    paragraphMenu = index;
+    paragraphMenuKind = "send";
+    paragraphMenuAnchor = event.currentTarget as HTMLButtonElement;
+    paragraphMenuPositioned = false;
+    await tick();
+    positionParagraphMenu();
+  }
+
+  function sendParagraph(
+    index: number,
+    target: "all" | "notes" | "terminals" | "terminals-execute" | "files",
+  ) {
+    closeParagraphMenu();
+    dispatch("sendParagraph", { ...paragraphTransfer(index), target });
   }
 
   function prepareParagraphDrag(index: number, event: MouseEvent) {
@@ -366,7 +405,6 @@
       event.target === editors[index]
     )
       return;
-    event.preventDefault();
     finishEditing(false);
     closeParagraphMenu();
     rangeSelection = {
@@ -631,6 +669,7 @@
   }
 
   function handleCopy(event: ClipboardEvent) {
+    if (event.target instanceof HTMLInputElement) return;
     if (!event.clipboardData || !selectedParagraphIndexes.length) return;
     const active = document.activeElement;
     if (
@@ -708,6 +747,7 @@
   }
 
   function handlePaste(event: ClipboardEvent) {
+    if (event.target instanceof HTMLInputElement) return;
     if (!event.clipboardData) return;
     const values = readParagraphClipboard(event.clipboardData);
     if (!values) return;
@@ -721,6 +761,7 @@
 
   function handleSelectStart(event: Event) {
     const target = event.target;
+    if (target instanceof HTMLInputElement) return;
     if (
       target instanceof HTMLTextAreaElement &&
       editing &&
@@ -765,7 +806,7 @@
       !settingsButton.contains(event.target) &&
       !settingsPanel?.contains(event.target)
     )
-      settingsOpen = false;
+      setSettingsOpen(false);
     if (
       paragraphMenu !== null &&
       !insideParagraphMenu &&
@@ -775,6 +816,11 @@
     if (root && !root.contains(event.target) && !insideParagraphMenu) {
       finishEditing();
     }
+  }
+  function setSettingsOpen(open: boolean) {
+    if (settingsOpen === open) return;
+    settingsOpen = open;
+    dispatch("floatingChange", open);
   }
   function handleWindowKeyDown(event: KeyboardEvent) {
     if (event.key !== "Escape" || paragraphMenu === null) return;
@@ -919,6 +965,7 @@
 
   function handleNoteKeyDown(event: KeyboardEvent) {
     const active = document.activeElement;
+    if (active instanceof HTMLInputElement) return;
     if (
       active instanceof HTMLTextAreaElement &&
       editing &&
@@ -955,7 +1002,7 @@
   tabindex="-1"
   data-canvas-note
   data-canvas-note-id={noteId}
-  class="note-container relative overflow-visible rounded-lg border border-white/15 shadow-xl shadow-black/40 ring-1 ring-white/10"
+  class="note-container relative overflow-visible rounded-lg border border-white/15 shadow-xl shadow-black/40"
   class:fullscreen
   class:focused
   class:editing-active={focused && editing}
@@ -982,9 +1029,11 @@
 >
   <header
     role="presentation"
-    class="flex h-9 cursor-move select-none items-center justify-between rounded-t-lg border-b border-white/10 bg-black/15 px-2"
+    data-canvas-titlebar
+    class="flex h-9 cursor-default select-none items-center justify-between rounded-t-lg border-b border-white/10 bg-black/15 px-2"
     class:cursor-default={fullscreen}
-    on:mousedown={(event) => {
+    on:mousedown|stopPropagation={(event) => {
+      dispatch("bringToFront");
       if (event.button === 0 && hasWriteAccess && !fullscreen)
         dispatch("startMove", event);
     }}
@@ -1007,11 +1056,16 @@
         >{#if fullscreen}<Minimize2Icon />{:else}<Maximize2Icon />{/if}</button
       >
     </div>
-    <span class="min-w-0 text-center">
-      <span
-        class="block text-xs font-medium uppercase tracking-widest text-zinc-200/75"
-        >Note</span
-      >
+    <div class="min-w-0 flex-[4] text-center">
+      <div class="mx-auto max-w-48 text-xs font-medium text-zinc-200/75">
+        <InlineTitle
+          value={note.title}
+          fallback={`Note #${noteId}`}
+          disabled={!hasWriteAccess}
+          ariaLabel="Note title"
+          on:change={(event) => update({ title: event.detail })}
+        />
+      </div>
       {#if focused}<span
           class="block max-w-40 truncate text-[10px] text-zinc-300/65"
           >{editing
@@ -1024,14 +1078,14 @@
           class="block max-w-36 truncate text-[10px] text-zinc-300/60"
           >{editingName || `User ${editingBy}`} is editing</span
         >{/if}
-    </span>
+    </div>
     <button
       bind:this={settingsButton}
       type="button"
       class="rounded p-1 text-zinc-200/70 hover:bg-white/10 hover:text-white"
       aria-label="Note appearance"
       on:mousedown|stopPropagation={(event) =>
-        event.button === 0 && (settingsOpen = !settingsOpen)}
+        event.button === 0 && setSettingsOpen(!settingsOpen)}
       ><SettingsIcon class="h-4 w-4" /></button
     >
   </header>
@@ -1043,15 +1097,11 @@
       class="panel absolute right-1 top-10 z-20 w-56 space-y-3 p-3 text-sm"
       on:mousedown|stopPropagation
     >
-      <label class="flex items-center justify-between gap-3"
-        >Background<input
-          type="color"
-          value={note.background}
-          disabled={!hasWriteAccess}
-          on:input={(event) =>
-            update({ background: event.currentTarget.value })}
-        /></label
-      >
+      <BackgroundPicker
+        value={note.background}
+        disabled={!hasWriteAccess}
+        on:change={(event) => update({ background: event.detail })}
+      />
       <label class="block"
         ><span class="mb-1 flex justify-between"
           ><span>Opacity</span><span>{note.opacity}%</span></span
@@ -1080,7 +1130,7 @@
   >
     {#each paragraphs as paragraph, index (index)}
       <div
-        class="paragraph-row group relative flex min-h-8 items-start pl-6"
+        class="paragraph-row group relative flex min-h-8 items-start pl-6 pr-7"
         class:selected={selectedParagraphIndexes.includes(index)}
         class:dragging={draggingParagraphIndexes.includes(index)}
         class:moved={movedParagraphIndexes.includes(index)}
@@ -1093,7 +1143,8 @@
         <button
           type="button"
           class="paragraph-marker"
-          class:active={paragraphMenu === index}
+          class:active={paragraphMenu === index &&
+            paragraphMenuKind === "actions"}
           class:selected={selectedParagraphIndexes.includes(index)}
           aria-label={`Paragraph ${index + 1} actions`}
           aria-pressed={selectedParagraphIndexes.includes(index)}
@@ -1108,6 +1159,20 @@
           on:dragend={finishParagraphDrag}
           ><span></span><span></span><span></span><span></span></button
         >
+        <button
+          type="button"
+          class="paragraph-send"
+          class:active={paragraphMenu === index && paragraphMenuKind === "send"}
+          aria-label={`Send paragraph ${index + 1}`}
+          title={selectedParagraphIndexes.length > 1 &&
+          selectedParagraphIndexes.includes(index)
+            ? `Send ${selectedParagraphIndexes.length} selected paragraphs`
+            : "Send paragraph"}
+          disabled={!hasWriteAccess}
+          on:mousedown|stopPropagation
+          on:click|stopPropagation={(event) =>
+            openParagraphSendMenu(index, event)}><SendIcon /></button
+        >
         {#if paragraphMenu === index}
           <div
             bind:this={paragraphMenuPanel}
@@ -1119,75 +1184,53 @@
             use:portal
             on:mousedown|stopPropagation
           >
-            <button
-              type="button"
-              disabled={editingBy !== null && editingBy !== userId}
-              on:click={() => deleteParagraph(index)}
-              ><Trash2Icon />Delete{selectedParagraphIndexes.length > 1
-                ? ` ${selectedParagraphIndexes.length} paragraphs`
-                : ""}</button
-            >
-            <button type="button" on:click={() => copyParagraphSelection(index)}
-              ><CopyIcon />Copy{selectedParagraphIndexes.length > 1
-                ? ` ${selectedParagraphIndexes.length} paragraphs`
-                : ""}</button
-            >
-            <button
-              type="button"
-              disabled={editingBy !== null && editingBy !== userId}
-              on:click={() => insertParagraph(index)}
-              ><PlusIcon />New paragraph below</button
-            >
-            <button
-              type="button"
-              on:click={() => {
-                closeParagraphMenu();
-                dispatch("sendParagraph", {
-                  ...paragraphTransfer(index),
-                  target: "all",
-                });
-              }}><SendIcon />Send to all linked</button
-            >
-            <button
-              type="button"
-              on:click={() => {
-                closeParagraphMenu();
-                dispatch("sendParagraph", {
-                  ...paragraphTransfer(index),
-                  target: "notes",
-                });
-              }}><FileTextIcon />Send to linked notes</button
-            >
-            <button
-              type="button"
-              on:click={() => {
-                closeParagraphMenu();
-                dispatch("sendParagraph", {
-                  ...paragraphTransfer(index),
-                  target: "terminals",
-                });
-              }}><TerminalIcon />Send to linked terminals</button
-            >
-            <button
-              type="button"
-              on:click={() => {
-                closeParagraphMenu();
-                dispatch("sendParagraph", {
-                  ...paragraphTransfer(index),
-                  target: "terminals-execute",
-                });
-              }}><PlayIcon />Send to terminals &amp; run</button
-            >
-            <button
-              type="button"
-              on:click={() => {
-                closeParagraphMenu();
-                dispatch("sendParagraph", {
-                  ...paragraphTransfer(index),
-                  target: "files",
-                });
-              }}><Edit3Icon />Send to file editors</button
-            >
+            {#if paragraphMenuKind === "actions"}
+              <button
+                type="button"
+                disabled={editingBy !== null && editingBy !== userId}
+                on:click={() => deleteParagraph(index)}
+                ><Trash2Icon />Delete{selectedParagraphIndexes.length > 1
+                  ? ` ${selectedParagraphIndexes.length} paragraphs`
+                  : ""}</button
+              >
+              <button
+                type="button"
+                on:click={() => copyParagraphSelection(index)}
+                ><CopyIcon />Copy{selectedParagraphIndexes.length > 1
+                  ? ` ${selectedParagraphIndexes.length} paragraphs`
+                  : ""}</button
+              >
+              <button
+                type="button"
+                disabled={editingBy !== null && editingBy !== userId}
+                on:click={() => insertParagraph(index)}
+                ><PlusIcon />New paragraph below</button
+              >
+            {:else}
+              <button type="button" on:click={() => sendParagraph(index, "all")}
+                ><SendIcon />Send to all linked</button
+              >
+              <button
+                type="button"
+                on:click={() => sendParagraph(index, "notes")}
+                ><FileTextIcon />Send to linked notes</button
+              >
+              <button
+                type="button"
+                on:click={() => sendParagraph(index, "terminals")}
+                ><TerminalIcon />Send to linked terminals</button
+              >
+              <button
+                type="button"
+                on:click={() => sendParagraph(index, "terminals-execute")}
+                ><PlayIcon />Send to terminals &amp; run</button
+              >
+              <button
+                type="button"
+                on:click={() => sendParagraph(index, "files")}
+                ><Edit3Icon />Send to file editors</button
+              >
+            {/if}
           </div>
         {/if}
         <textarea
@@ -1244,14 +1287,11 @@
 <style lang="postcss">
   @reference "../../app.css";
   .note-container.focused {
-    outline: 2px solid rgb(228 228 231 / 88%);
-    outline-offset: -1px;
+    border-color: rgb(228 228 231 / 88%);
   }
   .note-container.editing-active {
-    outline-color: rgb(186 230 253 / 92%);
-    box-shadow:
-      0 0 0 1px rgb(125 211 252 / 20%),
-      0 8px 24px rgb(0 0 0 / 35%);
+    border-color: rgb(186 230 253 / 92%);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
   }
   .note-container.editing-active > header {
     background: rgb(125 211 252 / 10%);
@@ -1260,12 +1300,11 @@
     @apply flex flex-col;
   }
   .note-container.linked-highlight {
-    outline: 2px solid rgb(125 211 252 / 80%);
-    outline-offset: 1px;
+    border-color: rgb(125 211 252 / 80%);
     animation: linked-note-pulse 1.8s ease-in-out infinite;
   }
   .note-container.linked-highlight.linked-from-terminal {
-    outline-color: rgb(129 140 248 / 50%);
+    border-color: rgb(129 140 248 / 50%);
     animation-name: linked-note-from-terminal-pulse;
   }
   .note-container.fullscreen {
@@ -1329,6 +1368,16 @@
   }
   .paragraph-marker.selected {
     @apply bg-sky-300/15 text-sky-100 opacity-100;
+  }
+  .paragraph-send {
+    @apply absolute right-1.5 top-1.5 z-10 inline-flex h-5 w-5 items-center justify-center rounded text-zinc-300 opacity-0 transition-[background-color,color,opacity] hover:bg-sky-300/15 hover:text-sky-100 focus-visible:bg-sky-300/15 focus-visible:text-sky-100 focus-visible:opacity-100 focus-visible:outline-none disabled:pointer-events-none;
+  }
+  .paragraph-row:hover .paragraph-send,
+  .paragraph-send.active {
+    @apply opacity-100;
+  }
+  .paragraph-send :global(svg) {
+    @apply h-3.5 w-3.5;
   }
   .paragraph-menu {
     position: fixed;

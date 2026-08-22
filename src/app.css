@@ -2,7 +2,9 @@
 @config "../tailwind.config.cjs";
 
 .canvas-middle-panning,
-.canvas-middle-panning * {
+.canvas-middle-panning *,
+.canvas-secondary-panning,
+.canvas-secondary-panning * {
   cursor: grabbing !important;
 }
 

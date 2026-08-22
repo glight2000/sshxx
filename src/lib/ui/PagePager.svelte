@@ -1,12 +1,13 @@
 <script lang="ts">
   import { createEventDispatcher, tick } from "svelte";
-  import { Edit2Icon, PlusIcon } from "svelte-feather-icons";
+  import { PlusIcon } from "svelte-feather-icons";
 
   import type { WsPage } from "$lib/protocol";
 
   export let pages: WsPage[];
   export let activePageId: number;
   export let hasWriteAccess: boolean | undefined;
+  export let canvasDropPageId: number | null = null;
 
   const dispatch = createEventDispatcher<{
     select: number;
@@ -56,10 +57,12 @@
         />
       {:else}
         <div
-          class="group flex shrink-0 items-center rounded-md {page.id ===
+          data-canvas-page-id={page.id}
+          class="group flex shrink-0 items-center rounded-md border border-transparent {page.id ===
           activePageId
             ? 'bg-indigo-700 text-white'
             : 'text-zinc-300 hover:bg-zinc-800'}"
+          class:page-drop-target={canvasDropPageId === page.id}
         >
           <button
             type="button"
@@ -70,17 +73,6 @@
           >
             {page.name}
           </button>
-          {#if page.id === activePageId && hasWriteAccess}
-            <button
-              type="button"
-              aria-label="Rename page"
-              title="Rename page"
-              class="mr-1 rounded p-1 text-indigo-200 hover:bg-white/10 hover:text-white"
-              on:click={() => beginRename(page)}
-            >
-              <Edit2Icon class="h-3.5 w-3.5" />
-            </button>
-          {/if}
         </div>
       {/if}
     {/each}
@@ -98,3 +90,25 @@
     <PlusIcon class="h-4 w-4" />
   </button>
 </nav>
+
+<style lang="postcss">
+  @reference "../../app.css";
+
+  .page-drop-target {
+    @apply border-amber-100 bg-amber-300 text-zinc-950 shadow-lg shadow-amber-300/35;
+    animation: page-drop-pulse 0.85s ease-in-out infinite;
+  }
+
+  @keyframes page-drop-pulse {
+    50% {
+      box-shadow: 0 0 18px rgb(252 211 77 / 0.65);
+      transform: translateY(-2px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .page-drop-target {
+      animation: none;
+    }
+  }
+</style>

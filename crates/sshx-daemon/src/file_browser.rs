@@ -526,6 +526,8 @@ fn decoded_content(request: &FileOperationRequest) -> Result<Vec<u8>> {
         .context("file content is missing")?;
     match request.encoding.as_deref().unwrap_or("utf8") {
         "utf8" => Ok(content.as_bytes().to_vec()),
+        "utf16le" => Ok(encode_utf16(content, u16::to_le_bytes, [0xff, 0xfe])),
+        "utf16be" => Ok(encode_utf16(content, u16::to_be_bytes, [0xfe, 0xff])),
         "base64" => STANDARD
             .decode(content)
             .context("uploaded file content is not valid base64"),
@@ -539,6 +541,23 @@ fn read_success(
     bytes: Vec<u8>,
 ) -> FileOperationResponse {
     let size = bytes.len() as u64;
+    let utf16 = if bytes.starts_with(&[0xff, 0xfe]) {
+        decode_utf16(&bytes[2..], u16::from_le_bytes).map(|content| (content, "utf16le"))
+    } else if bytes.starts_with(&[0xfe, 0xff]) {
+        decode_utf16(&bytes[2..], u16::from_be_bytes).map(|content| (content, "utf16be"))
+    } else {
+        None
+    };
+    if let Some((content, encoding)) = utf16 {
+        return success(
+            request,
+            path,
+            None,
+            Some(content),
+            Some(encoding),
+            Some(size),
+        );
+    }
     match String::from_utf8(bytes) {
         Ok(content) => success(request, path, None, Some(content), Some("utf8"), Some(size)),
         Err(error) => success(
@@ -550,6 +569,26 @@ fn read_success(
             Some(size),
         ),
     }
+}
+
+fn decode_utf16(bytes: &[u8], decode: fn([u8; 2]) -> u16) -> Option<String> {
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| decode([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16(&units).ok()
+}
+
+fn encode_utf16(content: &str, encode: fn(u16) -> [u8; 2], bom: [u8; 2]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(2 + content.len() * 2);
+    bytes.extend_from_slice(&bom);
+    for unit in content.encode_utf16() {
+        bytes.extend_from_slice(&encode(unit));
+    }
+    bytes
 }
 
 fn success(
@@ -610,6 +649,15 @@ mod tests {
         let read = execute_local(&request(FileOperation::Read, &path, None), None).await?;
         assert_eq!(read.content.as_deref(), Some("before"));
         assert_eq!(read.encoding, Some("utf8"));
+
+        let utf16_path = directory.join("utf16.txt");
+        let mut utf16_write = request(FileOperation::Write, &utf16_path, Some("hello 世界"));
+        utf16_write.encoding = Some("utf16le".into());
+        execute_local(&utf16_write, None).await?;
+        let utf16_read =
+            execute_local(&request(FileOperation::Read, &utf16_path, None), None).await?;
+        assert_eq!(utf16_read.content.as_deref(), Some("hello 世界"));
+        assert_eq!(utf16_read.encoding, Some("utf16le"));
 
         execute_local(&request(FileOperation::Write, &path, Some("after")), None).await?;
         assert_eq!(tokio::fs::read_to_string(&path).await?, "after");

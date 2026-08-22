@@ -8,6 +8,7 @@ export type Settings = {
   theme: ThemeName;
   scrollback: number;
   snapToGrid: boolean;
+  swapCanvasMouseButtons: boolean;
   colorMode: ColorModePreference;
 };
 
@@ -31,6 +32,8 @@ export const settings: Readable<Settings> = derived(
     }
 
     const snapToGrid = $storedSettings.snapToGrid === true;
+    const swapCanvasMouseButtons =
+      $storedSettings.swapCanvasMouseButtons === true;
     const colorMode = isColorModePreference($storedSettings.colorMode)
       ? $storedSettings.colorMode
       : "system";
@@ -40,6 +43,7 @@ export const settings: Readable<Settings> = derived(
       theme,
       scrollback,
       snapToGrid,
+      swapCanvasMouseButtons,
       colorMode,
     };
   },

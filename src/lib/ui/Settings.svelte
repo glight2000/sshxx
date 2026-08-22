@@ -14,6 +14,7 @@
   let inputTheme: ThemeName;
   let inputScrollback: number;
   let inputSnapToGrid: boolean;
+  let inputSwapCanvasMouseButtons: boolean;
   let inputColorMode: ColorModePreference;
 
   let initialized = false;
@@ -24,6 +25,7 @@
     inputTheme = $settings.theme;
     inputScrollback = $settings.scrollback;
     inputSnapToGrid = $settings.snapToGrid;
+    inputSwapCanvasMouseButtons = $settings.swapCanvasMouseButtons;
     inputColorMode = $settings.colorMode;
   }
 </script>
@@ -52,6 +54,27 @@
           on:change={() => updateSettings({ snapToGrid: inputSnapToGrid })}
         />
         Enabled
+      </label>
+    </div>
+    <div class="item">
+      <div>
+        <p class="item-title">Canvas mouse buttons</p>
+        <p class="item-subtitle">
+          Exchange blank-canvas selection and movement. Component controls and
+          middle-button movement are unchanged.
+        </p>
+      </div>
+      <label class="flex items-center gap-2 py-2 text-sm cursor-pointer">
+        <input
+          type="checkbox"
+          class="h-4 w-4 accent-indigo-500"
+          bind:checked={inputSwapCanvasMouseButtons}
+          on:change={() =>
+            updateSettings({
+              swapCanvasMouseButtons: inputSwapCanvasMouseButtons,
+            })}
+        />
+        Swap buttons
       </label>
     </div>
     <div class="item">

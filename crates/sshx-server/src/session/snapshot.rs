@@ -100,6 +100,7 @@ impl Session {
                                 .iter()
                                 .map(|id| id.0)
                                 .collect(),
+                            title: note.title.clone(),
                             background: note.background.clone(),
                             opacity: note.opacity.into(),
                             page_id: note.page_id,
@@ -127,6 +128,7 @@ impl Session {
                     page_id: window.page_id,
                     path: window.path.clone(),
                     title: window.title.clone(),
+                    background: window.background.clone(),
                     x: window.x,
                     y: window.y,
                     width: window.width.into(),
@@ -258,6 +260,7 @@ impl Session {
                         .into_iter()
                         .map(Sid)
                         .collect(),
+                    title: note.title,
                     background: note.background,
                     opacity: if note.opacity == 0 {
                         80
@@ -275,7 +278,6 @@ impl Session {
             })
             .collect::<Result<Vec<_>>>()?;
         drop(shell_layout);
-        let mut seen_file_shells = HashSet::new();
         let file_windows = message
             .file_windows
             .into_iter()
@@ -285,6 +287,11 @@ impl Session {
                     page_id: window.page_id.max(1),
                     path: window.path,
                     title: window.title,
+                    background: if window.background.is_empty() {
+                        "#111113".into()
+                    } else {
+                        window.background
+                    },
                     x: window.x,
                     y: window.y,
                     width: window
@@ -320,14 +327,12 @@ impl Session {
                     "file browser references a missing page"
                 );
                 ensure!(
-                    session.source.borrow().iter().any(|(id, shell)| {
-                        *id == state.shell_id && shell.page_id == state.page_id
-                    }),
+                    session
+                        .source
+                        .borrow()
+                        .iter()
+                        .any(|(id, _)| *id == state.shell_id),
                     "file browser references a missing terminal"
-                );
-                ensure!(
-                    seen_file_shells.insert((state.shell_id, state.page_id)),
-                    "duplicate file browser for terminal"
                 );
                 Ok((Sid(window.id), state))
             })

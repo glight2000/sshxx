@@ -35,6 +35,20 @@ async fn test_web_get() -> Result<()> {
     let resp = reqwest::get(server.endpoint()).await?;
     assert!(!resp.status().is_server_error());
 
+    let missing_chunk = reqwest::get(format!(
+        "{}/_app/immutable/chunks/missing-deployment-chunk.js",
+        server.endpoint()
+    ))
+    .await?;
+    assert_eq!(missing_chunk.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing_chunk
+            .headers()
+            .get(reqwest::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+
     Ok(())
 }
 
@@ -99,6 +113,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             opacity: 70,
             page_id: 2,
             theme: "Dracula".into(),
+            ssh_profile_id: String::new(),
         }],
         notes: vec![WorkspaceNote {
             id: 8,
@@ -111,6 +126,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             linked_shell_ids: vec![7],
             linked_note_ids: Vec::new(),
             linked_file_window_ids: vec![9],
+            title: "Checklist".into(),
             background: "#445566".into(),
             opacity: 75,
             page_id: 2,
@@ -121,6 +137,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             page_id: 2,
             path: "/tmp".into(),
             title: "Build".into(),
+            background: "#111827".into(),
             x: 480,
             y: 600,
             width: 1040,
@@ -170,7 +187,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
         2,
         (30, 100),
         (714, 518),
-        ("Dracula".into(), String::new()),
+        ("Dracula".into(), String::new(), String::new()),
     )?;
     assert_eq!(restored.unwrap().rows, 30);
     assert_eq!(session.workspace_state().shells[0].page_id, 2);
@@ -181,6 +198,30 @@ async fn test_restore_daemon_workspace() -> Result<()> {
     assert_eq!(session.workspace_state().file_windows[0].shell_id, 7);
     assert!(session.sequence_numbers().map.contains_key(&7));
     assert_eq!(session.counter().next_sid(), sshx_core::Sid(10));
+
+    session.move_canvas_items(
+        2,
+        1,
+        vec![(sshx_core::Sid(7), 120, 240)],
+        vec![(sshx_core::Sid(8), 360, 480)],
+        vec![(sshx_core::Sid(9), 480, 600)],
+    )?;
+    let moved = session.workspace_state();
+    assert_eq!(moved.shells[0].page_id, 1);
+    assert_eq!(moved.notes[0].page_id, 1);
+    assert_eq!(moved.file_windows[0].page_id, 1);
+    assert_eq!(moved.notes[0].linked_shell_ids, vec![7]);
+    assert_eq!(moved.notes[0].linked_file_window_ids, vec![9]);
+    assert!(session
+        .move_canvas_items(
+            1,
+            99,
+            vec![(sshx_core::Sid(7), 0, 0)],
+            Vec::new(),
+            Vec::new(),
+        )
+        .is_err());
+    assert_eq!(session.workspace_state().shells[0].page_id, 1);
     Ok(())
 }
 
@@ -217,7 +258,46 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
         .await?
         .into_inner();
     let session = server.state().lookup(&response.name).unwrap();
-    assert_eq!(session.ssh_profile_collection().profiles, vec![profile]);
+    assert_eq!(
+        session.ssh_profile_collection().profiles,
+        vec![profile.clone()]
+    );
+    session.add_shell(
+        sshx_core::Sid(1),
+        (0, 0),
+        1,
+        (24, 80),
+        (640, 400),
+        (String::new(), String::new(), "office".into()),
+    )?;
+    assert_eq!(
+        session.shell_ssh_profile_id(sshx_core::Sid(1)).as_deref(),
+        Some("office")
+    );
+    assert_eq!(session.workspace_state().shells[0].ssh_profile_id, "office");
+
+    let restored_response = client
+        .open(OpenRequest {
+            origin: "http://localhost:5173".into(),
+            encrypted_zeros: Encrypt::new("localdevkey").zeros().into(),
+            name: String::new(),
+            write_password_hash: None,
+            daemon_version: "restored-daemon".into(),
+            workspace: Some(session.workspace_state()),
+            ssh_profiles: Some(SshProfileCollection {
+                format_version: sshx_core::SSH_PROFILE_FORMAT_VERSION,
+                profiles: vec![profile],
+            }),
+        })
+        .await?
+        .into_inner();
+    let restored_session = server.state().lookup(&restored_response.name).unwrap();
+    assert_eq!(
+        restored_session
+            .shell_ssh_profile_id(sshx_core::Sid(1))
+            .as_deref(),
+        Some("office")
+    );
 
     let duplicate_name = WsSshProfile {
         id: "other".into(),

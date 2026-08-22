@@ -22,6 +22,8 @@ use crate::terminal_host::TerminalHostConfig;
 const CONTENT_CHUNK_SIZE: usize = 1 << 16; // Send at most this many bytes at a time.
 const CONTENT_ROLLING_BYTES: usize = 8 << 20; // Store at least this much content.
 const CONTENT_PRUNE_BYTES: usize = 12 << 20; // Prune when we exceed this length.
+const INITIAL_DIRECTORY_ENV: &str = "SSHXX_INITIAL_DIRECTORY";
+const BASH_INITIAL_DIRECTORY_COMMAND: &str = "if [ -n \"${SSHXX_INITIAL_DIRECTORY+x}\" ]; then builtin cd -- \"$SSHXX_INITIAL_DIRECTORY\"; unset SSHXX_INITIAL_DIRECTORY; fi";
 
 /// Variants of terminal behavior that are used by the controller.
 #[derive(Debug, Clone)]
@@ -45,6 +47,10 @@ pub enum Runner {
 pub(crate) struct ShellOptions {
     pub working_directory: Option<PathBuf>,
     pub ssh_profile: Option<SshProfile>,
+    pub ssh_profile_id: String,
+    /// Whether this request may attach to an existing PTY with the same stable
+    /// host ID. Source-derived creation actions disable this behavior.
+    pub reattach_existing: bool,
     pub rows: u16,
     pub cols: u16,
     pub theme: String,
@@ -116,11 +122,15 @@ fn launch_command(shell: &str, options: &mut ShellOptions) -> Result<(String, Ve
         Some(profile) => {
             let (program, mut args) = ssh_command(profile)?;
             if let Some(directory) = options.working_directory.take() {
+                let quoted_directory = shell_quote(&directory.to_string_lossy());
+                let quoted_prompt_command = shell_quote(BASH_INITIAL_DIRECTORY_COMMAND);
                 let host_index = args.len().saturating_sub(1);
                 args.insert(host_index, "-t".into());
                 args.push(format!(
-                    "cd -- {} && exec \"${{SHELL:-/bin/sh}}\" -l",
-                    shell_quote(&directory.to_string_lossy())
+                    "export {INITIAL_DIRECTORY_ENV}={quoted_directory}; export \
+                     PROMPT_COMMAND={quoted_prompt_command}\"${{PROMPT_COMMAND:+; \
+                     $PROMPT_COMMAND}}\"; cd -- {quoted_directory} && exec \
+                     \"${{SHELL:-/bin/sh}}\" -l"
                 ));
             }
             Ok((program, args))
@@ -254,6 +264,7 @@ async fn hosted_shell_task(
             &terminal_id,
             program,
             &mut args,
+            options.working_directory.as_deref(),
         ));
     }
     attach_or_create_hosted_terminal(
@@ -405,31 +416,57 @@ async fn attach_or_create_hosted_terminal(
     environment: Option<HashMap<String, String>>,
     options: &ShellOptions,
 ) -> Result<()> {
-    let attach_id = client.attach_terminal(terminal_id, 0).await?;
-    match receive_host_response(client, attach_id).await? {
-        HostMessage::Ack(_) => return Ok(()),
-        HostMessage::Error(error) if error.code == "NOT_FOUND" => {}
-        HostMessage::Error(error) => bail!("terminal host {}: {}", error.code, error.message),
-        _ => bail!("terminal host returned an invalid attach response"),
+    if options.reattach_existing {
+        let attach_id = client.attach_terminal(terminal_id, 0).await?;
+        match receive_host_response(client, attach_id).await? {
+            HostMessage::Ack(_) => return Ok(()),
+            HostMessage::Error(error) if error.code == "NOT_FOUND" => {}
+            HostMessage::Error(error) => {
+                bail!("terminal host {}: {}", error.code, error.message)
+            }
+            _ => bail!("terminal host returned an invalid attach response"),
+        }
     }
 
-    let create_id = client
-        .create_terminal(CreateTerminal {
-            terminal_id: terminal_id.into(),
-            program: program.into(),
-            args,
-            working_directory: options
-                .working_directory
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            environment: environment.unwrap_or_default(),
-            rows: options.rows.into(),
-            columns: options.cols.into(),
-        })
-        .await?;
+    let request = CreateTerminal {
+        terminal_id: terminal_id.into(),
+        program: program.into(),
+        args,
+        working_directory: options
+            .working_directory
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        environment: environment.unwrap_or_default(),
+        rows: options.rows.into(),
+        columns: options.cols.into(),
+    };
+    let create_id = client.create_terminal(request.clone()).await?;
     match receive_host_response(client, create_id).await? {
         HostMessage::Ack(_) => {}
+        HostMessage::Error(error)
+            if error.code == "ALREADY_EXISTS" && !options.reattach_existing =>
+        {
+            // A new server-side shell ID is unique in this workspace. A host
+            // collision is therefore stale and must not silently discard this
+            // request's working directory or SSH profile.
+            let close_id = client.close_terminal(terminal_id).await?;
+            match receive_host_response(client, close_id).await? {
+                HostMessage::Ack(_) => {}
+                HostMessage::Error(error) => {
+                    bail!("terminal host {}: {}", error.code, error.message)
+                }
+                _ => bail!("terminal host returned an invalid close response"),
+            }
+            let create_id = client.create_terminal(request).await?;
+            match receive_host_response(client, create_id).await? {
+                HostMessage::Ack(_) => {}
+                HostMessage::Error(error) => {
+                    bail!("terminal host {}: {}", error.code, error.message)
+                }
+                _ => bail!("terminal host returned an invalid create response"),
+            }
+        }
         HostMessage::Error(error) if error.code == "ALREADY_EXISTS" => {}
         HostMessage::Error(error) => bail!("terminal host {}: {}", error.code, error.message),
         _ => bail!("terminal host returned an invalid create response"),
@@ -465,6 +502,7 @@ fn history_launch_policy(
     terminal_id: &str,
     program: &str,
     args: &mut Vec<String>,
+    initial_directory: Option<&std::path::Path>,
 ) -> HashMap<String, String> {
     let history_path = host
         .history_directory
@@ -483,21 +521,39 @@ fn history_launch_policy(
     ]);
     if shell_name == "bash" {
         let append_history = "history -a";
-        let prompt_command = std::env::var("PROMPT_COMMAND")
+        let inherited_prompt = std::env::var("PROMPT_COMMAND")
             .ok()
-            .filter(|command| !command.trim().is_empty())
-            .map_or_else(
-                || append_history.into(),
-                |command| format!("{command}; {append_history}"),
+            .filter(|command| !command.trim().is_empty());
+        let mut prompt_parts = Vec::new();
+        if let Some(directory) = initial_directory {
+            environment.insert(
+                INITIAL_DIRECTORY_ENV.into(),
+                directory.to_string_lossy().into_owned(),
             );
-        environment.insert("PROMPT_COMMAND".into(), prompt_command);
+            prompt_parts.push(BASH_INITIAL_DIRECTORY_COMMAND.to_owned());
+        }
+        if let Some(command) = inherited_prompt {
+            prompt_parts.push(command);
+        }
+        prompt_parts.push(append_history.into());
+        environment.insert("PROMPT_COMMAND".into(), prompt_parts.join("; "));
+    } else if shell_name == "fish" {
+        if let Some(directory) = initial_directory {
+            args.extend([
+                "--init-command".into(),
+                format!("cd -- {}", shell_quote(&directory.to_string_lossy())),
+            ]);
+        }
     } else if matches!(shell_name.as_str(), "pwsh" | "powershell") {
         let quoted_path = history_path.to_string_lossy().replace('\'', "''");
-        args.extend([
-            "-NoExit".into(),
-            "-Command".into(),
-            format!("Set-PSReadLineOption -HistorySavePath '{quoted_path}'"),
-        ]);
+        let mut commands = vec![format!(
+            "Set-PSReadLineOption -HistorySavePath '{quoted_path}'"
+        )];
+        if let Some(directory) = initial_directory {
+            let directory = directory.to_string_lossy().replace('\'', "''");
+            commands.push(format!("Set-Location -LiteralPath '{directory}'"));
+        }
+        args.extend(["-NoExit".into(), "-Command".into(), commands.join("; ")]);
     }
     environment
 }
@@ -636,9 +692,12 @@ mod tests {
     #[cfg(unix)]
     use tokio::sync::mpsc;
 
-    use super::{history_launch_policy, shell_quote, ssh_command, terminal_environment};
     #[cfg(unix)]
-    use super::{Runner, ShellData, ShellOptions};
+    use super::{attach_or_create_hosted_terminal, Runner, ShellData, ShellOptions};
+    use super::{
+        history_launch_policy, shell_quote, ssh_command, terminal_environment,
+        BASH_INITIAL_DIRECTORY_COMMAND, INITIAL_DIRECTORY_ENV,
+    };
     #[cfg(unix)]
     use crate::encrypt::Encrypt;
     use crate::terminal_host::TerminalHostConfig;
@@ -676,6 +735,42 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn builds_remote_working_directory_command_after_the_destination() -> anyhow::Result<()> {
+        let profile = SshProfile {
+            id: "prod".into(),
+            name: "Production".into(),
+            host: "server.example.test".into(),
+            port: 22,
+            username: "deploy".into(),
+            auth_method: SshAuthMethod::SshAuthAgent.into(),
+            key_path: String::new(),
+            accept_new_host_key: true,
+            theme: String::new(),
+            background_enabled: false,
+            background: String::new(),
+        };
+        let mut options = test_shell_options();
+        options.ssh_profile = Some(profile);
+        options.working_directory = Some(std::path::PathBuf::from("/srv/team's files"));
+
+        let (program, args) = super::launch_command("/bin/bash", &mut options)?;
+
+        assert_eq!(program, "ssh");
+        assert_eq!(args[args.len() - 2], "server.example.test");
+        let remote_command = args.last().map(String::as_str).unwrap();
+        assert!(remote_command
+            .contains("cd -- '/srv/team'\"'\"'s files' && exec \"${SHELL:-/bin/sh}\" -l"));
+        assert!(remote_command.contains("SSHXX_INITIAL_DIRECTORY"));
+        assert!(remote_command.contains("PROMPT_COMMAND"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-t", "server.example.test"]));
+        assert!(options.working_directory.is_none());
+        Ok(())
+    }
+
     #[test]
     fn rejects_a_host_that_can_be_parsed_as_an_option() {
         let profile = SshProfile {
@@ -695,8 +790,13 @@ mod tests {
             history_directory: std::path::PathBuf::from("cache/history"),
         };
         let mut args = Vec::new();
-        let environment =
-            history_launch_policy(&host, "sshxx-history-test-9", "powershell.exe", &mut args);
+        let environment = history_launch_policy(
+            &host,
+            "sshxx-history-test-9",
+            "powershell.exe",
+            &mut args,
+            Some(std::path::Path::new("C:\\work dir")),
+        );
         assert!(environment
             .get("HISTFILE")
             .unwrap()
@@ -709,14 +809,50 @@ mod tests {
             .last()
             .unwrap()
             .contains("sshxx-history-test-9.history"));
+        assert!(args
+            .last()
+            .unwrap()
+            .contains("Set-Location -LiteralPath 'C:\\work dir'"));
+
+        let mut fish_args = Vec::new();
+        history_launch_policy(
+            &host,
+            "sshxx-history-test-fish",
+            "fish",
+            &mut fish_args,
+            Some(std::path::Path::new("/srv/team's files")),
+        );
+        assert_eq!(
+            fish_args.first().map(String::as_str),
+            Some("--init-command")
+        );
+        assert!(fish_args
+            .last()
+            .unwrap()
+            .contains("/srv/team'\"'\"'s files"));
 
         let mut bash_args = Vec::new();
-        let bash_environment =
-            history_launch_policy(&host, "sshxx-history-test-10", "bash", &mut bash_args);
+        let bash_environment = history_launch_policy(
+            &host,
+            "sshxx-history-test-10",
+            "bash",
+            &mut bash_args,
+            Some(std::path::Path::new("/srv/work")),
+        );
         assert!(bash_environment
             .get("PROMPT_COMMAND")
             .unwrap()
             .contains("history -a"));
+        assert!(bash_environment
+            .get("PROMPT_COMMAND")
+            .unwrap()
+            .contains(BASH_INITIAL_DIRECTORY_COMMAND));
+        assert_eq!(
+            bash_environment
+                .get(INITIAL_DIRECTORY_ENV)
+                .map(String::as_str),
+            Some("/srv/work")
+        );
     }
 
     #[test]
@@ -862,10 +998,78 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_hosted_shell_replaces_a_stale_id_and_honors_cwd() -> anyhow::Result<()> {
+        let state = tempfile::tempdir()?;
+        let endpoint = state
+            .path()
+            .join("host.sock")
+            .to_string_lossy()
+            .into_owned();
+        let token = vec![29; 32];
+        let server_endpoint = endpoint.clone();
+        let server_token = token.clone();
+        let server = tokio::spawn(async move {
+            sshxx_terminal_host::server::serve(&server_endpoint, server_token).await
+        });
+        wait_for_host(&endpoint, &token).await?;
+
+        let first_directory = state.path().join("first");
+        let requested_directory = state.path().join("requested");
+        std::fs::create_dir(&first_directory)?;
+        std::fs::create_dir(&requested_directory)?;
+        let mut client =
+            TerminalHostClient::connect(&endpoint, token.clone(), env!("CARGO_PKG_VERSION"))
+                .await?;
+        let mut first = test_shell_options();
+        first.working_directory = Some(first_directory);
+        first.reattach_existing = false;
+        attach_or_create_hosted_terminal(
+            &mut client,
+            "open-terminal-here",
+            "/bin/bash",
+            Vec::new(),
+            None,
+            &first,
+        )
+        .await?;
+        let first_pid = wait_for_terminal_pid(&endpoint, &token).await?;
+
+        let mut replacement = test_shell_options();
+        replacement.working_directory = Some(requested_directory.clone());
+        replacement.reattach_existing = false;
+        attach_or_create_hosted_terminal(
+            &mut client,
+            "open-terminal-here",
+            "/bin/bash",
+            Vec::new(),
+            None,
+            &replacement,
+        )
+        .await?;
+        let replacement_pid = wait_for_terminal_pid(&endpoint, &token).await?;
+        assert_ne!(replacement_pid, first_pid);
+        assert_eq!(
+            std::fs::read_link(format!("/proc/{replacement_pid}/cwd"))?,
+            requested_directory
+        );
+
+        let close_id = client.close_terminal("open-terminal-here").await?;
+        wait_for_ack(&mut client, close_id).await?;
+        wait_for_no_terminals(&endpoint, &token).await?;
+        let shutdown = client.shutdown(false).await?;
+        wait_for_ack(&mut client, shutdown).await?;
+        tokio::time::timeout(Duration::from_secs(3), server).await???;
+        Ok(())
+    }
+
+    #[cfg(unix)]
     fn test_shell_options() -> ShellOptions {
         ShellOptions {
             working_directory: None,
             ssh_profile: None,
+            ssh_profile_id: String::new(),
+            reattach_existing: true,
             rows: 24,
             cols: 80,
             theme: String::new(),

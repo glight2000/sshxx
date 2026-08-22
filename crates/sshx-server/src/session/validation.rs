@@ -1,6 +1,6 @@
 //! Validation and wire-format conversion at the session trust boundary.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use anyhow::{bail, Context, Result};
 use sshx_core::{
@@ -11,18 +11,18 @@ use sshx_core::{
 use crate::web::protocol::{WsFileWindow, WsNote, WsSshAuthMethod, WsSshProfile, WsWinsize};
 
 pub(super) fn validate_title(title: &str) -> Result<()> {
-    if title.len() > 100 {
-        bail!("terminal title is too long");
+    if title.len() > 100 || title.chars().any(char::is_control) {
+        bail!("window title is invalid");
     }
     Ok(())
 }
 
 pub(super) fn validate_file_window(window: &WsFileWindow) -> Result<()> {
+    validate_title(&window.title)?;
+    validate_color(&window.background)?;
     if window.path.is_empty()
         || window.path.len() > 16_384
         || window.path.contains('\0')
-        || window.title.len() > 100
-        || window.title.chars().any(char::is_control)
         || !(600..=4_000).contains(&window.width)
         || !(360..=4_000).contains(&window.height)
     {
@@ -84,6 +84,7 @@ pub(super) fn validate_paragraphs(paragraphs: &[String]) -> Result<()> {
 }
 
 pub(super) fn validate_note_content(note: &WsNote) -> Result<()> {
+    validate_title(&note.title)?;
     validate_paragraphs(&note.paragraphs)?;
     if note.text != note.paragraphs.join("\n") {
         bail!("note text projection is inconsistent");
@@ -93,17 +94,14 @@ pub(super) fn validate_note_content(note: &WsNote) -> Result<()> {
 
 pub(super) fn validate_linked_shell_ids(
     linked_shell_ids: &[Sid],
-    page_id: u32,
+    _page_id: u32,
     shells: &[(Sid, WsWinsize)],
 ) -> Result<()> {
     let mut unique = HashSet::new();
     if linked_shell_ids.len() > 100
-        || linked_shell_ids.iter().any(|id| {
-            !unique.insert(*id)
-                || !shells
-                    .iter()
-                    .any(|(shell_id, shell)| shell_id == id && shell.page_id == page_id)
-        })
+        || linked_shell_ids
+            .iter()
+            .any(|id| !unique.insert(*id) || !shells.iter().any(|(shell_id, _)| shell_id == id))
     {
         bail!("note references an invalid terminal");
     }
@@ -113,7 +111,7 @@ pub(super) fn validate_linked_shell_ids(
 pub(super) fn validate_linked_note_ids(
     linked_note_ids: &[Sid],
     source_id: Sid,
-    page_id: u32,
+    _page_id: u32,
     notes: &[(Sid, WsNote)],
 ) -> Result<()> {
     let mut unique = HashSet::new();
@@ -121,9 +119,7 @@ pub(super) fn validate_linked_note_ids(
         || linked_note_ids.iter().any(|id| {
             *id == source_id
                 || !unique.insert(*id)
-                || !notes
-                    .iter()
-                    .any(|(note_id, note)| note_id == id && note.page_id == page_id)
+                || !notes.iter().any(|(note_id, _)| note_id == id)
         })
     {
         bail!("note references an invalid note");
@@ -133,17 +129,14 @@ pub(super) fn validate_linked_note_ids(
 
 pub(super) fn validate_linked_file_window_ids(
     linked_file_window_ids: &[Sid],
-    page_id: u32,
+    _page_id: u32,
     windows: &[(Sid, WsFileWindow)],
 ) -> Result<()> {
     let mut unique = HashSet::new();
     if linked_file_window_ids.len() > 100
-        || linked_file_window_ids.iter().any(|id| {
-            !unique.insert(*id)
-                || !windows
-                    .iter()
-                    .any(|(window_id, window)| window_id == id && window.page_id == page_id)
-        })
+        || linked_file_window_ids
+            .iter()
+            .any(|id| !unique.insert(*id) || !windows.iter().any(|(window_id, _)| window_id == id))
     {
         bail!("note references an invalid file editor");
     }
@@ -154,45 +147,31 @@ pub(super) fn normalize_note_canvas_links(
     notes: &mut [(Sid, WsNote)],
     windows: &[(Sid, WsFileWindow)],
 ) {
-    let note_pages = notes
-        .iter()
-        .map(|(id, note)| (*id, note.page_id))
-        .collect::<HashMap<_, _>>();
-    let window_pages = windows
-        .iter()
-        .map(|(id, window)| (*id, window.page_id))
-        .collect::<HashMap<_, _>>();
+    let note_ids = notes.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
+    let window_ids = windows.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
     for (source_id, note) in notes {
         let mut unique_notes = HashSet::new();
-        note.linked_note_ids.retain(|id| {
-            *id != *source_id
-                && unique_notes.insert(*id)
-                && note_pages.get(id) == Some(&note.page_id)
-        });
+        note.linked_note_ids
+            .retain(|id| *id != *source_id && unique_notes.insert(*id) && note_ids.contains(id));
         note.linked_note_ids.truncate(100);
 
         let mut unique_windows = HashSet::new();
         note.linked_file_window_ids
-            .retain(|id| unique_windows.insert(*id) && window_pages.get(id) == Some(&note.page_id));
+            .retain(|id| unique_windows.insert(*id) && window_ids.contains(id));
         note.linked_file_window_ids.truncate(100);
     }
 }
 
 pub(super) fn normalize_linked_shell_ids(
     linked_shell_ids: Vec<u32>,
-    page_id: u32,
+    _page_id: u32,
     shells: &[(Sid, WsWinsize)],
 ) -> Vec<Sid> {
     let mut unique = HashSet::new();
     linked_shell_ids
         .into_iter()
         .map(Sid)
-        .filter(|id| {
-            unique.insert(*id)
-                && shells
-                    .iter()
-                    .any(|(shell_id, shell)| shell_id == id && shell.page_id == page_id)
-        })
+        .filter(|id| unique.insert(*id) && shells.iter().any(|(shell_id, _)| shell_id == id))
         .take(100)
         .collect()
 }
@@ -235,6 +214,18 @@ pub(super) fn validate_terminal_window_size(width: u16, height: u16) -> Result<(
         || (height != 0 && !(160..=4_000).contains(&height))
     {
         bail!("terminal window dimensions are out of range");
+    }
+    Ok(())
+}
+
+pub(super) fn validate_optional_ssh_profile_id(id: &str) -> Result<()> {
+    if !id.is_empty()
+        && (id.len() > 64
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+    {
+        bail!("SSH connection ID is invalid");
     }
     Ok(())
 }

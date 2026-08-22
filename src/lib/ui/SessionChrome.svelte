@@ -34,6 +34,7 @@
   export let daemonVersion: string;
   export let pages: WsPage[];
   export let activePageId: number;
+  export let canvasDropPageId: number | null;
 
   const dispatch = createEventDispatcher<{
     create: void;
@@ -127,6 +128,7 @@
 <PagePager
   {pages}
   {activePageId}
+  {canvasDropPageId}
   {hasWriteAccess}
   on:select={(event) => dispatch("selectPage", event.detail)}
   on:create={() => dispatch("createPage")}

@@ -6,7 +6,6 @@ procs:
       --override-origin http://localhost:5173
       --secret dev-secret
       --session-name dev
-      --redis-url redis://localhost:12601
   daemon:
     shell: >-
       cargo build --bin sshxx-terminal-host &&

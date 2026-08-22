@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(descriptor_path)
         .bytes(".")
         .boxed(".sshx.ClientUpdate.client_message.created_shell")
+        .boxed(".sshx.ServerUpdate.server_message.create_shell")
         .compile_protos(&["proto/sshx.proto"], &["proto/"])?;
     Ok(())
 }

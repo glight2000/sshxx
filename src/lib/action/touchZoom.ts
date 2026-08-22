@@ -75,12 +75,14 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 0) {
 
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 2;
+const WHEEL_ZOOM_SPEED = 2.5;
 export const INITIAL_ZOOM = 1.0;
 
 export class TouchZoom {
   #node: HTMLElement;
   #shouldZoomWheel: () => boolean;
   #isEnabled: () => boolean;
+  #canvasPanButton: () => number;
   #scrollingAnchor: HTMLElement | Document;
   #gesture: Gesture;
   #resizeObserver: ResizeObserver;
@@ -99,6 +101,11 @@ export class TouchZoom {
   #wheelLastTimeStamp = 0;
   #middlePointerId: number | null = null;
   #middleLastPoint: number[] = [0, 0];
+  #secondaryPointerId: number | null = null;
+  #secondaryLastPoint: number[] = [0, 0];
+  #secondaryStartPoint: number[] = [0, 0];
+  #secondaryMoved = false;
+  #suppressContextMenu = false;
   #dragPanning = false;
 
   #callbacks = new Set<(manual: boolean) => void>();
@@ -113,10 +120,12 @@ export class TouchZoom {
     node: HTMLElement,
     shouldZoomWheel = () => false,
     isEnabled = () => true,
+    canvasPanButton = () => 2,
   ) {
     this.#node = node;
     this.#shouldZoomWheel = shouldZoomWheel;
     this.#isEnabled = isEnabled;
+    this.#canvasPanButton = canvasPanButton;
     this.#scrollingAnchor = getNearestScrollableContainer(node);
     // @ts-ignore
     document.addEventListener("gesturestart", this.#preventGesture);
@@ -129,16 +138,28 @@ export class TouchZoom {
     node.addEventListener("pointerdown", this.#handleMiddlePointerDown, {
       capture: true,
     });
+    node.addEventListener("pointerdown", this.#handleSecondaryPointerDown, {
+      capture: true,
+    });
     node.addEventListener("auxclick", this.#preventMiddleAuxClick, {
       capture: true,
     });
     window.addEventListener("pointermove", this.#handleMiddlePointerMove, {
       capture: true,
     });
+    window.addEventListener("pointermove", this.#handleSecondaryPointerMove, {
+      capture: true,
+    });
     window.addEventListener("pointerup", this.#handleMiddlePointerEnd, {
       capture: true,
     });
+    window.addEventListener("pointerup", this.#handleSecondaryPointerEnd, {
+      capture: true,
+    });
     window.addEventListener("pointercancel", this.#handleMiddlePointerEnd, {
+      capture: true,
+    });
+    window.addEventListener("pointercancel", this.#handleSecondaryPointerEnd, {
       capture: true,
     });
     window.addEventListener("wheel", this.#handleForcedWheel, {
@@ -263,6 +284,79 @@ export class TouchZoom {
     event.stopPropagation();
   };
 
+  #handleSecondaryPointerDown = (event: PointerEvent) => {
+    if (
+      !this.#isEnabled() ||
+      event.button !== this.#canvasPanButton() ||
+      event.target !== this.#node ||
+      this.#secondaryPointerId !== null
+    )
+      return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.#secondaryPointerId = event.pointerId;
+    this.#secondaryStartPoint = [event.clientX, event.clientY];
+    this.#secondaryLastPoint = [...this.#secondaryStartPoint];
+    this.#secondaryMoved = false;
+    this.#suppressContextMenu = false;
+  };
+
+  #handleSecondaryPointerMove = (event: PointerEvent) => {
+    if (event.pointerId !== this.#secondaryPointerId) return;
+    if (!this.#isEnabled()) {
+      this.#finishSecondaryPointer();
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const point = [event.clientX, event.clientY];
+    const delta = Vec.sub(point, this.#secondaryLastPoint);
+    this.#secondaryLastPoint = point;
+    if (Vec.isEqual(delta, [0, 0])) return;
+
+    if (!this.#secondaryMoved) {
+      const total = Vec.sub(point, this.#secondaryStartPoint);
+      if (Math.hypot(total[0], total[1]) < 3) return;
+      this.#secondaryMoved = true;
+      this.#node.classList.add("canvas-secondary-panning");
+      this.#updatePanningSelectionGuard();
+      window.getSelection()?.removeAllRanges();
+    }
+
+    this.center = Vec.sub(this.center, Vec.div(delta, this.zoom));
+    this.#moved();
+  };
+
+  #handleSecondaryPointerEnd = (event: PointerEvent) => {
+    if (event.pointerId !== this.#secondaryPointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.#finishSecondaryPointer();
+  };
+
+  #finishSecondaryPointer() {
+    this.#suppressContextMenu ||=
+      this.#secondaryMoved && this.#canvasPanButton() === 2;
+    this.#secondaryPointerId = null;
+    this.#secondaryMoved = false;
+    this.#node.classList.remove("canvas-secondary-panning");
+    this.#updatePanningSelectionGuard();
+  }
+
+  /** Returns whether the most recent secondary click was consumed by panning. */
+  consumeContextMenuSuppression() {
+    const suppressed = this.#suppressContextMenu;
+    this.#suppressContextMenu = false;
+    return suppressed;
+  }
+
+  isSecondaryPointerActive() {
+    return this.#canvasPanButton() === 2 && this.#secondaryPointerId !== null;
+  }
+
   onMove(callback: (manual: boolean) => void): () => void {
     this.#callbacks.add(callback);
     return () => this.#callbacks.delete(callback);
@@ -350,7 +444,7 @@ export class TouchZoom {
         e.clientX && e.clientY
           ? this.#getPoint(e)
           : [this.#bounds.width / 2, this.#bounds.height / 2];
-      const delta = z * 0.618;
+      const delta = z * 0.618 * WHEEL_ZOOM_SPEED;
 
       let newZoom = (1 - delta / 320) * this.zoom;
       newZoom = Vec.clamp(newZoom, MIN_ZOOM, MAX_ZOOM);
@@ -427,7 +521,7 @@ export class TouchZoom {
     "drag",
     MouseEvent | PointerEvent | TouchEvent | KeyboardEvent
   > = ({ delta, elapsedTime }) => {
-    if (!this.#isEnabled()) return;
+    if (!this.#isEnabled() || !this.#dragPanning) return;
     if (delta[0] === 0 && delta[1] === 0 && elapsedTime < 200) return;
     this.center = Vec.sub(this.center, Vec.div(delta, this.zoom));
     this.#moved();
@@ -438,6 +532,14 @@ export class TouchZoom {
     MouseEvent | PointerEvent | TouchEvent | KeyboardEvent
   > = ({ event }) => {
     if (!this.#isEnabled()) return;
+    // Mouse blank-canvas selection and panning are handled explicitly above so
+    // their configurable buttons and the stationary context menu stay
+    // independent. Preserve the original one-finger touch/pen pan gesture.
+    if (
+      event instanceof MouseEvent &&
+      (!(event instanceof PointerEvent) || event.pointerType === "mouse")
+    )
+      return;
     event.preventDefault();
     window.getSelection()?.removeAllRanges();
     this.#dragPanning = true;
@@ -455,7 +557,9 @@ export class TouchZoom {
   #updatePanningSelectionGuard() {
     this.#node.classList.toggle(
       "canvas-panning",
-      this.#dragPanning || this.#middlePointerId !== null,
+      this.#dragPanning ||
+        this.#middlePointerId !== null ||
+        this.#secondaryMoved,
     );
   }
 
@@ -473,13 +577,26 @@ export class TouchZoom {
         this.#handleMiddlePointerDown,
         { capture: true },
       );
+      this.#node.removeEventListener(
+        "pointerdown",
+        this.#handleSecondaryPointerDown,
+        { capture: true },
+      );
       this.#node.removeEventListener("auxclick", this.#preventMiddleAuxClick, {
         capture: true,
       });
       window.removeEventListener("pointermove", this.#handleMiddlePointerMove, {
         capture: true,
       });
+      window.removeEventListener(
+        "pointermove",
+        this.#handleSecondaryPointerMove,
+        { capture: true },
+      );
       window.removeEventListener("pointerup", this.#handleMiddlePointerEnd, {
+        capture: true,
+      });
+      window.removeEventListener("pointerup", this.#handleSecondaryPointerEnd, {
         capture: true,
       });
       window.removeEventListener(
@@ -487,10 +604,16 @@ export class TouchZoom {
         this.#handleMiddlePointerEnd,
         { capture: true },
       );
+      window.removeEventListener(
+        "pointercancel",
+        this.#handleSecondaryPointerEnd,
+        { capture: true },
+      );
       window.removeEventListener("wheel", this.#handleForcedWheel, {
         capture: true,
       });
       this.#node.classList.remove("canvas-middle-panning");
+      this.#node.classList.remove("canvas-secondary-panning");
       this.#node.classList.remove("canvas-panning");
 
       this.#resizeObserver.disconnect();

@@ -107,6 +107,9 @@ pub struct WsNote {
     /// File editor window IDs associated with this note.
     #[serde(default)]
     pub linked_file_window_ids: Vec<Sid>,
+    /// User-defined note title, or empty to use the generated label.
+    #[serde(default)]
+    pub title: String,
     /// Note background color as a CSS hex value.
     pub background: String,
     /// Note opacity as a percentage.
@@ -128,6 +131,9 @@ pub struct WsFileWindow {
     pub path: String,
     /// User-visible terminal-derived label.
     pub title: String,
+    /// File-browser surface background color.
+    #[serde(default)]
+    pub background: String,
     /// Top-left canvas coordinates.
     pub x: i32,
     /// Top-left vertical canvas coordinate.
@@ -322,12 +328,35 @@ pub enum WsClient {
     CloneStyled(Sid, i32, i32, u16, u16, u32, String),
     /// Clone a shell with exact canvas and PTY dimensions.
     CloneWindowed(Sid, i32, i32, u16, u16, u16, u16, u32, String),
+    /// Clone a shell with exact dimensions and an OSC 7 working-directory hint.
+    CloneWindowedAt(
+        Sid,
+        String,
+        String,
+        String,
+        i32,
+        i32,
+        u16,
+        u16,
+        u16,
+        u16,
+        u32,
+        String,
+    ),
     /// Clone a shell at an explicit local or remote working directory.
     CreateAt(Sid, String, i32, i32, u16, u16, u16, u16, u32, String),
     /// Close a specific shell.
     Close(Sid, u32),
     /// Move a shell window to a new position and focus it.
     Move(Sid, u32, Option<WsWinsize>),
+    /// Atomically move terminals, notes, and file windows between canvas pages.
+    MoveCanvasItems(
+        u32,
+        u32,
+        Vec<(Sid, i32, i32)>,
+        Vec<(Sid, i32, i32)>,
+        Vec<(Sid, i32, i32)>,
+    ),
     /// Create a note at a canvas position.
     CreateNote(i32, i32, u32),
     /// Create a note with an explicit initial canvas size.

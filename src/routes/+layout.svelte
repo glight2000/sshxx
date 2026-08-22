@@ -8,6 +8,7 @@
 
   import ToastContainer from "$lib/ui/ToastContainer.svelte";
   import { resolveColorMode } from "$lib/colorMode";
+  import { shouldReloadAfterPreloadError } from "$lib/preloadRecovery";
   import { settings } from "$lib/settings";
 
   let systemPrefersDark = browser
@@ -26,7 +27,21 @@
     const update = () => (systemPrefersDark = media.matches);
     update();
     media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    const recoverPreload = (event: Event) => {
+      event.preventDefault();
+      if (
+        shouldReloadAfterPreloadError(
+          window.sessionStorage,
+          window.location.href,
+        )
+      )
+        window.location.reload();
+    };
+    window.addEventListener("vite:preloadError", recoverPreload);
+    return () => {
+      media.removeEventListener("change", update);
+      window.removeEventListener("vite:preloadError", recoverPreload);
+    };
   });
 </script>
 

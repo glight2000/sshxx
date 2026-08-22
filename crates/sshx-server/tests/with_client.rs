@@ -38,6 +38,48 @@ async fn test_fixed_encryption_key() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_daemon_reopens_a_missing_fixed_session() -> Result<()> {
+    let mut options = sshx_server::ServerOptions::default();
+    options.session_name = Some("dev".into());
+    let server = TestServer::new_with_options(options).await;
+    let mut controller = Controller::new_with_encryption_key(
+        &server.endpoint(),
+        "test-daemon",
+        Runner::Echo,
+        true,
+        Some("localdevkey"),
+    )
+    .await?;
+    let key = controller.encryption_key().to_owned();
+    let write_password = controller
+        .write_url()
+        .and_then(|url| url.split_once(',').map(|(_, password)| password.to_owned()))
+        .context("missing write password")?;
+    tokio::spawn(async move { controller.run().await });
+
+    assert!(server.state().remove("dev"));
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            if server.state().lookup("dev").is_some() {
+                break;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("daemon did not reopen the missing fixed session")?;
+
+    let mut writer =
+        ClientSocket::connect(&server.ws_endpoint("dev"), &key, Some(&write_password)).await?;
+    writer.flush().await;
+    writer.send(WsClient::Create(0, 0, 1)).await;
+    writer.flush().await;
+    assert_eq!(writer.shells.len(), 1);
+    assert!(writer.errors.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_command() -> Result<()> {
     let server = TestServer::new().await;
     let runner = Runner::Shell("/bin/bash".into());
@@ -63,8 +105,12 @@ async fn test_command() -> Result<()> {
         ssh_profile: None,
         theme: String::new(),
         working_directory: String::new(),
+        ssh_profile_id: String::new(),
+        copy_history: false,
     };
-    updates.send(ServerMessage::CreateShell(new_shell)).await?;
+    updates
+        .send(ServerMessage::CreateShell(Box::new(new_shell)))
+        .await?;
 
     let key = controller.encryption_key();
     let encrypt = Encrypt::new(key);
@@ -170,6 +216,88 @@ async fn test_ws_basic() -> Result<()> {
     assert_eq!(s.shells.get(&Sid(2)).unwrap().height, 518);
     assert_eq!(s.shells.get(&Sid(2)).unwrap().theme, "Tokyo Night");
 
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_open_terminal_here_uses_requested_local_directory() -> Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(
+        &server.endpoint(),
+        "",
+        Runner::Shell("/bin/dash".into()),
+        false,
+    )
+    .await?;
+    let name = controller.name().to_owned();
+    let key = controller.encryption_key().to_owned();
+    tokio::spawn(async move { controller.run().await });
+
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let requested_directory =
+        std::env::temp_dir().join(format!("sshxx-open-terminal-here-{unique}"));
+    std::fs::create_dir(&requested_directory)?;
+
+    let mut client = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
+    client.flush().await;
+    client
+        .send(WsClient::CreateWindowed(
+            0,
+            0,
+            714,
+            518,
+            24,
+            80,
+            1,
+            "Dracula".into(),
+        ))
+        .await;
+    client.flush().await;
+
+    client
+        .send(WsClient::CreateAt(
+            Sid(1),
+            requested_directory.to_string_lossy().into_owned(),
+            20,
+            20,
+            714,
+            518,
+            24,
+            80,
+            1,
+            "Dracula".into(),
+        ))
+        .await;
+    for _ in 0..20 {
+        client.flush().await;
+        if client.shells.contains_key(&Sid(2)) {
+            break;
+        }
+    }
+    assert!(client.errors.is_empty(), "{:?}", client.errors);
+    assert!(client.shells.contains_key(&Sid(2)));
+
+    client.send(WsClient::Subscribe(Sid(2), 1, 0)).await;
+    client
+        .send_input(Sid(2), b"printf '__SSHXX_CWD__%s\\n' \"$PWD\"\r")
+        .await;
+    let expected = format!("__SSHXX_CWD__{}", requested_directory.display());
+    for _ in 0..20 {
+        client.flush().await;
+        if client.read(Sid(2)).contains(&expected) {
+            break;
+        }
+    }
+    assert!(
+        client.read(Sid(2)).contains(&expected),
+        "terminal output did not contain the requested directory: {:?}",
+        client.read(Sid(2)),
+    );
+
+    std::fs::remove_dir(requested_directory)?;
     Ok(())
 }
 
@@ -298,6 +426,41 @@ async fn test_pages_and_live_note_editing() -> Result<()> {
     writer.flush().await;
     viewer.flush().await;
     assert_eq!(viewer.notes.get(&Sid(2)), Some(&linked_note));
+
+    writer
+        .send(WsClient::MoveCanvasItems(
+            page_id,
+            1,
+            Vec::new(),
+            vec![(Sid(2), 360, 480)],
+            Vec::new(),
+        ))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert_eq!(viewer.notes.get(&Sid(2)).unwrap().page_id, 1);
+    assert_eq!(
+        viewer.notes.get(&Sid(2)).unwrap().linked_shell_ids,
+        vec![Sid(1)]
+    );
+    assert_eq!(viewer.note_editors.get(&Sid(2)), Some(&(1, writer.user_id)));
+    writer
+        .send(WsClient::MoveCanvasItems(
+            1,
+            page_id,
+            Vec::new(),
+            vec![(Sid(2), 360, 480)],
+            Vec::new(),
+        ))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert_eq!(viewer.notes.get(&Sid(2)).unwrap().page_id, page_id);
+    assert_eq!(
+        viewer.note_editors.get(&Sid(2)),
+        Some(&(page_id, writer.user_id))
+    );
+
     let workspace = server.state().lookup(&name).unwrap().workspace_state();
     assert_eq!(workspace.pages.last().unwrap().name, "Review");
     assert_eq!(workspace.shells[0].page_id, page_id);

@@ -21,6 +21,18 @@ upgrading the terminal host itself closes that boundary and disconnects its
 processes; host upgrades are therefore explicit and never coupled to routine
 daemon upgrades.
 
+The replay buffer stores raw PTY bytes, not a serialized terminal-emulator
+screen. Rebuilding a renderer after older bytes have rolled out can therefore
+preserve the process while losing an exact full-screen presentation. This is
+most visible during repeated frontend hot reloads or after very high-volume
+output; generic input must never be injected automatically to force a redraw.
+
+Workspace restoration may reattach to an existing stable host terminal ID.
+Source-derived creation requests—including file-browser “Open terminal
+here”—must create a fresh PTY. If an orphaned host entry collides with that new
+ID, the daemon replaces the orphan so the request's working directory and SSH
+profile cannot be silently discarded.
+
 ## Terminal-host lifecycle and upgrades
 
 Outside a service manager, `sshxx-daemon` starts its sibling
@@ -63,29 +75,52 @@ those terminals exit.
 
 ## Persistence and synchronization matrix
 
-| Data or behavior                                                                                                                  | Authority and persistence                                                                                             | Synchronization scope                                                                                                                                                                |
-| --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Pages; terminal, note, and file-window layout/appearance; note paragraphs and relationships; file-browser navigation/editor state | Durable daemon workspace in `.sshx-workspace`                                                                         | Shared with authenticated viewers in the same session. Every canvas mutation carries its page identity.                                                                              |
-| Terminal/SSH processes                                                                                                            | Terminal-host memory                                                                                                  | Output and permitted input are shared within the session. Processes survive viewer and daemon disconnects, but not terminal-host or OS restarts.                                     |
-| Per-terminal local shell history                                                                                                  | `cache/terminal-host/history/<stable-terminal-id>.history` for HISTFILE/PSReadLine plus a per-terminal Fish namespace | Never shared between local terminal windows. Nested SSH shells and programs with their own history require corresponding remote/application configuration.                           |
-| Reusable SSH profiles                                                                                                             | Authenticated encryption in `.sshx-connections`, using the owner-only `.sshx-connections.key`                         | Profile metadata is visible to authenticated viewers in the session; only viewers with write access may change it. Passwords and private-key contents are never stored in a profile. |
-| Actual files and directories                                                                                                      | Target filesystem, using the daemon OS account or SSH account                                                         | File operations take effect on the target host. Shared file-window state is updated so other viewers can refresh/navigate consistently.                                              |
-| Active file-editor buffer                                                                                                         | Encrypted bytes in the shared workspace and server snapshot; saved content is the target file                         | Buffer, open path, dirty state, and editing changes are shared within the session and page.                                                                                          |
-| Active page and per-page pan/zoom                                                                                                 | Browser `localStorage`, scoped by server and session                                                                  | Never synchronized. One viewer switching or moving a page does not move another viewer.                                                                                              |
-| Display name, application color mode, default terminal theme, scrollback, and grid snapping                                       | Browser `localStorage`                                                                                                | Never synchronized and never persisted by the daemon.                                                                                                                                |
-| Focus, open menus/dialogs, link-target selection, and temporary full-screen state                                                 | Browser memory only                                                                                                   | Never synchronized or persisted. Full-screen state survives page switching in the current app instance, but not a refresh.                                                           |
-| Online users, cursors, terminal focus, and note editing ownership                                                                 | Server memory                                                                                                         | Transient real-time collaboration state. It is not daemon-persisted; cursor and focus events remain page-aware.                                                                      |
-| Pasted terminal images                                                                                                            | Plain completed files under daemon-local `cache/uploads/`, with owner-only permissions                                | The encrypted upload traverses the server; the resulting local path is inserted into the target terminal. Files older than 24 hours are removed on daemon startup.                   |
-| Server session snapshot                                                                                                           | Server memory and, when configured, compressed Redis data                                                             | Continuity/failover aid only. Redis is refreshed at most every 20 seconds (or on requested sync) and expires after 5 minutes; it is not the durable workspace authority or a backup. |
+| Data or behavior                                                                                                                  | Authority and persistence                                                                                             | Synchronization scope                                                                                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pages; terminal, note, and file-window layout/appearance; note paragraphs and relationships; file-browser navigation/editor state | Durable daemon workspace in `.sshx-workspace`                                                                         | Shared with authenticated viewers in the same session. Remote terminals retain only their non-secret SSH profile ID here; connection values remain in encrypted profile storage.                           |
+| Terminal/SSH processes                                                                                                            | Terminal-host memory                                                                                                  | Output and permitted input are shared within the session. Processes survive viewer and daemon disconnects, but not terminal-host or OS restarts.                                                           |
+| Per-terminal local shell history                                                                                                  | `cache/terminal-host/history/<stable-terminal-id>.history` for HISTFILE/PSReadLine plus a per-terminal Fish namespace | Never shared between local terminal windows. Duplication copies a snapshot into a new independent history. Nested SSH shells and programs with their own history require remote/application configuration. |
+| Reusable SSH profiles                                                                                                             | Authenticated encryption in `.sshx-connections`, using the owner-only `.sshx-connections.key`                         | Profile metadata is visible to authenticated viewers in the session; only viewers with write access may change it. Passwords and private-key contents are never stored in a profile.                       |
+| Actual files and directories                                                                                                      | Target filesystem, using the daemon OS account or SSH account                                                         | File operations take effect on the target host. Shared file-window state is updated so other viewers can refresh/navigate consistently.                                                                    |
+| Active file-editor buffer                                                                                                         | Encrypted bytes in the shared workspace and server snapshot; saved content is the target file                         | Buffer, open path, dirty state, and editing changes are shared within the session and page.                                                                                                                |
+| Active page and per-page pan/zoom                                                                                                 | Browser `localStorage`, scoped by server and session                                                                  | Never synchronized. One viewer switching or moving a page does not move another viewer.                                                                                                                    |
+| Display name, application color mode, default terminal theme, scrollback, grid snapping, and canvas mouse-button mapping          | Browser `localStorage`                                                                                                | Never synchronized and never persisted by the daemon.                                                                                                                                                      |
+| Focus, canvas group selection, open menus/dialogs, link-target selection, and temporary full-screen state                         | Browser memory only                                                                                                   | Never synchronized or persisted. Group selection is page-local; only the resulting page-aware window positions are shared. Full-screen survives page switching in the app instance, but not a refresh.     |
+| Online users, cursors, terminal focus, and note editing ownership                                                                 | Server memory                                                                                                         | Transient real-time collaboration state. It is not daemon-persisted; cursor and focus events remain page-aware.                                                                                            |
+| Pasted terminal images                                                                                                            | Plain completed files under daemon-local `cache/uploads/`, with owner-only permissions                                | The encrypted upload traverses the server; the resulting local path is inserted into the target terminal. Files older than 24 hours are removed on daemon startup.                                         |
+| Server session snapshot                                                                                                           | Server memory and, when configured, compressed Redis data                                                             | Continuity/failover aid only. Redis is refreshed at most every 20 seconds (or on requested sync) and expires after 5 minutes; it is not the durable workspace authority or a backup.                       |
 
 The daemon's `.sshx-workspace` is the durable authority for shared canvas
 metadata. Redis is optional and short-lived. Without Redis, server state exists
 only in memory. Terminal output has a bounded rolling server buffer; a Redis
 snapshot retains at most 32 KiB per terminal.
 
+Normal development and single-server deployments deliberately leave Redis
+disabled. The repository's Compose service belongs to the `multi-server` profile
+and starts only with `docker compose --profile multi-server up -d`; each
+participating test server must also explicitly receive `--redis-url`.
+
+If a single server loses its in-memory session, the daemon recognizes the
+missing-session response, opens a replacement using its current durable
+workspace, preserves the session encryption and write capabilities, and
+acknowledges already-running terminal-host processes instead of creating
+duplicates. Viewers reconnect to the same URL when the server uses a fixed
+session name; a random-name deployment necessarily receives a new URL.
+
 ### Deliberately local behavior
 
 - Page switching is local, while every shared page mutation includes a page ID.
+- Marquee/group selection is local and mutually exclusive with component focus.
+  Its membership follows the marquee continuously. Focusing a component,
+  clicking empty canvas, or pressing Escape clears the selection. Right-button
+  canvas pan does not mutate it; a completed group move sends the normal
+  page-aware position update for every affected component.
+- Dropping a moving selection on the pager sends one bounded, writer-authorized
+  cross-page operation containing IDs and final coordinates. The server
+  validates every source item and the destination before mutating any
+  collection. Explicit note/file/terminal relationships may span pages after
+  such a move; ordinary input, editing, and filesystem messages still use the
+  owning component or terminal page ID.
 - Global search runs locally over the shared all-page snapshot. The query is not
   synchronized; choosing a result changes only that viewer's page and viewport.
 - Undo/redo stacks for note and file editing belong to the active viewer. The

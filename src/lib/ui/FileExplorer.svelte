@@ -21,10 +21,16 @@
     pathName,
     pathSeparator,
     previewType,
+    revealDirectoryPaths,
     safeUploadPath,
     samePath,
     trimTrailingSeparators,
   } from "$lib/filesystem";
+  import {
+    decodeDownloadContent,
+    FILE_DOWNLOAD_LIMIT_BYTES,
+    startBrowserDownload,
+  } from "$lib/fileDownload";
   import { makeToast } from "$lib/toast";
   import CanvasRelations, {
     type CanvasRelationItem,
@@ -44,6 +50,7 @@
   import FileUploadDialog, { type UploadItem } from "./FileUploadDialog.svelte";
 
   export let title: string;
+  export let background: string;
   export let initialPath: string;
   export let currentPath: string;
   export let expandedPaths: string[];
@@ -57,6 +64,7 @@
   export let height: number;
   export let sidebarWidth: number;
   export let treeRevision: number;
+  export let online: boolean;
   export let hasWriteAccess: boolean | undefined;
   export let linkedNotes: CanvasRelationItem[] = [];
   export let linkedHighlight = false;
@@ -72,6 +80,8 @@
     request: FileOperationRequest,
   ) => Promise<FileOperationResponse>;
   export let updateSharedState: (update: {
+    title?: string;
+    background?: string;
     currentPath?: string;
     expandedPaths?: string[];
     selectedPath?: string;
@@ -94,6 +104,7 @@
     blur: void;
     navigateNote: CanvasRelationItem;
     unlinkNote: CanvasRelationItem;
+    floatingChange: boolean;
   }>();
   let sectionElement: HTMLElement;
   let pathInput: HTMLInputElement;
@@ -105,7 +116,7 @@
   let directoryEntries: FileTreeEntry[] = [];
   let content = "";
   let originalContent = "";
-  let encoding: "utf8" | "base64" | null = null;
+  let encoding: "utf8" | "utf16le" | "utf16be" | "base64" | null = null;
   let previewUrl = "";
   let previewKind: FilePreviewKind;
   let handledDirectoryPath = "";
@@ -135,6 +146,11 @@
     y: number;
   } | null = null;
   let mutationBusy = false;
+  let downloadBusy = false;
+  let headerFloating = false;
+  let reportedFloating = false;
+  let mounted = false;
+  let observedOnline = online;
   let editorInsertText: (
     text: string,
     position?: TextInsertPosition,
@@ -146,7 +162,7 @@
     false;
   let editorCancelTextDropPreview: () => void = () => {};
 
-  $: dirty = encoding === "utf8" && content !== originalContent;
+  $: dirty = isTextEncoding(encoding) && content !== originalContent;
   $: previewKind = selected ? previewType(selected.name) : "none";
   $: displayedExpandedPaths = pathEditing
     ? previewExpandedPaths
@@ -161,16 +177,32 @@
         ? parentPath(actionTarget.path)
         : currentPath;
   $: uploadDestination = uploadTarget || selectedDestination;
+  $: fileOverlayOpen =
+    headerFloating ||
+    contextMenu !== null ||
+    uploadOpen ||
+    createKind !== null ||
+    renameTarget !== null ||
+    moveTarget !== null;
+  $: if (fileOverlayOpen !== reportedFloating) {
+    reportedFloating = fileOverlayOpen;
+    dispatch("floatingChange", fileOverlayOpen);
+  }
   $: if (!resizingSidebar)
     sidebarWidthValue = clampSidebarWidth(sidebarWidth, width);
   $: if (treeRevision !== observedTreeRevision) {
     observedTreeRevision = treeRevision;
-    void loadRoot();
+    if (online) void loadRoot();
+  }
+  $: {
+    const reconnected = mounted && online && !observedOnline;
+    observedOnline = online;
+    if (reconnected) void loadRoot();
   }
 
   function unavailableEditorMessage() {
     if (!selected) return "No file is open in this file editor.";
-    if (encoding !== "utf8")
+    if (!isTextEncoding(encoding))
       return `“${selected.name}” is not an editable text file.`;
     if (!hasWriteAccess) return "The file editor is read-only.";
     return "The text editor is not ready.";
@@ -180,7 +212,7 @@
     text: string,
     position?: TextInsertPosition,
   ): TextInsertResult {
-    if (!selected || encoding !== "utf8" || !hasWriteAccess)
+    if (!selected || !isTextEncoding(encoding) || !hasWriteAccess)
       return { ok: false, message: unavailableEditorMessage() };
     return editorInsertText(text, position);
   }
@@ -188,7 +220,7 @@
   function previewOpenEditorDrop(position: TextInsertPosition) {
     return Boolean(
       selected &&
-      encoding === "utf8" &&
+      isTextEncoding(encoding) &&
       hasWriteAccess &&
       editorPreviewTextDrop(position),
     );
@@ -201,6 +233,12 @@
   function clearPreviewUrl() {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = "";
+  }
+
+  function isTextEncoding(
+    value: typeof encoding,
+  ): value is "utf8" | "utf16le" | "utf16be" {
+    return value !== null && value !== "base64";
   }
   onDestroy(() => {
     clearPreviewUrl();
@@ -215,10 +253,11 @@
     cancelTextDropPreview = () => {};
   });
   onMount(() => {
+    mounted = true;
     insertText = insertIntoOpenEditor;
     previewTextDrop = previewOpenEditorDrop;
     cancelTextDropPreview = cancelOpenEditorDropPreview;
-    void loadRoot();
+    if (online) void loadRoot();
   });
 
   // Both synchronizers write the locally mirrored prop after resolving a
@@ -564,7 +603,7 @@
         editorPath = response.path;
         updateSharedState({
           editorPath: response.path,
-          editorContent: encoding === "utf8" ? content : "",
+          editorContent: isTextEncoding(encoding) ? content : "",
           editorDirty: false,
         });
       }
@@ -645,9 +684,14 @@
     updateSharedState({ selectedPath, selectedKind });
   }
 
-  function openGridEntry(entry: FileTreeEntry) {
-    if (entry.kind === "directory") void selectDirectory(entry);
-    else void selectFile(entry);
+  async function openGridEntry(entry: FileTreeEntry) {
+    if (entry.kind === "directory") {
+      expandedPaths = revealDirectoryPaths(expandedPaths, entry.path);
+      updateSharedState({ expandedPaths });
+      await selectDirectory(entry);
+    } else {
+      await selectFile(entry);
+    }
   }
 
   function openEntryContextMenu(
@@ -690,7 +734,7 @@
   ) {
     if (
       sharedContent === null ||
-      encoding !== "utf8" ||
+      !isTextEncoding(encoding) ||
       !selected ||
       !samePath(sharedPath, selected.path)
     )
@@ -703,7 +747,7 @@
     content = value;
     window.clearTimeout(editorSyncTimer);
     editorSyncTimer = window.setTimeout(() => {
-      if (!selected || encoding !== "utf8") return;
+      if (!selected || !isTextEncoding(encoding)) return;
       updateSharedState({
         editorPath: selected.path,
         editorContent: value,
@@ -713,13 +757,15 @@
   }
 
   async function save() {
-    if (!selected || !dirty || !hasWriteAccess) return;
+    if (!selected || !isTextEncoding(encoding) || !dirty || !hasWriteAccess)
+      return;
     loading = true;
     try {
       const response = await request({
         operation: "write",
         path: selected.path,
         content,
+        encoding,
       });
       if (!response.ok)
         throw new Error(response.error || "Could not save file.");
@@ -738,6 +784,40 @@
       });
     } finally {
       loading = false;
+    }
+  }
+
+  async function downloadFile(file: FileTreeEntry) {
+    if (file.kind !== "file" || downloadBusy || mutationBusy) return;
+    if (file.size > FILE_DOWNLOAD_LIMIT_BYTES) {
+      makeToast({
+        kind: "error",
+        message: "Files larger than 8 MiB cannot be downloaded yet.",
+      });
+      return;
+    }
+    downloadBusy = true;
+    try {
+      const response = await request({ operation: "read", path: file.path });
+      if (!response.ok)
+        throw new Error(response.error || "Could not download file.");
+      if (!response.encoding)
+        throw new Error("The downloaded file has no content encoding.");
+      const bytes = decodeDownloadContent(
+        response.content ?? "",
+        response.encoding,
+      );
+      if (response.size !== undefined && response.size !== bytes.byteLength)
+        throw new Error("The downloaded file did not pass its size check.");
+      startBrowserDownload(bytes, file.name, mimeType(file.name));
+      makeToast({ kind: "success", message: `Downloaded ${file.name}.` });
+    } catch (cause) {
+      makeToast({
+        kind: "error",
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    } finally {
+      downloadBusy = false;
     }
   }
 
@@ -1087,12 +1167,14 @@
 
 <section
   bind:this={sectionElement}
-  class="file-window relative flex flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 shadow-lg shadow-black/45"
+  class="file-window relative flex flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 shadow-sm shadow-black/20"
   class:linked-highlight={linkedHighlight}
   class:fullscreen
+  style:--file-window-background={background || "#111113"}
   style:width={fullscreen ? "100%" : `${width}px`}
   style:height={fullscreen ? "100%" : `${height}px`}
   role="presentation"
+  tabindex="-1"
   aria-label="File explorer"
   on:mousedown={() => {
     dispatch("bringToFront");
@@ -1114,12 +1196,17 @@
 >
   <FileExplorerHeader
     {title}
+    {background}
     {fullscreen}
     {hasWriteAccess}
     on:close={() => dispatch("close")}
     on:toggleFullscreen={() => dispatch("toggleFullscreen")}
+    on:bringToFront={() => dispatch("bringToFront")}
     on:startMove={(event) => dispatch("startMove", event.detail)}
     on:reload={loadRoot}
+    on:floatingChange={(event) => (headerFloating = event.detail)}
+    on:title={(event) => updateSharedState({ title: event.detail })}
+    on:background={(event) => updateSharedState({ background: event.detail })}
     on:resetSplit={() => {
       sidebarWidthValue = clampSidebarWidth(Math.round(width * 0.32));
       updateSharedState({ sidebarWidth: sidebarWidthValue });
@@ -1130,7 +1217,7 @@
     style:grid-template-columns={`${sidebarWidthValue}px 5px minmax(0, 1fr)`}
   >
     <aside
-      class="flex min-h-0 flex-col overflow-hidden border-r border-zinc-800 bg-zinc-900/45"
+      class="file-tree-pane flex min-h-0 flex-col overflow-hidden border-r border-zinc-800"
     >
       <div
         class="relative flex h-9 shrink-0 items-center border-b border-zinc-800 bg-indigo-500/10 px-2"
@@ -1200,7 +1287,7 @@
       on:pointerdown={startSidebarResize}
     ></button>
     <main
-      class="relative flex min-h-0 min-w-0 flex-col bg-[#111113]"
+      class="file-content-pane relative flex min-h-0 min-w-0 flex-col"
       data-canvas-file-editor
     >
       <FileExplorerActions
@@ -1209,6 +1296,7 @@
         directoryCount={directoryEntries.length}
         {dirty}
         {loading}
+        {downloadBusy}
         {mutationBusy}
         {hasWriteAccess}
         canMutate={actionTarget ? canMutateEntry(actionTarget) : false}
@@ -1218,6 +1306,7 @@
         on:openTerminal={(event) => openTerminalAtEntry(event.detail)}
         on:delete={(event) => void deleteEntry(event.detail)}
         on:openFile={(event) => openGridEntry(event.detail)}
+        on:download={(event) => void downloadFile(event.detail)}
         on:save={save}
       />
       <div
@@ -1287,10 +1376,12 @@
       y={contextMenu.y}
       {hasWriteAccess}
       {mutationBusy}
+      {downloadBusy}
       canMutate={canMutateEntry(contextMenu.entry)}
       on:close={() => (contextMenu = null)}
       on:openDirectory={(event) => void selectDirectory(event.detail)}
       on:openFile={(event) => openGridEntry(event.detail)}
+      on:download={(event) => void downloadFile(event.detail)}
       on:openTerminal={(event) => openTerminalAtEntry(event.detail)}
       on:upload={(event) => beginUpload(event.detail)}
       on:create={(event) =>
@@ -1364,9 +1455,17 @@
     display: flex;
     flex-direction: column;
   }
+  .file-window {
+    background: var(--file-window-background);
+  }
+  .file-tree-pane {
+    background: color-mix(in srgb, var(--file-window-background) 82%, black);
+  }
+  .file-content-pane {
+    background: color-mix(in srgb, var(--file-window-background) 90%, black);
+  }
   .file-window.linked-highlight {
-    outline: 2px solid rgb(212 212 216 / 75%);
-    outline-offset: 1px;
+    border-color: rgb(212 212 216 / 75%);
     animation: linked-file-pulse 1.8s ease-in-out infinite;
   }
   .file-relations {

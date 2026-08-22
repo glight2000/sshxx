@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
   import {
+    DownloadIcon,
     Edit2Icon,
     FilePlusIcon,
     FolderIcon,
@@ -18,6 +19,7 @@
   export let y: number;
   export let hasWriteAccess: boolean | undefined;
   export let mutationBusy: boolean;
+  export let downloadBusy: boolean;
   export let canMutate: boolean;
 
   type MenuEvents = {
@@ -25,6 +27,7 @@
     openDirectory: FileTreeEntry;
     openFile: FileTreeEntry;
     openTerminal: FileTreeEntry;
+    download: FileTreeEntry;
     upload: FileTreeEntry;
     create: { kind: "file" | "directory"; directory: string };
     rename: FileTreeEntry;
@@ -112,6 +115,14 @@
       role="menuitem"
       on:click={() => run("openFile", entry)}><Edit2Icon />Open / edit</button
     >
+    {#if entry.kind === "file"}
+      <button
+        class="context-action"
+        role="menuitem"
+        disabled={downloadBusy || mutationBusy}
+        on:click={() => run("download", entry)}><DownloadIcon />Download</button
+      >
+    {/if}
     <button
       class="context-action"
       role="menuitem"

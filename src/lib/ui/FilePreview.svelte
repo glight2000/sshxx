@@ -7,7 +7,7 @@
   } from "./CodeEditor.svelte";
 
   export let selected: FileTreeEntry | null;
-  export let encoding: "utf8" | "base64" | null;
+  export let encoding: "utf8" | "utf16le" | "utf16be" | "base64" | null;
   export let content: string;
   export let previewUrl: string;
   export let previewKind: FilePreviewKind;
@@ -25,16 +25,29 @@
   let editorModulePromise: Promise<
     typeof import("./CodeEditor.svelte")
   > | null = null;
+  let editorLoadAttempt = 0;
+  let mediaPath = "";
+  let mediaError = "";
+
+  $: if ((selected?.path ?? "") !== mediaPath) {
+    mediaPath = selected?.path ?? "";
+    mediaError = "";
+  }
 
   function loadEditor() {
     return (editorModulePromise ??= import("./CodeEditor.svelte"));
+  }
+
+  function retryEditor() {
+    editorModulePromise = null;
+    editorLoadAttempt += 1;
   }
 </script>
 
 {#if selected?.kind === "directory"}
   <slot name="directory"></slot>
-{:else if selected && encoding === "utf8"}
-  {#key selected.path}
+{:else if selected && encoding && encoding !== "base64"}
+  {#key `${selected.path}:${editorLoadAttempt}`}
     {#await loadEditor()}
       <div
         class="flex h-full items-center justify-center text-sm text-zinc-500"
@@ -54,32 +67,69 @@
       />
     {:catch error}
       <div
-        class="flex h-full items-center justify-center p-8 text-center text-sm text-red-300"
+        class="flex h-full flex-col items-center justify-center gap-3 p-8 text-center text-sm text-red-300"
         role="alert"
       >
-        Could not load the text editor: {error instanceof Error
-          ? error.message
-          : String(error)}
+        <span
+          >Could not load the text editor: {error instanceof Error
+            ? error.message
+            : String(error)}</span
+        >
+        <div class="flex gap-2">
+          <button type="button" class="recovery-button" on:click={retryEditor}
+            >Retry</button
+          >
+          <button
+            type="button"
+            class="recovery-button"
+            on:click={() => window.location.reload()}>Reload application</button
+          >
+        </div>
       </div>
     {/await}
   {/key}
 {:else if previewUrl && previewKind === "image"}
-  <div class="flex min-h-full items-center justify-center p-6">
-    <img
-      class="max-h-full max-w-full object-contain"
-      src={previewUrl}
-      alt={selected?.name}
-    />
-  </div>
+  {#if mediaError}
+    <div class="media-error">{mediaError}</div>
+  {:else}
+    <div class="flex min-h-full items-center justify-center p-6">
+      <img
+        class="max-h-full max-w-full object-contain"
+        src={previewUrl}
+        alt={selected?.name}
+        on:error={() =>
+          (mediaError = "This browser could not decode the selected image.")}
+      />
+    </div>
+  {/if}
 {:else if previewUrl && previewKind === "audio"}
-  <div class="flex min-h-full items-center justify-center p-6">
-    <audio controls src={previewUrl}></audio>
-  </div>
+  {#if mediaError}
+    <div class="media-error">{mediaError}</div>
+  {:else}
+    <div class="flex min-h-full items-center justify-center p-6">
+      <audio
+        controls
+        src={previewUrl}
+        on:error={() =>
+          (mediaError = "This browser could not decode the selected audio.")}
+      ></audio>
+    </div>
+  {/if}
 {:else if previewUrl && previewKind === "video"}
   <!-- svelte-ignore a11y_media_has_caption -->
-  <div class="flex min-h-full items-center justify-center p-6">
-    <video class="max-h-full max-w-full" controls src={previewUrl}></video>
-  </div>
+  {#if mediaError}
+    <div class="media-error">{mediaError}</div>
+  {:else}
+    <div class="flex min-h-full items-center justify-center p-6">
+      <video
+        class="max-h-full max-w-full"
+        controls
+        src={previewUrl}
+        on:error={() =>
+          (mediaError = "This browser could not decode the selected video.")}
+      ></video>
+    </div>
+  {/if}
 {:else if previewUrl && previewKind === "pdf"}
   <iframe class="h-full w-full border-0" src={previewUrl} title={selected?.name}
   ></iframe>
@@ -107,3 +157,13 @@
   >
     Open an editable text file before dropping this paragraph.
   </div>{/if}
+
+<style lang="postcss">
+  @reference "../../app.css";
+  .recovery-button {
+    @apply rounded-md border border-red-300/35 bg-red-950/40 px-3 py-1.5 text-xs text-red-100 hover:bg-red-900/55;
+  }
+  .media-error {
+    @apply flex h-full items-center justify-center p-8 text-center text-sm text-amber-300;
+  }
+</style>

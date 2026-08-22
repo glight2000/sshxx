@@ -17,22 +17,33 @@ space between the top and bottom bars.
 The toolbar creates terminals and notes, searches the workspace, opens settings,
 reports the connection state, and shows up to six online collaborators as
 initial avatars. Additional users are available from the overflow menu. The
-bottom pager creates, renames, and switches independent canvas pages.
+bottom pager creates and switches independent canvas pages. Double-click a page
+name to rename it inline.
 
 ## Persistent terminals
 
 - Terminal processes belong to `sshxx-terminal-host`; closing or refreshing a
   browser, or restarting `sshxx-daemon`, does not stop them.
-- Local shell history uses a stable per-terminal history file/namespace. A
-  nested remote shell still follows that remote account's history policy.
+- In single-server mode, losing the server's in-memory session briefly
+  disconnects viewers. The daemon recreates it from the durable workspace and
+  reattaches existing hosted terminals; a fixed session name preserves the URL.
+- Local shell history uses a stable per-terminal history file/namespace.
+  Duplicating a local terminal copies its last persisted history into a new,
+  independent history file. A nested remote shell still follows that remote
+  account's history policy.
 - Local shells and OpenSSH terminals share xterm.js rendering, scrollback,
   selection, WebGL acceleration with DOM fallback, and isolated TypeAhead local
   echo.
 - Each terminal has its own title, opacity, color theme, and optional background
   override. New windows begin at 80% opacity and use the viewer's default theme.
-- The title-bar actions close, temporarily full-screen, duplicate from the same
-  working directory/environment, and open a filesystem window at the current
-  directory.
+- The title-bar actions close, temporarily full-screen, duplicate, and open a
+  filesystem window at the current directory. Duplication reuses a saved SSH
+  profile (including OpenSSH-configured jump hosts) and, when OSC 7 shows the
+  terminal is still on its initially reported SSH host, starts in its current
+  remote directory. Local terminals use the terminal host's process working
+  directory. A manually entered nested `ssh A` → `ssh B` chain cannot be
+  reconstructed safely from the daemon, so a duplicate falls back to the saved
+  connection's default directory instead of applying B's path to A.
 - A focused terminal remains at the top without discarding its configured
   transparency. Focus highlighting and terminal-attention animation are
   independent visual states; attention animates the title bar until focused.
@@ -72,21 +83,65 @@ filtering, pointer selection, arrow-key navigation, and Enter. Choosing a result
 switches only the current viewer to the target page and centers the selected
 window. Search queries and page switching are not synchronized.
 
-Canvas navigation supports empty-space drag, unconditional middle-button pan,
-and `Ctrl` + wheel zoom that suppresses browser zoom. Plain wheel input is
-routed to the hovered terminal, note, menu, file tree, directory grid, or
+Canvas navigation uses left-drag on empty space for a local selection marquee,
+right-drag on empty space for pan, unconditional middle-button pan, and a faster
+`Ctrl` + wheel zoom that suppresses browser zoom. Marquee selection is distinct
+from terminal/note/file focus: membership updates continuously with the marquee,
+and focusing a window, clicking empty canvas, or pressing Escape clears the
+selection. Dragging any selected window moves the selected group with one common
+offset, while right-button pan leaves the selection unchanged. Plain wheel input
+is routed to the hovered terminal, note, menu, file tree, directory grid, or
 editor. Pan and zoom are disabled while a component is full-screen; clicking its
 visible outside margin exits full-screen.
+
+A browser-local setting exchanges the left and right blank-canvas drag roles for
+users who prefer left-button panning. It does not alter component controls,
+middle-button panning, or the stationary right-click action menu. A right-button
+selection drag suppresses that menu for the completed gesture.
+
+Dragging a single window or selected group over a non-active page in the bottom
+pager highlights only the page currently under the pointer. The moving windows
+shrink and fade toward that target; leaving it reverses the preview. Releasing
+performs one validated cross-page mutation, switches the current viewer to that
+page, and preserves the local selection. The moved windows retain their
+coordinates and relative layout from the start of the drag; linked notes,
+terminals, and file windows keep their explicit relationships even when they now
+span pages.
+
+The session replaces the browser's native context menu. Right-clicking empty
+canvas space opens the same default-terminal, saved-SSH, note, search, and
+settings actions as the toolbar; terminals and notes created there use the
+clicked canvas position. Existing component-specific context menus remain in
+place. The menu and its anchor position are viewer-local and never synchronized
+or persisted.
 
 With snapping enabled, moving and eight-direction resizing use the same grid
 anchors and one-tenth-grid visual inset. New terminal, note, and file windows
 are created with matching aligned geometry.
 
+Source-derived windows use bounded nearby placement. Duplicated terminals, file
+browsers opened from a terminal, and terminals opened from any file-browser
+action first try the closest free positions around their source. A crowded
+region falls back to a small cascaded overlap instead of placing the new window
+far across the canvas; these actions do not recenter the viewer.
+
+All three canvas window types use the same title and surface-color workflow.
+Double-click a title to edit it in place; Enter or an outside click saves, while
+Escape cancels. A title-bar click focuses the component, while an actual drag
+moves it without changing focus. Titles are no longer duplicated in appearance
+menus. Each background picker provides 24 low-luminance neutral and chromatic
+presets whose contrast against the primary text color is at least 10:1, plus a
+custom color input. A terminal's first swatch restores its theme background, so
+it does not need a separate enable/disable control. Saved titles and backgrounds
+are shared with the session and persisted in the daemon workspace; title-edit
+focus itself remains viewer-local.
+
 ## Structured notes and connected workflows
 
 Notes are visually distinct neutral-gray canvas windows. Focus uses a light-gray
 border, while active editing uses its own state so “selected note” and “editing
-a paragraph” never become ambiguous.
+a paragraph” never become ambiguous. A custom inline title and selected note
+background follow the same shared persistence rules as the note contents.
 
 ![Structured note with all paragraph delivery actions and linked canvas targets](https://raw.githubusercontent.com/glight2000/sshxx/main/docs/images/sshxx-notes.png)
 
@@ -94,13 +149,14 @@ a paragraph” never become ambiguous.
   an outside click ends editing.
 - Enter inserts a line break inside the current paragraph. `Ctrl`/`Cmd` + Enter
   adds a separate paragraph.
-- Four-dot handles keep paragraph boundaries visible and expose delete, copy,
-  insert, and delivery actions. `Ctrl`/`Cmd`-click toggles paragraphs and
-  Shift-click selects a range. A pointer drag across paragraph bodies paints a
-  contiguous block selection; it never becomes a cross-paragraph browser text
-  selection.
-- Delivery can target every linked item, linked notes, linked terminals, linked
-  terminals followed by execution input, or linked writable file editors.
+- Four-dot handles keep paragraph boundaries visible and expose only
+  paragraph-local delete, copy, and insertion actions. `Ctrl`/`Cmd`-click
+  toggles paragraphs and Shift-click selects a range. A pointer drag across
+  paragraph bodies paints a contiguous block selection; it never becomes a
+  cross-paragraph browser text selection.
+- Hovering a paragraph reveals a send icon on its right. Its separate menu can
+  target every linked item, linked notes, linked terminals, linked terminals
+  followed by execution input, or linked writable file editors.
 - Dragging any selected handle moves the selected group as a stable block inside
   its note. Dropping elsewhere preserves separate paragraphs in another note;
   terminals and file editors receive a multiline plain-text projection.
@@ -128,7 +184,9 @@ application.
 
 The filesystem browser is a first-class synchronized canvas window rather than a
 modal. It moves, resizes, snaps, links, persists, and supports viewer-local
-full-screen in the same way as terminals and notes.
+full-screen in the same way as terminals and notes. Its inline title and surface
+background are synchronized workspace appearance state; editor syntax colors
+remain optimized independently for readable source display.
 
 ![Full-width sshxx filesystem browser with folder tree and CodeMirror editor](https://raw.githubusercontent.com/glight2000/sshxx/main/docs/images/sshxx-file-explorer.png)
 
@@ -138,22 +196,42 @@ full-screen in the same way as terminals and notes.
   an outside click restores the last selected valid path.
 - The left tree shows folders only. Clicking a row selects it; only its arrow
   expands or collapses it. Standard tree keyboard navigation is supported.
+- Entering a folder from the right-side grid expands its ancestry and highlights
+  the same folder in the left tree. This navigation state is shared with other
+  viewers of the file window.
 - A draggable divider controls tree width.
 - The right side shows the selected folder as a large-icon grid. Double-click
   enters a folder or opens a file. Empty folders show a centered `Empty` state.
-- Common file types receive recognizable icons. Supported non-text files are
-  previewed when possible.
-- Text files up to 8 MiB open in CodeMirror with filename-based language
-  support, local undo/redo, dirty state, explicit save, and shared cursor/editor
-  state.
+- Common file types receive recognizable icons. Browser-native previews cover
+  common image, audio, video, and PDF formats; unsupported codecs show an
+  explicit message instead of an empty preview.
+- UTF-8 and BOM-marked UTF-16 text files up to 8 MiB open in CodeMirror with
+  filename-based language support, local undo/redo, dirty state, explicit save,
+  and shared cursor/editor state. UTF-16 files retain their original byte order
+  when saved.
+- A deployment invalidating a lazy-loaded editor chunk triggers one guarded
+  application refresh. HTML is revalidated, hashed assets are immutable, and a
+  missing hashed asset returns 404 instead of the SPA fallback; the editor error
+  state also offers explicit retry and reload actions.
 
 ### File operations
 
 Selection-aware title-bar actions and custom right-click menus provide upload,
-create file/folder, rename, move, delete, refresh, save, and “open terminal
-here”. Upload accepts mixed multi-selection of files and folders. Names and
+download, create file/folder, rename, move, delete, refresh, save, and “open
+terminal here”. Upload accepts mixed multi-selection of files and folders. Files
+up to 8 MiB can be downloaded from either action surface. Downloads use the
+existing encrypted filesystem request channel, remain local to the viewer, and
+preserve UTF-8, BOM-marked UTF-16, and arbitrary binary bytes. Names and
 destinations are validated, and destructive actions confirm where appropriate.
 Selecting a file opens a terminal in its containing folder.
+
+“Open terminal here” retains the source terminal's SSH connection and opens the
+selected remote directory. The terminal-to-profile association survives daemon
+and server restarts; only the profile ID is stored in the ordinary workspace.
+The requested directory is applied at process launch and reasserted after local
+Bash, Fish, or PowerShell initialization; SSH Bash sessions receive the same
+one-time correction. This prevents common startup scripts that change directory
+from silently overriding the action.
 
 Local filesystem operations run with the daemon OS account. SSH browsing uses
 the OpenSSH SFTP subsystem and therefore requires a config, Agent, or key-based
@@ -175,8 +253,11 @@ history, and temporary full-screen do not.
   session presence. These signals are page-aware and are not daemon-persisted.
 - Note editing ownership prevents simultaneous local editors from presenting an
   ambiguous state. Character updates remain synchronized to every viewer.
-- Page switching, canvas viewport, hover, menus, and local full-screen never
-  force another viewer to follow.
+- Page switching, canvas viewport, marquee/group selection, hover, menus, and
+  local full-screen never force another viewer to follow. A completed group move
+  still publishes page-aware layout data. An explicit pager drop is the
+  exception for page ownership: it atomically moves the selected shared items,
+  while only the initiating viewer follows to the destination page.
 - Shared mutations are writer-authorized and validate page/object relationships
   before application.
 
@@ -210,13 +291,13 @@ design.
 
 ## Feature and state summary
 
-| Capability                              | Durable at daemon      | Shared with session                  | Viewer-local only               |
-| --------------------------------------- | ---------------------- | ------------------------------------ | ------------------------------- |
-| Pages and canvas window content/layout  | Yes                    | Yes                                  | Active page and viewport        |
-| Terminal process                        | Until host/OS restart  | Stream/input                         | Focus and selection             |
-| Note paragraphs and relationships       | Yes                    | Character-level updates              | Undo stack and active editor    |
-| File tree/editor navigation and content | Yes                    | Yes                                  | Menus, hover, undo, full-screen |
-| SSH profiles                            | Encrypted file         | Metadata; writer mutation            | Password prompt input           |
-| User preferences                        | No                     | No                                   | Browser `localStorage`          |
-| Online users and editing ownership      | No                     | Transient                            | Hover/overflow menu             |
-| Uploaded images                         | Temporary daemon cache | Encrypted transfer and inserted path | Drag/paste UI state             |
+| Capability                              | Durable at daemon      | Shared with session                  | Viewer-local only                |
+| --------------------------------------- | ---------------------- | ------------------------------------ | -------------------------------- |
+| Pages and canvas window content/layout  | Yes                    | Yes                                  | Active page, viewport, selection |
+| Terminal process                        | Until host/OS restart  | Stream/input                         | Focus and selection              |
+| Note paragraphs and relationships       | Yes                    | Character-level updates              | Undo stack and active editor     |
+| File tree/editor navigation and content | Yes                    | Yes                                  | Menus, hover, undo, full-screen  |
+| SSH profiles                            | Encrypted file         | Metadata; writer mutation            | Password prompt input            |
+| User preferences                        | No                     | No                                   | Browser `localStorage`           |
+| Online users and editing ownership      | No                     | Transient                            | Hover/overflow menu              |
+| Uploaded images                         | Temporary daemon cache | Encrypted transfer and inserted path | Drag/paste UI state              |

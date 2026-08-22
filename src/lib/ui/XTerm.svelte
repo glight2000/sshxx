@@ -41,13 +41,17 @@
   import { FolderIcon, SettingsIcon } from "svelte-feather-icons";
 
   import themes, { isThemeName, type ThemeName } from "./themes";
+  import BackgroundPicker from "./BackgroundPicker.svelte";
   import CanvasRelations, {
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
+  import InlineTitle from "./InlineTitle.svelte";
   import { settings } from "$lib/settings";
+  import { parseOsc7Location } from "$lib/terminalLocation";
   import { TypeAheadAddon } from "$lib/typeahead";
+  import { installXtermMouseCoordinateAdapter } from "$lib/xtermMouseCoordinates";
 
   /** Used to determine Cmd versus Ctrl keyboard shortcuts. */
   const isMac = browser && navigator.platform.startsWith("Mac");
@@ -56,7 +60,11 @@
     data: Uint8Array;
     uploadImage: File;
     close: void;
-    duplicate: void;
+    duplicate: {
+      workingDirectory: string;
+      workingDirectoryHost: string;
+      initialWorkingDirectoryHost: string;
+    };
     toggleFullscreen: void;
     openFiles: string;
     appearance: {
@@ -72,6 +80,7 @@
     blur: void;
     navigateNote: CanvasRelationItem;
     unlinkNote: CanvasRelationItem;
+    floatingChange: boolean;
   }>();
 
   const typeahead = new TypeAheadAddon();
@@ -93,6 +102,7 @@
 
   export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
   let term: Terminal | null = null;
+  let mouseCoordinateAdapter: { dispose(): void } | null = null;
 
   let legacyTheme = $settings.theme;
   let previewTheme: ThemeName | null = null;
@@ -115,6 +125,7 @@
 
   let loaded = false;
   let focused = false;
+  let titleEditing = false;
   let currentTitle = "Remote Terminal";
   let appearanceOpen = false;
   let appearanceButton: HTMLButtonElement;
@@ -124,8 +135,8 @@
   let suppressAttention = 0;
   let suppressInput = 0;
   let workingDirectory = ".";
-  $: displayTitle = title || currentTitle;
-
+  let workingDirectoryHost = "";
+  let initialWorkingDirectoryHost = "";
   function requestAttention() {
     if (suppressAttention === 0 && !focused) attention = true;
     return true;
@@ -174,7 +185,13 @@
       return;
     }
     closeThemeMenu();
-    appearanceOpen = false;
+    setAppearanceOpen(false);
+  }
+
+  function setAppearanceOpen(open: boolean) {
+    if (appearanceOpen === open) return;
+    appearanceOpen = open;
+    dispatch("floatingChange", open);
   }
 
   function setFocused(isFocused: boolean) {
@@ -219,6 +236,7 @@
   }
 
   function handlePaste(event: ClipboardEvent) {
+    if (event.target instanceof HTMLInputElement) return;
     const file = Array.from(event.clipboardData?.items ?? [])
       .find(
         (item) => item.kind === "file" && supportedImageTypes.has(item.type),
@@ -420,16 +438,17 @@
     term.loadAddon(new ImageAddon({ enableSizeReports: false }));
 
     term.open(termEl);
+    mouseCoordinateAdapter = installXtermMouseCoordinateAdapter(term.element!);
     term.parser.registerOscHandler(9, requestAttention);
     term.parser.registerOscHandler(99, requestAttention);
     term.parser.registerOscHandler(777, requestAttention);
     term.parser.registerOscHandler(7, (value) => {
-      try {
-        const url = new URL(value);
-        if (url.protocol === "file:")
-          workingDirectory = decodeURIComponent(url.pathname) || ".";
-      } catch {
-        // Shells are not required to emit a valid OSC 7 URI.
+      const location = parseOsc7Location(value);
+      if (location) {
+        workingDirectory = location.workingDirectory;
+        workingDirectoryHost = location.workingDirectoryHost;
+        if (!initialWorkingDirectoryHost && workingDirectoryHost)
+          initialWorkingDirectoryHost = workingDirectoryHost;
       }
       return true;
     });
@@ -485,7 +504,10 @@
     });
   });
 
-  onDestroy(() => term?.dispose());
+  onDestroy(() => {
+    mouseCoordinateAdapter?.dispose();
+    term?.dispose();
+  });
 </script>
 
 <svelte:window on:mousedown|capture={closeAppearanceOnOutsideClick} />
@@ -493,7 +515,7 @@
 <div
   role="presentation"
   class="term-container"
-  class:focused
+  class:focused={focused || titleEditing}
   class:windowed={windowHeight > 0}
   class:fullscreen
   class:linked-highlight={linkedHighlight}
@@ -521,6 +543,7 @@
   {/if}
   <div
     role="presentation"
+    data-canvas-titlebar
     class="terminal-titlebar flex h-9 shrink-0 select-none items-center"
     class:terminal-attention={attention && !focused}
     on:mousedown={(event) => !fullscreen && dispatch("startMove", event)}
@@ -548,14 +571,35 @@
           kind="blue"
           disabled={!hasWriteAccess}
           ariaLabel="Duplicate terminal"
-          on:mousedown={(event) => event.button === 0 && dispatch("duplicate")}
+          on:mousedown={(event) =>
+            event.button === 0 &&
+            dispatch("duplicate", {
+              workingDirectory,
+              workingDirectoryHost,
+              initialWorkingDirectoryHost,
+            })}
         />
       </CircleButtons>
     </div>
     <div
       class="flex h-full w-0 flex-grow-[4] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap px-2 text-center text-sm font-medium text-zinc-300"
     >
-      <span class="truncate">{displayTitle}</span>
+      <InlineTitle
+        value={title}
+        fallback={currentTitle}
+        disabled={!hasWriteAccess}
+        ariaLabel="Terminal title"
+        on:change={(event) => updateAppearance({ title: event.detail })}
+        on:editingChange={(event) => {
+          titleEditing = event.detail;
+          if (event.detail) {
+            attention = false;
+            dispatch("focus");
+          } else {
+            dispatch("blur");
+          }
+        }}
+      />
     </div>
     <div class="relative flex h-full flex-1 items-center justify-end pr-2">
       <button
@@ -580,7 +624,7 @@
         on:mousedown|stopPropagation={(event) => {
           if (event.button === 0) {
             if (appearanceOpen) closeThemeMenu();
-            appearanceOpen = !appearanceOpen;
+            setAppearanceOpen(!appearanceOpen);
           }
         }}
       >
@@ -638,18 +682,6 @@
               {/each}
             </div>
           {:else}
-            <label class="block">
-              <span class="mb-1 block text-zinc-400">Title</span>
-              <input
-                value={title}
-                maxlength="100"
-                placeholder={currentTitle}
-                disabled={!hasWriteAccess}
-                class="w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500/50"
-                on:input={(event) =>
-                  updateAppearance({ title: event.currentTarget.value })}
-              />
-            </label>
             <button
               type="button"
               class="menu-row"
@@ -664,40 +696,14 @@
                 <span aria-hidden="true">›</span>
               </span>
             </button>
-            <div class="space-y-2">
-              <label class="flex items-center justify-between gap-3">
-                <span>
-                  <span class="block">Background</span>
-                  <span class="block text-xs text-zinc-500">Override theme</span
-                  >
-                </span>
-                <input
-                  type="checkbox"
-                  class="h-4 w-4 accent-indigo-500"
-                  checked={background !== ""}
-                  disabled={!hasWriteAccess}
-                  on:change={(event) =>
-                    updateAppearance({
-                      background: event.currentTarget.checked
-                        ? (theme.background ?? "#000000")
-                        : "",
-                    })}
-                />
-              </label>
-              <label
-                class="flex items-center justify-between gap-3"
-                class:opacity-40={background === ""}
-              >
-                Background color
-                <input
-                  type="color"
-                  value={background || theme.background}
-                  disabled={!hasWriteAccess || background === ""}
-                  on:input={(event) =>
-                    updateAppearance({ background: event.currentTarget.value })}
-                />
-              </label>
-            </div>
+            <BackgroundPicker
+              value={background}
+              fallbackColor={theme.background || "#000000"}
+              allowNone
+              disabled={!hasWriteAccess}
+              on:change={(event) =>
+                updateAppearance({ background: event.detail })}
+            />
             <label class="block">
               <span class="mb-1 flex justify-between">
                 <span>Opacity</span><span>{opacity}%</span>
@@ -822,19 +828,16 @@
 
   .term-container.focused,
   .term-container:focus-within {
-    outline: 2px solid rgb(129 140 248 / 80%);
-    outline-offset: -1px;
+    border-color: rgb(129 140 248 / 80%);
   }
 
   .term-container.linked-highlight {
-    outline: 2px solid rgb(228 228 231 / 50%);
-    outline-offset: 1px;
+    border-color: rgb(228 228 231 / 50%);
     animation: linked-terminal-pulse 1.8s ease-in-out infinite;
   }
 
   .term-container.paragraph-drop-active {
-    outline: 2px solid rgb(125 211 252 / 85%);
-    outline-offset: 2px;
+    border-color: rgb(125 211 252 / 85%);
     box-shadow: 0 0 12px rgb(125 211 252 / 38%);
   }
   .term-container.paragraph-drop-active::after {

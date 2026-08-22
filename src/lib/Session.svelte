@@ -34,6 +34,7 @@
   import { TerminalHistory } from "./terminalHistory";
   import { constrainTerminalResize } from "./terminalGeometry";
   import type { ChatMessage } from "./ui/Chat.svelte";
+  import CanvasContextMenu from "./ui/CanvasContextMenu.svelte";
   import Note from "./ui/Note.svelte";
   import ResizeHandles, {
     type ResizeDirection,
@@ -50,7 +51,20 @@
   import LiveCursor from "./ui/LiveCursor.svelte";
   import { slide } from "./action/slide";
   import { TouchZoom, INITIAL_ZOOM } from "./action/touchZoom";
-  import { arrangeNewCanvasItem } from "./arrange";
+  import {
+    arrangeNewCanvasItem,
+    arrangeNewCanvasItemNear,
+    type CanvasItemRect,
+  } from "./arrange";
+  import {
+    canvasItemKey,
+    marqueeRect,
+    parseCanvasItemKey,
+    rectsIntersect,
+    type CanvasItemKey,
+    type CanvasItemKind,
+  } from "./canvasSelection";
+  import { canvasPanButton, canvasSelectionButton } from "./canvasMouseButtons";
   import {
     GRID_SIZE,
     gridAlignedRect,
@@ -158,8 +172,171 @@
   let settingsOpen = false; // @hmr:keep
   let showNetworkInfo = false; // @hmr:keep
   let searchOpen = false;
+  let canvasContextMenuOpen = false;
+  let canvasContextMenuX = 0;
+  let canvasContextMenuY = 0;
+  let canvasContextPosition: [number, number] = [0, 0];
+  let pendingCanvasContextMenu: {
+    x: number;
+    y: number;
+    position: [number, number];
+  } | null = null;
+  let selectedCanvasItems: CanvasItemKey[] = [];
+  let pendingCanvasSelection: CanvasItemKey | null = null;
+  let pendingCanvasTitleFocus: CanvasItemKey | null = null;
+  let selectionMarquee: {
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+    canvasLeft: number;
+    canvasTop: number;
+    moved: boolean;
+  } | null = null;
+  let canvasDropPageId: number | null = null;
+  let suppressMarqueeContextMenu = false;
+  let canvasDropPreviewOffsets: Partial<
+    Record<CanvasItemKey, [number, number]>
+  > = {};
   let serverVersion = "unknown";
   let daemonVersion = "unknown";
+
+  function canvasItemFromTarget(target: EventTarget | null) {
+    if (!(target instanceof Element)) return null;
+    const element = target.closest<HTMLElement>(
+      "[data-canvas-terminal], [data-canvas-note-wrapper], [data-canvas-file-window]",
+    );
+    if (!element) return null;
+    if (element.dataset.canvasTerminal)
+      return canvasItemKey("terminal", Number(element.dataset.canvasTerminal));
+    if (element.dataset.canvasNoteWrapper)
+      return canvasItemKey("note", Number(element.dataset.canvasNoteWrapper));
+    if (element.dataset.canvasFileWindow)
+      return canvasItemKey("file", Number(element.dataset.canvasFileWindow));
+    return null;
+  }
+
+  function canvasItemExists(key: CanvasItemKey) {
+    const { kind, id } = parseCanvasItemKey(key);
+    if (kind === "terminal")
+      return shells.some(
+        ([shellId, shell]) => shellId === id && shell.pageId === activePageId,
+      );
+    if (kind === "note")
+      return notes.some(
+        ([noteId, note]) => noteId === id && note.pageId === activePageId,
+      );
+    return fileWindows.some(
+      ([windowId, window]) => windowId === id && window.pageId === activePageId,
+    );
+  }
+
+  function clearCanvasSelection() {
+    selectedCanvasItems = [];
+  }
+
+  function canvasItemWrapper(key: CanvasItemKey) {
+    const { kind, id } = parseCanvasItemKey(key);
+    if (kind === "terminal") return termWrappers[id];
+    if (kind === "note") return noteWrappers[id];
+    return fileWrappers[id];
+  }
+
+  function beginMarqueeSelection(event: MouseEvent) {
+    const selectionButton = canvasSelectionButton(
+      $settings.swapCanvasMouseButtons,
+    );
+    if (
+      event.button !== selectionButton ||
+      event.target !== fabricEl ||
+      activeFullscreenKey() !== null
+    )
+      return false;
+    if (selectionButton === 2) suppressMarqueeContextMenu = false;
+    const rect = fabricEl.getBoundingClientRect();
+    clearCanvasSelection();
+    if (document.activeElement instanceof HTMLElement)
+      document.activeElement.blur();
+    focusedTerminalId = null;
+    focusedNoteId = null;
+    focusedFileWindowId = null;
+    focused = [];
+    selectionMarquee = {
+      startX: event.clientX,
+      startY: event.clientY,
+      currentX: event.clientX,
+      currentY: event.clientY,
+      canvasLeft: rect.left,
+      canvasTop: rect.top,
+      moved: false,
+    };
+    pendingCanvasSelection = null;
+    pendingCanvasTitleFocus = null;
+    canvasContextMenuOpen = false;
+    event.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    return true;
+  }
+
+  function updateMarqueeSelection(event: MouseEvent) {
+    if (!selectionMarquee) return;
+    event.preventDefault();
+    const distance = Math.hypot(
+      event.clientX - selectionMarquee.startX,
+      event.clientY - selectionMarquee.startY,
+    );
+    const moved = selectionMarquee.moved || distance >= 3;
+    selectionMarquee = {
+      ...selectionMarquee,
+      currentX: event.clientX,
+      currentY: event.clientY,
+      moved,
+    };
+    if (!moved) return;
+    if (canvasSelectionButton($settings.swapCanvasMouseButtons) === 2)
+      suppressMarqueeContextMenu = true;
+    window.getSelection()?.removeAllRanges();
+    const marquee = marqueeRect(
+      selectionMarquee.startX,
+      selectionMarquee.startY,
+      selectionMarquee.currentX,
+      selectionMarquee.currentY,
+    );
+    const candidates: CanvasItemKey[] = [
+      ...shells
+        .filter(([, shell]) => shell.pageId === activePageId)
+        .map(([shellId]) => canvasItemKey("terminal", shellId)),
+      ...notes
+        .filter(([, note]) => note.pageId === activePageId)
+        .map(([noteId]) => canvasItemKey("note", noteId)),
+      ...fileWindows
+        .filter(([, window]) => window.pageId === activePageId)
+        .map(([windowId]) => canvasItemKey("file", windowId)),
+    ];
+    selectedCanvasItems = candidates.filter((key) => {
+      const wrapper = canvasItemWrapper(key);
+      return wrapper
+        ? rectsIntersect(marquee, wrapper.getBoundingClientRect())
+        : false;
+    });
+  }
+
+  function finishCanvasSelection() {
+    if (selectionMarquee) {
+      if (!selectionMarquee.moved) clearCanvasSelection();
+      selectionMarquee = null;
+      pendingCanvasSelection = null;
+      return;
+    }
+    if (pendingCanvasSelection) {
+      clearCanvasSelection();
+      pendingCanvasSelection = null;
+    }
+    if (pendingCanvasTitleFocus) {
+      focusCanvasItem(pendingCanvasTitleFocus);
+      pendingCanvasTitleFocus = null;
+    }
+  }
 
   function hasActiveCanvasItem() {
     const activeElement = document.activeElement;
@@ -199,11 +376,29 @@
   }
 
   function handleWindowMouseDownCapture(event: MouseEvent) {
+    if (
+      event.button === 2 &&
+      canvasSelectionButton($settings.swapCanvasMouseButtons) === 2
+    )
+      suppressMarqueeContextMenu = false;
     const fullscreenKey = activeFullscreenKey();
     const target = event.target instanceof Element ? event.target : null;
     if (fullscreenKey && !target?.closest(".canvas-fullscreen"))
       exitActivePageFullscreen();
+    const wasLinking = linkingNoteId !== null;
     handleCanvasLinkSelection(event);
+    if (wasLinking) return;
+    if (beginMarqueeSelection(event)) return;
+    if (event.button === 0) {
+      pendingCanvasSelection = canvasItemFromTarget(event.target);
+      const target = event.target instanceof Element ? event.target : null;
+      pendingCanvasTitleFocus =
+        pendingCanvasSelection &&
+        target?.closest("[data-canvas-titlebar]") &&
+        !target.closest("button, input, textarea, select, a")
+          ? pendingCanvasSelection
+          : null;
+    }
   }
 
   onMount(() => {
@@ -245,6 +440,7 @@
       fabricEl,
       () => !hasActiveCanvasItem(),
       () => activeFullscreenKey() === null,
+      () => canvasPanButton($settings.swapCanvasMouseButtons),
     );
     const initialView = pageViews[activePageId];
     center = [...initialView.center];
@@ -268,6 +464,8 @@
       }
 
       showNetworkInfo = false;
+      canvasContextMenuOpen = false;
+      pendingCanvasContextMenu = null;
     });
     return () => {
       unsubscribe();
@@ -282,6 +480,52 @@
       Math.round(center[0] + event.pageX / zoom - ox),
       Math.round(center[1] + event.pageY / zoom - oy),
     ];
+  }
+
+  function handlePageContextMenu(event: MouseEvent) {
+    if (touchZoom?.consumeContextMenuSuppression()) {
+      canvasContextMenuOpen = false;
+      return;
+    }
+    if (
+      canvasSelectionButton($settings.swapCanvasMouseButtons) === 2 &&
+      (selectionMarquee?.moved || suppressMarqueeContextMenu)
+    ) {
+      suppressMarqueeContextMenu = false;
+      canvasContextMenuOpen = false;
+      pendingCanvasContextMenu = null;
+      return;
+    }
+    const target = event.target;
+    if (target === fabricEl) {
+      const menu = {
+        x: event.clientX,
+        y: event.clientY,
+        position: normalizePosition(event),
+      };
+      if (
+        canvasSelectionButton($settings.swapCanvasMouseButtons) === 2 &&
+        selectionMarquee !== null
+      ) {
+        pendingCanvasContextMenu = menu;
+        canvasContextMenuOpen = false;
+        return;
+      }
+      // Chromium can dispatch `contextmenu` before the secondary pointer is
+      // released. Defer opening until mouseup so a right-drag never flashes the
+      // action menu before it becomes a canvas pan.
+      if (touchZoom?.isSecondaryPointerActive()) {
+        pendingCanvasContextMenu = menu;
+        canvasContextMenuOpen = false;
+        return;
+      }
+      canvasContextMenuX = menu.x;
+      canvasContextMenuY = menu.y;
+      canvasContextPosition = menu.position;
+      canvasContextMenuOpen = true;
+      return;
+    }
+    canvasContextMenuOpen = false;
   }
 
   let encrypt: Encrypt;
@@ -433,6 +677,9 @@
 
   let moving = -1; // Terminal ID that is being dragged.
   let movingOrigin = [0, 0]; // Coordinates of mouse at origin when drag started.
+  let movingStartClient = [0, 0];
+  let movingDidMove = false;
+  let movingStartSize: WsWinsize;
   let movingSize: WsWinsize; // New [x, y] position of the dragged terminal.
   let movingIsDone = false; // Moving finished but hasn't been acknowledged.
 
@@ -447,6 +694,9 @@
 
   let movingNote = -1;
   let movingNoteOrigin = [0, 0];
+  let movingNoteStartClient = [0, 0];
+  let movingNoteDidMove = false;
+  let movingNoteStartState: WsNote;
   let movingNoteState: WsNote;
   let resizingNote = -1;
   let resizingNoteStartPointer = [0, 0];
@@ -456,12 +706,344 @@
 
   let movingFile = -1;
   let movingFileOrigin = [0, 0];
+  let movingFileStartClient = [0, 0];
+  let movingFileDidMove = false;
+  let movingFileStartState: WsFileWindow;
   let movingFileState: WsFileWindow;
   let resizingFile = -1;
   let resizingFileStartPointer = [0, 0];
   let resizingFileStartState: WsFileWindow;
   let resizingFileState: WsFileWindow;
   let resizingFileDirection: ResizeDirection = "se";
+  let terminalFloating: Record<number, boolean> = {};
+  let noteFloating: Record<number, boolean> = {};
+  let fileFloating: Record<number, boolean> = {};
+
+  type CanvasGroupMove = {
+    leadKey: CanvasItemKey;
+    selectedKeys: CanvasItemKey[];
+    startPointer: [number, number];
+    startClient: [number, number];
+    leadPosition: [number, number];
+    offset: [number, number];
+    moved: boolean;
+  };
+  let canvasGroupMove: CanvasGroupMove | null = null;
+  let groupTerminalStates: Record<number, WsWinsize> = {};
+  let groupNoteStates: Record<number, WsNote> = {};
+  let groupFileStates: Record<number, WsFileWindow> = {};
+  let groupTerminalStartStates: Record<number, WsWinsize> = {};
+  let groupNoteStartStates: Record<number, WsNote> = {};
+  let groupFileStartStates: Record<number, WsFileWindow> = {};
+
+  function startCanvasGroupMove(
+    kind: CanvasItemKind,
+    id: number,
+    event: MouseEvent,
+  ) {
+    if (event.button !== 0) return false;
+    const leadKey = canvasItemKey(kind, id);
+    pendingCanvasSelection = null;
+    if (!selectedCanvasItems.includes(leadKey)) {
+      clearCanvasSelection();
+      return false;
+    }
+
+    const selection = selectedCanvasItems.filter(canvasItemExists);
+    selectedCanvasItems = selection;
+    if (selection.length < 2) return false;
+
+    // Save only the selection keys and lead geometry here. The remaining
+    // states are projected lazily after the pointer crosses the drag threshold.
+    const lead =
+      kind === "terminal"
+        ? shells.find(([itemId]) => itemId === id)?.[1]
+        : kind === "note"
+          ? notes.find(([itemId]) => itemId === id)?.[1]
+          : fileWindows.find(([itemId]) => itemId === id)?.[1];
+    if (!lead) return false;
+
+    canvasGroupMove = {
+      leadKey,
+      selectedKeys: selection,
+      startPointer: normalizePosition(event),
+      startClient: [event.clientX, event.clientY],
+      leadPosition: [lead.x, lead.y],
+      offset: [0, 0],
+      moved: false,
+    };
+    return true;
+  }
+
+  function updateCanvasPageDropTarget(event: MouseEvent, dragging: boolean) {
+    if (!dragging) {
+      canvasDropPageId = null;
+      canvasDropPreviewOffsets = {};
+      return;
+    }
+    const pageElement = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-canvas-page-id]");
+    const pageId = Number(pageElement?.dataset.canvasPageId);
+    canvasDropPageId =
+      Number.isSafeInteger(pageId) &&
+      pageId !== activePageId &&
+      pages.some((page) => page.id === pageId)
+        ? pageId
+        : null;
+    if (canvasDropPageId === null || !pageElement) {
+      canvasDropPreviewOffsets = {};
+      return;
+    }
+
+    const keys = canvasGroupMove?.moved
+      ? canvasGroupMove.selectedKeys
+      : moving !== -1 && movingDidMove
+        ? [canvasItemKey("terminal", moving)]
+        : movingNote !== -1 && movingNoteDidMove
+          ? [canvasItemKey("note", movingNote)]
+          : movingFile !== -1 && movingFileDidMove
+            ? [canvasItemKey("file", movingFile)]
+            : [];
+    const target = pageElement.getBoundingClientRect();
+    const targetCenter = [
+      target.left + target.width / 2,
+      target.top + target.height / 2,
+    ];
+    const offsets: Partial<Record<CanvasItemKey, [number, number]>> = {};
+    for (const key of keys) {
+      const wrapper = canvasItemWrapper(key);
+      if (!wrapper) continue;
+      const rect = wrapper.getBoundingClientRect();
+      offsets[key] = [
+        (targetCenter[0] - (rect.left + rect.width / 2)) / zoom,
+        (targetCenter[1] - (rect.top + rect.height / 2)) / zoom,
+      ];
+    }
+    canvasDropPreviewOffsets = offsets;
+  }
+
+  function focusCanvasItem(key: CanvasItemKey) {
+    clearCanvasSelection();
+    const { kind, id } = parseCanvasItemKey(key);
+    const focusTarget =
+      kind === "terminal"
+        ? termElements[id]?.querySelector<HTMLElement>(".xterm-helper-textarea")
+        : kind === "note"
+          ? noteWrappers[id]?.querySelector<HTMLElement>("[data-canvas-note]")
+          : fileWrappers[id]?.querySelector<HTMLElement>(".file-window");
+    focusTarget?.focus({ preventScroll: true });
+  }
+
+  function moveCanvasItemsToPage(
+    keys: CanvasItemKey[],
+    targetPageId: number,
+    positionOverrides = new Map<CanvasItemKey, [number, number]>(),
+  ) {
+    const sourcePageId = activePageId;
+    const selected = keys.filter(canvasItemExists);
+    const keySet = new Set(selected);
+    const terminalMoves = shells
+      .filter(
+        ([id, state]) =>
+          state.pageId === sourcePageId &&
+          keySet.has(canvasItemKey("terminal", id)),
+      )
+      .map(([id, state]): [number, number, number] => {
+        const [x, y] = positionOverrides.get(canvasItemKey("terminal", id)) ?? [
+          state.x,
+          state.y,
+        ];
+        return [id, x, y];
+      });
+    const noteMoves = notes
+      .filter(
+        ([id, state]) =>
+          state.pageId === sourcePageId &&
+          keySet.has(canvasItemKey("note", id)),
+      )
+      .map(([id, state]): [number, number, number] => {
+        const [x, y] = positionOverrides.get(canvasItemKey("note", id)) ?? [
+          state.x,
+          state.y,
+        ];
+        return [id, x, y];
+      });
+    const fileMoves = fileWindows
+      .filter(
+        ([id, state]) =>
+          state.pageId === sourcePageId &&
+          keySet.has(canvasItemKey("file", id)),
+      )
+      .map(([id, state]): [number, number, number] => {
+        const [x, y] = positionOverrides.get(canvasItemKey("file", id)) ?? [
+          state.x,
+          state.y,
+        ];
+        return [id, x, y];
+      });
+    if (!terminalMoves.length && !noteMoves.length && !fileMoves.length)
+      return false;
+
+    if (document.activeElement instanceof HTMLElement)
+      document.activeElement.blur();
+    srocket?.send({
+      moveCanvasItems: [
+        sourcePageId,
+        targetPageId,
+        terminalMoves,
+        noteMoves,
+        fileMoves,
+      ],
+    });
+    const terminalPositions = new Map(
+      terminalMoves.map(([id, x, y]) => [id, [x, y] as const]),
+    );
+    const notePositions = new Map(
+      noteMoves.map(([id, x, y]) => [id, [x, y] as const]),
+    );
+    const filePositions = new Map(
+      fileMoves.map(([id, x, y]) => [id, [x, y] as const]),
+    );
+    shells = shells.map(([id, state]) => {
+      const position = terminalPositions.get(id);
+      return position
+        ? [
+            id,
+            { ...state, x: position[0], y: position[1], pageId: targetPageId },
+          ]
+        : [id, state];
+    });
+    notes = notes.map(([id, state]) => {
+      const position = notePositions.get(id);
+      return position
+        ? [
+            id,
+            { ...state, x: position[0], y: position[1], pageId: targetPageId },
+          ]
+        : [id, state];
+    });
+    fileWindows = fileWindows.map(([id, state]) => {
+      const position = filePositions.get(id);
+      return position
+        ? [
+            id,
+            { ...state, x: position[0], y: position[1], pageId: targetPageId },
+          ]
+        : [id, state];
+    });
+    selectedCanvasItems = selected;
+    canvasDropPageId = null;
+    canvasDropPreviewOffsets = {};
+    switchPage(targetPageId, true);
+    return true;
+  }
+
+  function updateCanvasGroupMove(event: MouseEvent) {
+    if (!canvasGroupMove) return;
+    const clientDistance = Math.hypot(
+      event.clientX - canvasGroupMove.startClient[0],
+      event.clientY - canvasGroupMove.startClient[1],
+    );
+    if (!canvasGroupMove.moved && clientDistance < 3) return;
+    pendingCanvasTitleFocus = null;
+
+    const [pointerX, pointerY] = normalizePosition(event);
+    const rawDx = pointerX - canvasGroupMove.startPointer[0];
+    const rawDy = pointerY - canvasGroupMove.startPointer[1];
+    const leadX = snapLeadingEdge(
+      Math.round(canvasGroupMove.leadPosition[0] + rawDx),
+    );
+    const leadY = snapLeadingEdge(
+      Math.round(canvasGroupMove.leadPosition[1] + rawDy),
+    );
+    const dx = leadX - canvasGroupMove.leadPosition[0];
+    const dy = leadY - canvasGroupMove.leadPosition[1];
+    const selected = new Set(canvasGroupMove.selectedKeys);
+    if (!canvasGroupMove.moved) {
+      groupTerminalStartStates = Object.fromEntries(
+        shells.filter(([id]) => selected.has(canvasItemKey("terminal", id))),
+      );
+      groupNoteStartStates = Object.fromEntries(
+        notes.filter(([id]) => selected.has(canvasItemKey("note", id))),
+      );
+      groupFileStartStates = Object.fromEntries(
+        fileWindows.filter(([id]) => selected.has(canvasItemKey("file", id))),
+      );
+    }
+    canvasGroupMove = { ...canvasGroupMove, offset: [dx, dy], moved: true };
+    groupTerminalStates = Object.fromEntries(
+      Object.entries(groupTerminalStartStates).map(([itemId, state]) => [
+        Number(itemId),
+        { ...state, x: state.x + dx, y: state.y + dy },
+      ]),
+    );
+    groupNoteStates = Object.fromEntries(
+      Object.entries(groupNoteStartStates).map(([itemId, state]) => [
+        Number(itemId),
+        { ...state, x: state.x + dx, y: state.y + dy },
+      ]),
+    );
+    groupFileStates = Object.fromEntries(
+      Object.entries(groupFileStartStates).map(([itemId, state]) => [
+        Number(itemId),
+        { ...state, x: state.x + dx, y: state.y + dy },
+      ]),
+    );
+    updateCanvasPageDropTarget(event, true);
+  }
+
+  function finishCanvasGroupMove() {
+    if (!canvasGroupMove) return;
+    const move = canvasGroupMove;
+    if (!move.moved) {
+      clearCanvasSelection();
+      focusCanvasItem(move.leadKey);
+    } else if (canvasDropPageId !== null) {
+      const overrides = new Map<CanvasItemKey, [number, number]>();
+      for (const [id, state] of Object.entries(groupTerminalStartStates))
+        overrides.set(canvasItemKey("terminal", Number(id)), [
+          state.x,
+          state.y,
+        ]);
+      for (const [id, state] of Object.entries(groupNoteStartStates))
+        overrides.set(canvasItemKey("note", Number(id)), [state.x, state.y]);
+      for (const [id, state] of Object.entries(groupFileStartStates))
+        overrides.set(canvasItemKey("file", Number(id)), [state.x, state.y]);
+      moveCanvasItemsToPage(move.selectedKeys, canvasDropPageId, overrides);
+      // The cross-page operation has already committed the original positions.
+    } else {
+      shells = shells.map(([id, state]) => [
+        id,
+        groupTerminalStates[id] ?? state,
+      ]);
+      notes = notes.map(([id, state]) => [id, groupNoteStates[id] ?? state]);
+      fileWindows = fileWindows.map(([id, state]) => [
+        id,
+        groupFileStates[id] ?? state,
+      ]);
+      for (const [id, state] of Object.entries(groupTerminalStates)) {
+        srocket?.send({ move: [Number(id), state.pageId, state] });
+      }
+      for (const [id, state] of Object.entries(groupNoteStates)) {
+        srocket?.send({ updateNote: [Number(id), state.pageId, state] });
+      }
+      for (const [id, state] of Object.entries(groupFileStates)) {
+        srocket?.send({
+          updateFileWindow: [Number(id), state.pageId, state],
+        });
+      }
+    }
+    canvasGroupMove = null;
+    groupTerminalStates = {};
+    groupNoteStates = {};
+    groupFileStates = {};
+    groupTerminalStartStates = {};
+    groupNoteStartStates = {};
+    groupFileStartStates = {};
+    canvasDropPageId = null;
+    canvasDropPreviewOffsets = {};
+  }
 
   let chatMessages: ChatMessage[] = [];
   let newMessages = false;
@@ -603,6 +1185,7 @@
               linkedShellIds: note.linkedShellIds ?? [],
               linkedNoteIds: note.linkedNoteIds ?? [],
               linkedFileWindowIds: note.linkedFileWindowIds ?? [],
+              title: note.title ?? "",
               width: note.width ?? 384,
               height: note.height ?? 224,
               pageId: note.pageId ?? 1,
@@ -616,6 +1199,7 @@
               pageId: window.pageId ?? 1,
               path: window.path || ".",
               title: window.title || `Terminal ${window.shellId}`,
+              background: window.background || "#111113",
               width: window.width || 1_040,
               height: window.height || 680,
               currentPath: window.currentPath || window.path || ".",
@@ -786,7 +1370,7 @@
         ? "unavailable"
         : "connecting";
 
-  function switchPage(pageId: number) {
+  function switchPage(pageId: number, preserveCanvasSelection = false) {
     if (!pages.some((page) => page.id === pageId)) return;
     preferredPageId = pageId;
     if (pageId === activePageId) {
@@ -794,6 +1378,13 @@
       return;
     }
     pageViews[activePageId] = { center: [...center], zoom };
+    terminalFloating = {};
+    noteFloating = {};
+    fileFloating = {};
+    if (!preserveCanvasSelection) selectedCanvasItems = [];
+    pendingCanvasSelection = null;
+    pendingCanvasTitleFocus = null;
+    selectionMarquee = null;
     activePageId = pageId;
     const view = pageViews[pageId] ?? {
       center: [0, 0],
@@ -815,6 +1406,7 @@
   }
 
   function noteTitle(noteId: number, note: WsNote) {
+    if (note.title.trim()) return note.title.trim();
     const firstLine = (
       note.paragraphs?.length ? note.paragraphs : note.text.split("\n")
     )
@@ -859,7 +1451,6 @@
           .filter(
             ([candidateId, candidate]) =>
               candidateId !== noteId &&
-              candidate.pageId === note.pageId &&
               candidate.linkedNoteIds.includes(noteId),
           )
           .map(([candidateId]) => candidateId),
@@ -981,16 +1572,28 @@
   }
 
   function handleRelationshipKeydown(event: KeyboardEvent) {
+    let handled = false;
     if (event.key === "Escape" && linkingNoteId !== null) {
-      event.preventDefault();
       linkingNoteId = null;
+      handled = true;
     }
+    if (
+      event.key === "Escape" &&
+      (selectedCanvasItems.length > 0 || selectionMarquee !== null)
+    ) {
+      clearCanvasSelection();
+      pendingCanvasSelection = null;
+      pendingCanvasTitleFocus = null;
+      selectionMarquee = null;
+      handled = true;
+    }
+    if (handled) event.preventDefault();
   }
 
-  function existingCanvasItems() {
+  function existingCanvasItems(pageId = activePageId) {
     return [
       ...shells
-        .filter(([, winsize]) => winsize.pageId === activePageId)
+        .filter(([, winsize]) => winsize.pageId === pageId)
         .flatMap(([shellId, winsize]) => {
           const wrapper = termWrappers[shellId];
           return wrapper
@@ -1005,7 +1608,7 @@
             : [];
         }),
       ...notes
-        .filter(([, note]) => note.pageId === activePageId)
+        .filter(([, note]) => note.pageId === pageId)
         .map(([, note]) => ({
           x: note.x,
           y: note.y,
@@ -1013,7 +1616,7 @@
           height: note.height,
         })),
       ...fileWindows
-        .filter(([, window]) => window.pageId === activePageId)
+        .filter(([, window]) => window.pageId === pageId)
         .map(([, { x, y, width, height }]) => ({ x, y, width, height })),
     ];
   }
@@ -1023,7 +1626,46 @@
     return gridAlignedRect({ ...position, width, height });
   }
 
-  async function handleCreate() {
+  function nextCanvasRectNear(
+    source: CanvasItemRect,
+    width: number,
+    height: number,
+    pageId = activePageId,
+  ) {
+    const position = arrangeNewCanvasItemNear(
+      existingCanvasItems(pageId),
+      width,
+      height,
+      source,
+    );
+    return gridAlignedRect({ ...position, width, height });
+  }
+
+  function terminalCanvasRect(id: number): CanvasItemRect | null {
+    const terminal = shells.find(([shellId]) => shellId === id)?.[1];
+    if (!terminal) return null;
+    const wrapper = termWrappers[id];
+    return {
+      x: terminal.x,
+      y: terminal.y,
+      width:
+        terminal.width || wrapper?.clientWidth / zoom || TERM_INITIAL_WIDTH,
+      height:
+        terminal.height || wrapper?.clientHeight / zoom || TERM_INITIAL_HEIGHT,
+    };
+  }
+
+  function canvasRectAt(
+    position: [number, number] | undefined,
+    width: number,
+    height: number,
+  ) {
+    return position
+      ? gridAlignedRect({ x: position[0], y: position[1], width, height })
+      : nextCanvasRect(width, height);
+  }
+
+  async function handleCreate(position?: [number, number]) {
     if (hasWriteAccess === false) {
       makeToast({
         kind: "info",
@@ -1038,7 +1680,8 @@
       });
       return;
     }
-    const { x, y, width, height } = nextCanvasRect(
+    const { x, y, width, height } = canvasRectAt(
+      position,
       TERM_INITIAL_WIDTH,
       TERM_INITIAL_HEIGHT,
     );
@@ -1054,12 +1697,13 @@
         $settings.theme,
       ],
     });
-    touchZoom.moveTo([x, y], INITIAL_ZOOM);
+    if (!position) touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
-  function handleCreateSsh(profileId: string) {
+  function handleCreateSsh(profileId: string, position?: [number, number]) {
     if (!hasWriteAccess || shells.length >= 100) return;
-    const { x, y, width, height } = nextCanvasRect(
+    const { x, y, width, height } = canvasRectAt(
+      position,
       TERM_INITIAL_WIDTH,
       TERM_INITIAL_HEIGHT,
     );
@@ -1077,17 +1721,18 @@
         profile?.theme || $settings.theme,
       ],
     });
-    touchZoom.moveTo([x, y], INITIAL_ZOOM);
+    if (!position) touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
-  function handleCreateNote() {
+  function handleCreateNote(position?: [number, number]) {
     if (hasWriteAccess === false || notes.length >= 100) return;
-    const { x, y, width, height } = nextCanvasRect(
+    const { x, y, width, height } = canvasRectAt(
+      position,
       NOTE_INITIAL_WIDTH,
       NOTE_INITIAL_HEIGHT,
     );
     srocket?.send({ createNoteSized: [x, y, width, height, activePageId] });
-    touchZoom.moveTo([x, y], INITIAL_ZOOM);
+    if (!position) touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
   async function requestFileOperation(
@@ -1114,6 +1759,8 @@
   }
 
   type FileWindowSharedUpdate = {
+    title?: string;
+    background?: string;
     currentPath?: string;
     expandedPaths?: string[];
     selectedPath?: string;
@@ -1291,7 +1938,10 @@
       bringFileWindowToFront(existing[0], pageId);
       return;
     }
-    const rect = nextCanvasRect(1_040, 680);
+    const source = terminalCanvasRect(shellId);
+    const rect = source
+      ? nextCanvasRectNear(source, 1_040, 680, pageId)
+      : nextCanvasRect(1_040, 680);
     srocket?.send({
       createFileWindow: [
         shellId,
@@ -1304,10 +1954,16 @@
         rect.height,
       ],
     });
-    touchZoom.moveTo([rect.x, rect.y], INITIAL_ZOOM);
   }
 
-  function handleDuplicate(sourceId: number) {
+  function handleDuplicate(
+    sourceId: number,
+    location: {
+      workingDirectory: string;
+      workingDirectoryHost: string;
+      initialWorkingDirectoryHost: string;
+    },
+  ) {
     if (!hasWriteAccess || shells.length >= 100) return;
     const source = shells.find(([id]) => id === sourceId)?.[1];
     if (!source) return;
@@ -1316,26 +1972,41 @@
       source.width || wrapper?.clientWidth / zoom || TERM_INITIAL_WIDTH;
     const height =
       source.height || wrapper?.clientHeight / zoom || TERM_INITIAL_HEIGHT;
-    const rect = nextCanvasRect(width, height);
+    const sourceRect = terminalCanvasRect(sourceId);
+    const rect = sourceRect
+      ? nextCanvasRectNear(sourceRect, width, height, source.pageId)
+      : nextCanvasRect(width, height);
     srocket?.send({
-      cloneWindowed: [
+      cloneWindowedAt: [
         sourceId,
+        location.workingDirectory,
+        location.workingDirectoryHost,
+        location.initialWorkingDirectoryHost,
         rect.x,
         rect.y,
         rect.width,
         rect.height,
         source.rows,
         source.cols,
-        activePageId,
+        source.pageId,
         source.theme || $settings.theme,
       ],
     });
-    touchZoom.moveTo([rect.x, rect.y], INITIAL_ZOOM);
   }
 
-  function handleCreateAt(sourceId: number, pageId: number, path: string) {
+  function handleCreateAt(
+    sourceId: number,
+    pageId: number,
+    path: string,
+    sourceRect: CanvasItemRect,
+  ) {
     if (!hasWriteAccess || shells.length >= 100 || !path) return;
-    const rect = nextCanvasRect(TERM_INITIAL_WIDTH, TERM_INITIAL_HEIGHT);
+    const rect = nextCanvasRectNear(
+      sourceRect,
+      TERM_INITIAL_WIDTH,
+      TERM_INITIAL_HEIGHT,
+      pageId,
+    );
     srocket?.send({
       createAt: [
         sourceId,
@@ -1350,7 +2021,6 @@
         $settings.theme,
       ],
     });
-    touchZoom.moveTo([rect.x, rect.y], INITIAL_ZOOM);
   }
 
   $: canvasSearchItems = [
@@ -1778,7 +2448,8 @@
   });
 
   afterUpdate(() => {
-    if (activeElement instanceof HTMLElement) activeElement.focus();
+    if (activeElement instanceof HTMLElement)
+      activeElement.focus({ preventScroll: true });
     for (const [id, shell] of shells) {
       if (shell.pageId !== activePageId) continue;
       const writer = writers[id];
@@ -1802,7 +2473,17 @@
     }, 80);
 
     function handleMouse(event: MouseEvent) {
+      updateMarqueeSelection(event);
+      updateCanvasGroupMove(event);
+
       if (moving !== -1 && !movingIsDone) {
+        const distance = Math.hypot(
+          event.clientX - movingStartClient[0],
+          event.clientY - movingStartClient[1],
+        );
+        if (!movingDidMove && distance < 3) return;
+        movingDidMove = true;
+        pendingCanvasTitleFocus = null;
         const [x, y] = normalizePosition(event);
         movingSize = {
           ...movingSize,
@@ -1810,24 +2491,41 @@
           y: snapLeadingEdge(Math.round(y - movingOrigin[1])),
         };
         sendMove({ move: [moving, movingSize.pageId, movingSize] });
+        updateCanvasPageDropTarget(event, true);
       }
 
       if (movingNote !== -1) {
+        const distance = Math.hypot(
+          event.clientX - movingNoteStartClient[0],
+          event.clientY - movingNoteStartClient[1],
+        );
+        if (!movingNoteDidMove && distance < 3) return;
+        movingNoteDidMove = true;
+        pendingCanvasTitleFocus = null;
         const [x, y] = normalizePosition(event);
         movingNoteState = {
           ...movingNoteState,
           x: snapLeadingEdge(Math.round(x - movingNoteOrigin[0])),
           y: snapLeadingEdge(Math.round(y - movingNoteOrigin[1])),
         };
+        updateCanvasPageDropTarget(event, true);
       }
 
       if (movingFile !== -1) {
+        const distance = Math.hypot(
+          event.clientX - movingFileStartClient[0],
+          event.clientY - movingFileStartClient[1],
+        );
+        if (!movingFileDidMove && distance < 3) return;
+        movingFileDidMove = true;
+        pendingCanvasTitleFocus = null;
         const [x, y] = normalizePosition(event);
         movingFileState = {
           ...movingFileState,
           x: snapLeadingEdge(Math.round(x - movingFileOrigin[0])),
           y: snapLeadingEdge(Math.round(y - movingFileOrigin[1])),
         };
+        updateCanvasPageDropTarget(event, true);
       }
 
       if (resizing !== -1) {
@@ -1976,10 +2674,27 @@
     }
 
     function handleMouseEnd(event: MouseEvent) {
+      finishCanvasGroupMove();
+
       if (moving !== -1) {
-        movingIsDone = true;
+        const movedId = moving;
         sendMove.cancel();
-        srocket?.send({ move: [moving, movingSize.pageId, movingSize] });
+        if (!movingDidMove) {
+          moving = -1;
+          focusCanvasItem(canvasItemKey("terminal", movedId));
+        } else if (canvasDropPageId !== null) {
+          const key = canvasItemKey("terminal", movedId);
+          const overrides = new Map<CanvasItemKey, [number, number]>([
+            [key, [movingStartSize.x, movingStartSize.y]],
+          ]);
+          moving = -1;
+          movingIsDone = false;
+          moveCanvasItemsToPage([key], canvasDropPageId, overrides);
+        } else {
+          movingIsDone = true;
+          srocket?.send({ move: [movedId, movingSize.pageId, movingSize] });
+        }
+        movingDidMove = false;
       }
 
       if (resizing !== -1) {
@@ -1995,15 +2710,28 @@
 
       if (movingNote !== -1) {
         const movedId = movingNote;
-        notes = notes.map(([id, note]) =>
-          id === movedId ? [id, movingNoteState] : [id, note],
-        );
-        srocket?.send({
-          updateNote: [movedId, movingNoteState.pageId, movingNoteState],
-        });
-        void tick().then(() => {
-          if (movingNote === movedId) movingNote = -1;
-        });
+        if (!movingNoteDidMove) {
+          movingNote = -1;
+          focusCanvasItem(canvasItemKey("note", movedId));
+        } else if (canvasDropPageId !== null) {
+          const key = canvasItemKey("note", movedId);
+          const overrides = new Map<CanvasItemKey, [number, number]>([
+            [key, [movingNoteStartState.x, movingNoteStartState.y]],
+          ]);
+          movingNote = -1;
+          moveCanvasItemsToPage([key], canvasDropPageId, overrides);
+        } else {
+          notes = notes.map(([id, note]) =>
+            id === movedId ? [id, movingNoteState] : [id, note],
+          );
+          srocket?.send({
+            updateNote: [movedId, movingNoteState.pageId, movingNoteState],
+          });
+          void tick().then(() => {
+            if (movingNote === movedId) movingNote = -1;
+          });
+        }
+        movingNoteDidMove = false;
       }
 
       if (resizingNote !== -1) {
@@ -2021,15 +2749,32 @@
 
       if (movingFile !== -1) {
         const movedId = movingFile;
-        fileWindows = fileWindows.map(([id, window]) =>
-          id === movedId ? [id, movingFileState] : [id, window],
-        );
-        srocket?.send({
-          updateFileWindow: [movedId, movingFileState.pageId, movingFileState],
-        });
-        void tick().then(() => {
-          if (movingFile === movedId) movingFile = -1;
-        });
+        if (!movingFileDidMove) {
+          movingFile = -1;
+          focusCanvasItem(canvasItemKey("file", movedId));
+        } else if (canvasDropPageId !== null) {
+          const key = canvasItemKey("file", movedId);
+          const overrides = new Map<CanvasItemKey, [number, number]>([
+            [key, [movingFileStartState.x, movingFileStartState.y]],
+          ]);
+          movingFile = -1;
+          moveCanvasItemsToPage([key], canvasDropPageId, overrides);
+        } else {
+          fileWindows = fileWindows.map(([id, window]) =>
+            id === movedId ? [id, movingFileState] : [id, window],
+          );
+          srocket?.send({
+            updateFileWindow: [
+              movedId,
+              movingFileState.pageId,
+              movingFileState,
+            ],
+          });
+          void tick().then(() => {
+            if (movingFile === movedId) movingFile = -1;
+          });
+        }
+        movingFileDidMove = false;
       }
 
       if (resizingFile !== -1) {
@@ -2052,6 +2797,27 @@
       if (event.type === "mouseleave") {
         sendCursor.cancel();
         srocket?.send({ setCursor: [activePageId, null] });
+      }
+      finishCanvasSelection();
+      if (
+        canvasGroupMove === null &&
+        moving === -1 &&
+        movingNote === -1 &&
+        movingFile === -1
+      ) {
+        canvasDropPageId = null;
+        canvasDropPreviewOffsets = {};
+      }
+      if (event.button === 2 && pendingCanvasContextMenu) {
+        if (suppressMarqueeContextMenu) {
+          suppressMarqueeContextMenu = false;
+        } else if (!touchZoom?.consumeContextMenuSuppression()) {
+          canvasContextMenuX = pendingCanvasContextMenu.x;
+          canvasContextMenuY = pendingCanvasContextMenu.y;
+          canvasContextPosition = pendingCanvasContextMenu.position;
+          canvasContextMenuOpen = true;
+        }
+        pendingCanvasContextMenu = null;
       }
     }
 
@@ -2076,6 +2842,7 @@
 
 <svelte:window
   on:mousedown|capture={handleWindowMouseDownCapture}
+  on:contextmenu|preventDefault={handlePageContextMenu}
   on:keydown={handleRelationshipKeydown}
   on:dragover|capture={handleParagraphDragOver}
   on:drop|capture={handleParagraphDrop}
@@ -2118,13 +2885,14 @@
     {daemonVersion}
     {pages}
     {activePageId}
-    on:create={handleCreate}
+    {canvasDropPageId}
+    on:create={() => handleCreate()}
     on:createSsh={(event) => handleCreateSsh(event.detail)}
     on:saveSshProfile={(event) =>
       srocket?.send({ upsertSshProfile: event.detail })}
     on:deleteSshProfile={(event) =>
       srocket?.send({ deleteSshProfile: event.detail })}
-    on:createNote={handleCreateNote}
+    on:createNote={() => handleCreateNote()}
     on:toggleChat={() => {
       showChat = !showChat;
       newMessages = false;
@@ -2147,6 +2915,32 @@
       })}
   />
 
+  <CanvasContextMenu
+    open={canvasContextMenuOpen}
+    x={canvasContextMenuX}
+    y={canvasContextMenuY}
+    {connected}
+    {hasWriteAccess}
+    profiles={sshProfiles}
+    on:close={() => (canvasContextMenuOpen = false)}
+    on:create={() => handleCreate(canvasContextPosition)}
+    on:createSsh={(event) =>
+      handleCreateSsh(event.detail, canvasContextPosition)}
+    on:saveSshProfile={(event) =>
+      srocket?.send({ upsertSshProfile: event.detail })}
+    on:deleteSshProfile={(event) =>
+      srocket?.send({ deleteSshProfile: event.detail })}
+    on:createNote={() => handleCreateNote(canvasContextPosition)}
+    on:search={() => {
+      settingsOpen = false;
+      searchOpen = true;
+    }}
+    on:settings={() => {
+      searchOpen = false;
+      settingsOpen = true;
+    }}
+  />
+
   <!--
     Dotted circle background appears underneath the rest of the elements, but
     moves and zooms with the fabric of the canvas.
@@ -2162,23 +2956,59 @@
   ></div>
 
   <div class="absolute inset-0 overflow-hidden touch-none" bind:this={fabricEl}>
+    {#if selectionMarquee?.moved}
+      {@const selectionRect = marqueeRect(
+        selectionMarquee.startX,
+        selectionMarquee.startY,
+        selectionMarquee.currentX,
+        selectionMarquee.currentY,
+      )}
+      <div
+        class="selection-marquee pointer-events-none absolute z-20"
+        style:left={`${selectionRect.left - selectionMarquee.canvasLeft}px`}
+        style:top={`${selectionRect.top - selectionMarquee.canvasTop}px`}
+        style:width={`${selectionRect.right - selectionRect.left}px`}
+        style:height={`${selectionRect.bottom - selectionRect.top}px`}
+        aria-hidden="true"
+      ></div>
+    {/if}
+
     {#each shells.filter(([, winsize]) => winsize.pageId === activePageId) as [id, winsize] (id)}
       {@const ws =
-        id === moving ? movingSize : id === resizing ? resizingSize : winsize}
+        groupTerminalStates[id] ??
+        (id === moving ? movingSize : id === resizing ? resizingSize : winsize)}
+      {@const terminalKey = canvasItemKey("terminal", id)}
+      {@const terminalDropOffset = canvasDropPreviewOffsets[terminalKey]}
       <div
         class="absolute"
         data-canvas-terminal={id}
+        class:canvas-active={focusedTerminalId === id}
+        class:canvas-selected={selectedCanvasItems.includes(terminalKey)}
+        class:canvas-page-drop-preview={terminalDropOffset !== undefined}
+        class:canvas-interacting={groupTerminalStates[id] !== undefined ||
+          moving === id ||
+          resizing === id}
         class:canvas-fullscreen={fullscreenItems[`terminal:${id}`]}
+        class:canvas-floating={terminalFloating[id]}
         style:left={OFFSET_LEFT_CSS}
         style:top={OFFSET_TOP_CSS}
         style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
+        style:--canvas-drop-x={terminalDropOffset
+          ? `${terminalDropOffset[0]}px`
+          : "0px"}
+        style:--canvas-drop-y={terminalDropOffset
+          ? `${terminalDropOffset[1]}px`
+          : "0px"}
         transition:fade|local
         use:slide={{
           x: ws.x,
           y: ws.y,
           center,
           zoom,
-          immediate: id === moving || id === resizing,
+          immediate:
+            groupTerminalStates[id] !== undefined ||
+            id === moving ||
+            id === resizing,
         }}
         bind:this={termWrappers[id]}
       >
@@ -2215,7 +3045,7 @@
           on:uploadImage={({ detail: file }) =>
             hasWriteAccess && queueImageUpload(id, ws.pageId, file)}
           on:close={() => srocket?.send({ close: [id, ws.pageId] })}
-          on:duplicate={() => handleDuplicate(id)}
+          on:duplicate={(event) => handleDuplicate(id, event.detail)}
           on:toggleFullscreen={() => toggleFullscreen("terminal", id)}
           on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
           on:unlinkNote={(event) =>
@@ -2236,6 +3066,11 @@
             srocket?.send({
               move: [id, ws.pageId, { ...ws, ...event.detail }],
             })}
+          on:floatingChange={(event) =>
+            (terminalFloating = {
+              ...terminalFloating,
+              [id]: event.detail,
+            })}
           on:title={(event) => {
             terminalTitles = { ...terminalTitles, [id]: event.detail };
           }}
@@ -2245,15 +3080,25 @@
             srocket?.send({ move: [id, ws.pageId, null] });
           }}
           on:startMove={({ detail: event }) => {
-            if (!hasWriteAccess || fullscreenItems[`terminal:${id}`]) return;
+            if (
+              event.button !== 0 ||
+              !hasWriteAccess ||
+              fullscreenItems[`terminal:${id}`]
+            )
+              return;
+            if (startCanvasGroupMove("terminal", id, event)) return;
             const startingSize = ws;
             const [x, y] = normalizePosition(event);
             movingOrigin = [x - startingSize.x, y - startingSize.y];
+            movingStartClient = [event.clientX, event.clientY];
+            movingDidMove = false;
+            movingStartSize = startingSize;
             movingSize = startingSize;
             movingIsDone = false;
             moving = id;
           }}
           on:focus={() => {
+            clearCanvasSelection();
             if (!hasWriteAccess) return;
             focusedTerminalId = id;
             focusedNoteId = null;
@@ -2281,6 +3126,8 @@
         <ResizeHandles
           disabled={!hasWriteAccess || fullscreenItems[`terminal:${id}`]}
           on:start={({ detail }) => {
+            pendingCanvasSelection = null;
+            clearCanvasSelection();
             const canvasEl = termElements[id].querySelector(".xterm-screen");
             if (canvasEl) {
               const screenRect = canvasEl.getBoundingClientRect();
@@ -2311,17 +3158,34 @@
 
     {#each notes.filter(([, note]) => note.pageId === activePageId) as [id, note] (id)}
       {@const displayNote =
-        id === movingNote
+        groupNoteStates[id] ??
+        (id === movingNote
           ? movingNoteState
           : id === resizingNote
             ? resizingNoteState
-            : note}
+            : note)}
+      {@const noteKey = canvasItemKey("note", id)}
+      {@const noteDropOffset = canvasDropPreviewOffsets[noteKey]}
       <div
         class="absolute"
+        data-canvas-note-wrapper={id}
+        class:canvas-active={focusedNoteId === id}
+        class:canvas-selected={selectedCanvasItems.includes(noteKey)}
+        class:canvas-page-drop-preview={noteDropOffset !== undefined}
+        class:canvas-interacting={groupNoteStates[id] !== undefined ||
+          movingNote === id ||
+          resizingNote === id}
         class:canvas-fullscreen={fullscreenItems[`note:${id}`]}
+        class:canvas-floating={noteFloating[id]}
         style:left={OFFSET_LEFT_CSS}
         style:top={OFFSET_TOP_CSS}
         style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
+        style:--canvas-drop-x={noteDropOffset
+          ? `${noteDropOffset[0]}px`
+          : "0px"}
+        style:--canvas-drop-y={noteDropOffset
+          ? `${noteDropOffset[1]}px`
+          : "0px"}
         style:opacity={displayNote.opacity / 100}
         transition:fade|local
         use:slide={{
@@ -2329,7 +3193,10 @@
           y: displayNote.y,
           center,
           zoom,
-          immediate: id === movingNote || id === resizingNote,
+          immediate:
+            groupNoteStates[id] !== undefined ||
+            id === movingNote ||
+            id === resizingNote,
         }}
         bind:this={noteWrappers[id]}
       >
@@ -2411,6 +3278,8 @@
             ? (paragraphDropTarget.noteInsertIndex ?? null)
             : null}
           on:toggleFullscreen={() => toggleFullscreen("note", id)}
+          on:floatingChange={(event) =>
+            (noteFloating = { ...noteFloating, [id]: event.detail })}
           on:toggleLink={() => toggleCanvasLinkSelection(id)}
           on:navigateRelation={(event) => navigateCanvasRelation(event.detail)}
           on:unlinkRelation={(event) => removeCanvasRelation(id, event.detail)}
@@ -2441,6 +3310,7 @@
             });
           }}
           on:focus={() => {
+            clearCanvasSelection();
             focusedNoteId = id;
             focusedTerminalId = null;
             focusedFileWindowId = null;
@@ -2452,14 +3322,20 @@
             srocket?.send({ updateNote: [id, note.pageId, null] })}
           on:startMove={({ detail: event }) => {
             if (fullscreenItems[`note:${id}`]) return;
+            if (startCanvasGroupMove("note", id, event)) return;
             const startingNote = displayNote;
             const [x, y] = normalizePosition(event);
             movingNoteOrigin = [x - startingNote.x, y - startingNote.y];
+            movingNoteStartClient = [event.clientX, event.clientY];
+            movingNoteDidMove = false;
+            movingNoteStartState = startingNote;
             movingNoteState = startingNote;
             movingNote = id;
           }}
           on:startResize={({ detail }) => {
             if (fullscreenItems[`note:${id}`]) return;
+            pendingCanvasSelection = null;
+            clearCanvasSelection();
             const startingNote = displayNote;
             resizingNoteStartPointer = normalizePosition(detail.event);
             resizingNoteStartState = startingNote;
@@ -2474,31 +3350,50 @@
 
     {#each fileWindows.filter(([, window]) => window.pageId === activePageId) as [id, fileWindow] (id)}
       {@const displayFileWindow =
-        id === movingFile
+        groupFileStates[id] ??
+        (id === movingFile
           ? movingFileState
           : id === resizingFile
             ? resizingFileState
-            : fileWindow}
+            : fileWindow)}
+      {@const fileKey = canvasItemKey("file", id)}
+      {@const fileDropOffset = canvasDropPreviewOffsets[fileKey]}
       <div
         class="absolute"
         data-canvas-file-window={id}
+        class:canvas-active={focusedFileWindowId === id}
+        class:canvas-selected={selectedCanvasItems.includes(fileKey)}
+        class:canvas-page-drop-preview={fileDropOffset !== undefined}
+        class:canvas-interacting={groupFileStates[id] !== undefined ||
+          movingFile === id ||
+          resizingFile === id}
         class:canvas-fullscreen={fullscreenItems[`file:${id}`]}
+        class:canvas-floating={fileFloating[id]}
         style:left={OFFSET_LEFT_CSS}
         style:top={OFFSET_TOP_CSS}
         style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
+        style:--canvas-drop-x={fileDropOffset
+          ? `${fileDropOffset[0]}px`
+          : "0px"}
+        style:--canvas-drop-y={fileDropOffset
+          ? `${fileDropOffset[1]}px`
+          : "0px"}
         transition:fade|local
         use:slide={{
           x: displayFileWindow.x,
           y: displayFileWindow.y,
           center,
           zoom,
-          immediate: id === movingFile || id === resizingFile,
+          immediate:
+            groupFileStates[id] !== undefined ||
+            id === movingFile ||
+            id === resizingFile,
         }}
         bind:this={fileWrappers[id]}
       >
         {#await loadFileExplorer()}
           <div
-            class="flex h-full w-full items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-sm text-zinc-500 shadow-lg shadow-black/45"
+            class="flex h-full w-full items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-sm text-zinc-500 shadow-sm shadow-black/20"
             style:width={`${displayFileWindow.width}px`}
             style:height={`${displayFileWindow.height}px`}
           >
@@ -2508,6 +3403,7 @@
           <svelte:component
             this={fileExplorerModule.default}
             title={displayFileWindow.title}
+            background={displayFileWindow.background}
             initialPath={displayFileWindow.path}
             currentPath={displayFileWindow.currentPath}
             expandedPaths={displayFileWindow.expandedPaths}
@@ -2524,6 +3420,7 @@
             height={displayFileWindow.height}
             sidebarWidth={displayFileWindow.sidebarWidth}
             treeRevision={displayFileWindow.treeRevision}
+            online={sessionReady}
             linkedNotes={notes
               .filter(([, note]) => note.linkedFileWindowIds.includes(id))
               .map(([noteId, note]) => ({
@@ -2552,7 +3449,9 @@
             request={(request) =>
               requestFileOperation(
                 displayFileWindow.shellId,
-                displayFileWindow.pageId,
+                shells.find(
+                  ([shellId]) => shellId === displayFileWindow.shellId,
+                )?.[1].pageId ?? displayFileWindow.pageId,
                 request,
               )}
             on:close={() =>
@@ -2561,11 +3460,14 @@
                 closeFileWindow: [id, fileWindow.pageId],
               })}
             on:toggleFullscreen={() => toggleFullscreen("file", id)}
+            on:floatingChange={(event) =>
+              (fileFloating = { ...fileFloating, [id]: event.detail })}
             on:openTerminal={(event) =>
               handleCreateAt(
                 displayFileWindow.shellId,
                 displayFileWindow.pageId,
                 event.detail,
+                displayFileWindow,
               )}
             on:navigateNote={(event) => navigateCanvasRelation(event.detail)}
             on:unlinkNote={(event) =>
@@ -2575,6 +3477,7 @@
                 label: fileWindowTitle(id, displayFileWindow),
               })}
             on:focus={() => {
+              clearCanvasSelection();
               focusedFileWindowId = id;
               focusedTerminalId = null;
               focusedNoteId = null;
@@ -2586,19 +3489,22 @@
               bringFileWindowToFront(id, fileWindow.pageId)}
             on:startMove={({ detail: event }) => {
               if (!hasWriteAccess || fullscreenItems[`file:${id}`]) return;
+              if (startCanvasGroupMove("file", id, event)) return;
               const [x, y] = normalizePosition(event);
               movingFileOrigin = [
                 x - displayFileWindow.x,
                 y - displayFileWindow.y,
               ];
+              movingFileStartClient = [event.clientX, event.clientY];
+              movingFileDidMove = false;
+              movingFileStartState = displayFileWindow;
               movingFileState = displayFileWindow;
-              bringFileWindowToFront(id, fileWindow.pageId);
               movingFile = id;
             }}
           />
         {:catch error}
           <div
-            class="flex h-full w-full items-center justify-center rounded-xl border border-red-900/70 bg-zinc-950 p-6 text-center text-sm text-red-300 shadow-lg shadow-black/45"
+            class="flex h-full w-full items-center justify-center rounded-xl border border-red-900/70 bg-zinc-950 p-6 text-center text-sm text-red-300 shadow-sm shadow-black/20"
             style:width={`${displayFileWindow.width}px`}
             style:height={`${displayFileWindow.height}px`}
             role="alert"
@@ -2611,6 +3517,8 @@
         <ResizeHandles
           disabled={!hasWriteAccess || fullscreenItems[`file:${id}`]}
           on:start={({ detail }) => {
+            pendingCanvasSelection = null;
+            clearCanvasSelection();
             resizingFileStartPointer = normalizePosition(detail.event);
             resizingFileStartState = displayFileWindow;
             resizingFileState = displayFileWindow;
@@ -2643,6 +3551,45 @@
 </main>
 
 <style>
+  :global(.canvas-active) {
+    z-index: 1;
+  }
+  :global(.canvas-interacting) {
+    z-index: 2;
+  }
+  :global([data-canvas-terminal].canvas-selected > .term-container),
+  :global([data-canvas-note-wrapper].canvas-selected > .note-container),
+  :global([data-canvas-file-window].canvas-selected > .file-window) {
+    border-color: rgb(254 240 138 / 1);
+    animation: canvas-selection-pulse 1.15s ease-in-out infinite;
+  }
+  :global([data-canvas-terminal] > .term-container),
+  :global([data-canvas-note-wrapper] > .note-container),
+  :global([data-canvas-file-window] > .file-window) {
+    transition:
+      transform 190ms ease-out,
+      opacity 150ms ease-out;
+  }
+  :global([data-canvas-terminal].canvas-page-drop-preview > .term-container),
+  :global(
+    [data-canvas-note-wrapper].canvas-page-drop-preview > .note-container
+  ),
+  :global([data-canvas-file-window].canvas-page-drop-preview > .file-window) {
+    pointer-events: none;
+    opacity: 0.06;
+    transform: translate(var(--canvas-drop-x, 0px), var(--canvas-drop-y, 0px))
+      scale(0.08);
+    transform-origin: center;
+    transition:
+      transform 190ms ease-in,
+      opacity 150ms ease-in;
+    will-change: transform, opacity;
+  }
+  .selection-marquee {
+    border: 1px solid rgb(212 212 216 / 0.72);
+    border-radius: 0;
+    background: rgb(113 113 122 / 0.12);
+  }
   :global(.canvas-fullscreen) {
     position: fixed !important;
     left: 24px !important;
@@ -2651,5 +3598,37 @@
     bottom: 68px !important;
     z-index: 35 !important;
     transform: none !important;
+  }
+  :global(.canvas-floating) {
+    z-index: 45 !important;
+  }
+
+  @keyframes canvas-selection-pulse {
+    0%,
+    100% {
+      border-color: rgb(253 224 71 / 0.8);
+      box-shadow: 0 0 4px rgb(253 224 71 / 0.3);
+    }
+    50% {
+      border-color: rgb(254 249 195 / 1);
+      box-shadow: 0 0 8px rgb(254 240 138 / 0.72);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global([data-canvas-terminal].canvas-selected > .term-container),
+    :global([data-canvas-note-wrapper].canvas-selected > .note-container),
+    :global([data-canvas-file-window].canvas-selected > .file-window) {
+      animation: none;
+    }
+    :global([data-canvas-terminal].canvas-page-drop-preview > .term-container),
+    :global(
+      [data-canvas-note-wrapper].canvas-page-drop-preview > .note-container
+    ),
+    :global([data-canvas-file-window].canvas-page-drop-preview > .file-window) {
+      opacity: 0.3;
+      transform: none;
+      transition: none;
+    }
   }
 </style>

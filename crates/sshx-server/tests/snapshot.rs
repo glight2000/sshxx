@@ -56,6 +56,7 @@ async fn test_basic_restore() -> Result<()> {
         linked_shell_ids: vec![Sid(1)],
         linked_note_ids: Vec::new(),
         linked_file_window_ids: vec![Sid(3)],
+        title: "Release checklist".into(),
         background: "#654321".into(),
         opacity: 65,
         page_id,

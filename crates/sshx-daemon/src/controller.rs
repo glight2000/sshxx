@@ -6,17 +6,19 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use sshx_core::proto::{
     client_update::ClientMessage, server_update::ServerMessage,
     sshx_service_client::SshxServiceClient, ClientUpdate, CloseRequest, FileResponse, NewShell,
     OpenRequest, WorkspacePage, WorkspaceState,
 };
-use sshx_core::{rand_alphanumeric, Sid, WORKSPACE_FORMAT_VERSION};
+use sshx_core::{rand_alphanumeric, Sid, MAX_GRPC_MESSAGE_BYTES, WORKSPACE_FORMAT_VERSION};
 use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task;
 use tokio::time::{self, Duration, Instant, MissedTickBehavior};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::transport::Channel;
+use tonic::{Code, Status};
 use tracing::{debug, error, warn};
 
 use crate::encrypt::Encrypt;
@@ -65,6 +67,9 @@ pub struct Controller {
     runner: Runner,
     encrypt: Encrypt,
     encryption_key: String,
+    display_name: String,
+    write_password: Option<String>,
+    write_password_hash: Option<Bytes>,
 
     name: String,
     token: String,
@@ -250,7 +255,7 @@ impl Controller {
             origin: origin.into(),
             encrypted_zeros: encrypt.zeros().into(),
             name: name.into(),
-            write_password_hash,
+            write_password_hash: write_password_hash.clone(),
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             workspace: workspace_state.clone(),
             ssh_profiles: ssh_profile_state,
@@ -258,11 +263,9 @@ impl Controller {
         let mut resp = client.open(req).await?.into_inner();
         resp.url = resp.url + "#" + &encryption_key;
 
-        let write_url = if let Some(write_password) = write_password {
-            Some(resp.url.clone() + "," + &write_password)
-        } else {
-            None
-        };
+        let write_url = write_password
+            .as_ref()
+            .map(|write_password| resp.url.clone() + "," + write_password);
 
         let (output_tx, output_rx) = mpsc::channel(64);
         let workspace_tx = workspace_path.as_ref().map(|path| {
@@ -285,6 +288,9 @@ impl Controller {
             runner,
             encrypt,
             encryption_key,
+            display_name: name.into(),
+            write_password,
+            write_password_hash,
             name: resp.name,
             token: resp.token,
             url: resp.url,
@@ -308,7 +314,13 @@ impl Controller {
     /// gracefully shutting down, which means connected clients need to start a
     /// new TCP handshake.
     async fn connect(origin: &str) -> Result<SshxServiceClient<Channel>, tonic::transport::Error> {
-        SshxServiceClient::connect(String::from(origin)).await
+        SshxServiceClient::connect(String::from(origin))
+            .await
+            .map(|client| {
+                client
+                    .max_decoding_message_size(MAX_GRPC_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_GRPC_MESSAGE_BYTES)
+            })
     }
 
     /// Returns the name of the session.
@@ -337,6 +349,19 @@ impl Controller {
         let mut retries = 0;
         loop {
             if let Err(err) = self.try_channel().await {
+                if is_session_not_found(&err) {
+                    warn!(session = %self.name, "server session was lost; reopening from daemon state");
+                    match self.reopen_session().await {
+                        Ok(()) => {
+                            retries = 0;
+                            last_retry = Instant::now();
+                            continue;
+                        }
+                        Err(reopen_err) => {
+                            error!(%reopen_err, "failed to reopen missing server session");
+                        }
+                    }
+                }
                 if last_retry.elapsed() >= Duration::from_secs(10) {
                     retries = 0;
                 }
@@ -347,6 +372,49 @@ impl Controller {
             }
             last_retry = Instant::now();
         }
+    }
+
+    /// Recreate a server-side session that disappeared while retaining the
+    /// daemon-owned workspace, encryption identity, and write capability.
+    async fn reopen_session(&mut self) -> Result<()> {
+        let workspace = self
+            .workspace_tx
+            .as_ref()
+            .map(|workspace| workspace.borrow().clone());
+        let ssh_profiles = match (&self.ssh_profiles_path, &self.ssh_profiles_encrypt) {
+            (Some(path), Some(encrypt)) => match ssh_profiles::load(path, encrypt).await {
+                Ok(profiles) => profiles,
+                Err(err) => {
+                    warn!(?err, path = %path.display(), "could not reload SSH profiles while reopening session");
+                    None
+                }
+            },
+            _ => None,
+        };
+        let request = OpenRequest {
+            origin: self.origin.clone(),
+            encrypted_zeros: self.encrypt.zeros().into(),
+            name: self.display_name.clone(),
+            write_password_hash: self.write_password_hash.clone(),
+            daemon_version: env!("CARGO_PKG_VERSION").into(),
+            workspace,
+            ssh_profiles,
+        };
+        let mut client = Self::connect(&self.origin).await?;
+        let response = client.open(request).await?.into_inner();
+        let previous_name = std::mem::replace(&mut self.name, response.name);
+        self.token = response.token;
+        self.url = format!("{}#{}", response.url, self.encryption_key);
+        self.write_url = self
+            .write_password
+            .as_ref()
+            .map(|password| format!("{},{}", self.url, password));
+        warn!(
+            previous_session = %previous_name,
+            session = %self.name,
+            "reopened missing server session"
+        );
+        Ok(())
     }
 
     /// Helper function used by `run()` that can return errors.
@@ -461,40 +529,36 @@ impl Controller {
                         .context("invalid file request");
                     let sender = self.shells_tx.get(&id).cloned();
                     let remote_profile = self.remote_profiles.get(&id).cloned();
-                    let working_directory = if remote_profile.is_some() {
-                        None
-                    } else if let Some(sender) = sender.as_ref() {
-                        let (working_tx, working_rx) = oneshot::channel();
-                        if sender
-                            .send(ShellData::WorkingDirectory(working_tx))
-                            .await
-                            .is_ok()
-                        {
-                            working_rx.await.ok().flatten()
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
                     let output_tx = self.output_tx.clone();
                     let encrypt = self.encrypt.clone();
                     let limiter = Arc::clone(&self.file_tasks);
                     task::spawn(async move {
                         let response = match (request, sender) {
-                            (Ok(request), Some(_)) => {
+                            (Ok(request), Some(sender)) => {
                                 let operation = match limiter.acquire_owned().await {
-                                    Ok(_permit) => tokio::time::timeout(
-                                        Duration::from_secs(30),
-                                        crate::file_browser::execute(
-                                            &request,
-                                            working_directory,
-                                            remote_profile.as_ref(),
-                                        ),
-                                    )
-                                    .await
-                                    .map_err(|_| anyhow::anyhow!("filesystem operation timed out"))
-                                    .and_then(|result| result),
+                                    Ok(_permit) => {
+                                        tokio::time::timeout(Duration::from_secs(30), async {
+                                            // Resolving a local terminal's current directory can wait
+                                            // behind PTY output backpressure. Keep it outside the
+                                            // controller loop so heartbeats and reconnects continue.
+                                            let working_directory = if remote_profile.is_some() {
+                                                None
+                                            } else {
+                                                request_working_directory(&sender).await
+                                            };
+                                            crate::file_browser::execute(
+                                                &request,
+                                                working_directory,
+                                                remote_profile.as_ref(),
+                                            )
+                                            .await
+                                        })
+                                        .await
+                                        .map_err(|_| {
+                                            anyhow::anyhow!("filesystem operation timed out")
+                                        })
+                                        .and_then(|result| result)
+                                    }
                                     Err(_) => Err(anyhow::anyhow!(
                                         "filesystem operations are unavailable"
                                     )),
@@ -534,6 +598,8 @@ impl Controller {
                     });
                 }
                 ServerMessage::CreateShell(new_shell) => {
+                    let new_shell = *new_shell;
+                    let restored_shell = Box::new(new_shell.clone());
                     let id = Sid(new_shell.id);
                     let center = (new_shell.x, new_shell.y);
                     let page_id = new_shell.page_id.max(1);
@@ -554,32 +620,44 @@ impl Controller {
                         .filter(|value| *value == 0 || (160..=4_000).contains(value))
                         .unwrap_or(0);
                     let source_id = new_shell.source_id.map(Sid);
+                    // File-browser and duplicate actions carry a source ID and
+                    // must honor this request rather than reattach an orphaned
+                    // host entry left behind by a previous server generation.
+                    let reattach_existing = source_id.is_none();
+                    let ssh_profile_id = new_shell.ssh_profile_id.clone();
                     let explicit_working_directory = (!new_shell.working_directory.is_empty())
                         .then(|| PathBuf::from(new_shell.working_directory));
-                    // CloneWindowed has a source without an explicit path. CreateAt also
-                    // has a source, but opens a directory and must start with fresh history.
-                    let copies_source_history =
-                        source_id.is_some() && explicit_working_directory.is_none();
-                    let ssh_profile = new_shell.ssh_profile.or_else(|| {
-                        source_id
-                            .and_then(|source_id| self.remote_profiles.get(&source_id).cloned())
-                    });
+                    // Duplication explicitly requests a history snapshot. CreateAt
+                    // also has a source and path but intentionally starts fresh.
+                    let copies_source_history = new_shell.copy_history && source_id.is_some();
+                    // Prefer the live source terminal's connection snapshot so an
+                    // edited profile cannot redirect a file-browser action to a
+                    // different host. The explicit profile restores this mapping
+                    // after a daemon restart.
+                    let ssh_profile = source_id
+                        .and_then(|source_id| self.remote_profiles.get(&source_id).cloned())
+                        .or(new_shell.ssh_profile);
                     let remote_profile = ssh_profile.clone();
-                    let is_remote = ssh_profile.is_some();
                     let theme = new_shell.theme;
                     let background = new_shell.background;
                     if !self.shells_tx.contains_key(&id) {
+                        if !ssh_profile_id.is_empty() && ssh_profile.is_none() {
+                            send_msg(
+                                &tx,
+                                ClientMessage::Error(format!(
+                                    "SSH connection {ssh_profile_id} is no longer available"
+                                )),
+                            )
+                            .await?;
+                            send_msg(&tx, ClientMessage::ClosedShell(id.0)).await?;
+                            continue;
+                        }
                         let working_directory = if explicit_working_directory.is_some() {
                             explicit_working_directory
                         } else if ssh_profile.is_none() {
                             if let Some(source_id) = source_id {
                                 if let Some(sender) = self.shells_tx.get(&source_id).cloned() {
-                                    let (tx, rx) = oneshot::channel();
-                                    if sender.send(ShellData::WorkingDirectory(tx)).await.is_ok() {
-                                        rx.await.ok().flatten()
-                                    } else {
-                                        None
-                                    }
+                                    request_working_directory(&sender).await
                                 } else {
                                     None
                                 }
@@ -589,7 +667,7 @@ impl Controller {
                         } else {
                             None
                         };
-                        if !is_remote && copies_source_history {
+                        if copies_source_history {
                             if let Some(source_id) = source_id {
                                 match self.runner.clone_history(source_id, id).await {
                                     Ok(true) => debug!(%source_id, %id, "copied terminal history"),
@@ -609,6 +687,8 @@ impl Controller {
                             ShellOptions {
                                 working_directory,
                                 ssh_profile,
+                                ssh_profile_id: ssh_profile_id.clone(),
+                                reattach_existing,
                                 rows,
                                 cols,
                                 theme,
@@ -617,13 +697,12 @@ impl Controller {
                                 height,
                             },
                         );
-                        if is_remote {
-                            if let Some(profile) = remote_profile {
-                                self.remote_profiles.insert(id, profile);
-                            }
-                        }
                     } else {
-                        warn!(%id, "server asked to create duplicate shell");
+                        debug!(%id, "reattaching existing terminal to restored server session");
+                        send_msg(&tx, ClientMessage::CreatedShell(restored_shell)).await?;
+                    }
+                    if let Some(profile) = remote_profile {
+                        self.remote_profiles.insert(id, profile);
                     }
                 }
                 ServerMessage::CloseShell(id) => {
@@ -720,6 +799,7 @@ impl Controller {
                 rows: rows.into(),
                 cols: cols.into(),
                 ssh_profile: None,
+                ssh_profile_id: options.ssh_profile_id.clone(),
                 theme,
                 width: width.into(),
                 height: height.into(),
@@ -729,6 +809,7 @@ impl Controller {
                     .as_ref()
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_default(),
+                copy_history: false,
             };
             if let Err(err) = output_tx
                 .send(ClientMessage::CreatedShell(Box::new(new_shell)))
@@ -763,6 +844,27 @@ impl Controller {
         client.close(req).await?;
         Ok(())
     }
+}
+
+async fn request_working_directory(sender: &mpsc::Sender<ShellData>) -> Option<PathBuf> {
+    let (working_tx, working_rx) = oneshot::channel();
+    sender
+        .send(ShellData::WorkingDirectory(working_tx))
+        .await
+        .ok()?;
+    time::timeout(Duration::from_secs(2), working_rx)
+        .await
+        .ok()?
+        .ok()
+        .flatten()
+}
+
+fn is_session_not_found(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<Status>()
+            .is_some_and(|status| status.code() == Code::NotFound)
+    })
 }
 
 /// Attempt to send a client message over an update channel.

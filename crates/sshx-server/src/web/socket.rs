@@ -28,6 +28,23 @@ const IMAGE_UPLOAD_CHUNK_BYTES: usize = 64 << 10;
 const IMAGE_UPLOAD_MAX_BYTES: u64 = 20 << 20;
 const FILE_REQUEST_MAX_BYTES: usize = 12 << 20;
 
+fn create_shell(message: NewShell) -> ServerMessage {
+    ServerMessage::CreateShell(Box::new(message))
+}
+
+fn same_ssh_host(initial: &str, current: &str) -> bool {
+    initial
+        .trim()
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case(
+            current
+                .trim()
+                .trim_matches(['[', ']'])
+                .trim_end_matches('.'),
+        )
+}
+
 fn valid_file_request(
     request_id: &str,
     request_stream: u64,
@@ -315,10 +332,10 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     theme: String::new(),
                     background: String::new(),
                     working_directory: String::new(),
+                    ssh_profile_id: String::new(),
+                    copy_history: false,
                 };
-                update_tx
-                    .send(ServerMessage::CreateShell(new_shell))
-                    .await?;
+                update_tx.send(create_shell(new_shell)).await?;
             }
             WsClient::CreateSized(x, y, rows, cols, page_id) => {
                 if let Err(e) = session.check_write_permission(user_id) {
@@ -347,7 +364,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 let id = session.counter().next_sid();
                 session.sync_now();
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -361,6 +378,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme: String::new(),
                         background: String::new(),
                         working_directory: String::new(),
+                        ssh_profile_id: String::new(),
+                        copy_history: false,
                     }))
                     .await?;
             }
@@ -393,7 +412,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 let id = session.counter().next_sid();
                 session.sync_now();
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -407,6 +426,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme,
                         background: String::new(),
                         working_directory: String::new(),
+                        ssh_profile_id: String::new(),
+                        copy_history: false,
                     }))
                     .await?;
             }
@@ -441,7 +462,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 let id = session.counter().next_sid();
                 session.sync_now();
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -455,6 +476,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         height: height.into(),
                         background: String::new(),
                         working_directory: String::new(),
+                        ssh_profile_id: String::new(),
+                        copy_history: false,
                     }))
                     .await?;
             }
@@ -498,7 +521,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     String::new()
                 };
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -512,6 +535,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme,
                         background,
                         working_directory: String::new(),
+                        ssh_profile_id: profile_id,
+                        copy_history: false,
                     }))
                     .await?;
             }
@@ -561,7 +586,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     String::new()
                 };
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -575,6 +600,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme,
                         background,
                         working_directory: String::new(),
+                        ssh_profile_id: profile_id,
+                        copy_history: false,
                     }))
                     .await?;
             }
@@ -636,7 +663,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     String::new()
                 };
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -650,6 +677,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         height: height.into(),
                         background,
                         working_directory: String::new(),
+                        ssh_profile_id: profile_id,
+                        copy_history: false,
                     }))
                     .await?;
             }
@@ -690,10 +719,10 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     theme: String::new(),
                     background: String::new(),
                     working_directory: String::new(),
+                    ssh_profile_id: session.shell_ssh_profile_id(source_id).unwrap_or_default(),
+                    copy_history: true,
                 };
-                update_tx
-                    .send(ServerMessage::CreateShell(new_shell))
-                    .await?;
+                update_tx.send(create_shell(new_shell)).await?;
             }
             WsClient::CloneSized(source_id, x, y, rows, cols, page_id) => {
                 if let Err(e) = session.check_write_permission(user_id) {
@@ -726,7 +755,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 let id = session.counter().next_sid();
                 session.sync_now();
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -740,6 +769,8 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme: String::new(),
                         background: String::new(),
                         working_directory: String::new(),
+                        ssh_profile_id: session.shell_ssh_profile_id(source_id).unwrap_or_default(),
+                        copy_history: true,
                     }))
                     .await?;
             }
@@ -776,7 +807,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 let id = session.counter().next_sid();
                 session.sync_now();
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -790,10 +821,79 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         theme,
                         background: String::new(),
                         working_directory: String::new(),
+                        ssh_profile_id: session.shell_ssh_profile_id(source_id).unwrap_or_default(),
+                        copy_history: true,
                     }))
                     .await?;
             }
-            WsClient::CloneWindowed(source_id, x, y, width, height, rows, cols, page_id, theme) => {
+            clone_message @ (WsClient::CloneWindowed(..) | WsClient::CloneWindowedAt(..)) => {
+                let (
+                    source_id,
+                    working_directory,
+                    working_directory_host,
+                    initial_working_directory_host,
+                    x,
+                    y,
+                    width,
+                    height,
+                    rows,
+                    cols,
+                    page_id,
+                    theme,
+                ) = match clone_message {
+                    WsClient::CloneWindowed(
+                        source_id,
+                        x,
+                        y,
+                        width,
+                        height,
+                        rows,
+                        cols,
+                        page_id,
+                        theme,
+                    ) => (
+                        source_id,
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        x,
+                        y,
+                        width,
+                        height,
+                        rows,
+                        cols,
+                        page_id,
+                        theme,
+                    ),
+                    WsClient::CloneWindowedAt(
+                        source_id,
+                        working_directory,
+                        working_directory_host,
+                        initial_working_directory_host,
+                        x,
+                        y,
+                        width,
+                        height,
+                        rows,
+                        cols,
+                        page_id,
+                        theme,
+                    ) => (
+                        source_id,
+                        working_directory,
+                        working_directory_host,
+                        initial_working_directory_host,
+                        x,
+                        y,
+                        width,
+                        height,
+                        rows,
+                        cols,
+                        page_id,
+                        theme,
+                    ),
+                    _ => unreachable!(),
+                };
                 if let Err(e) = session.check_write_permission(user_id) {
                     send(socket, WsServer::Error(e.to_string())).await?;
                     continue;
@@ -813,6 +913,12 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     || !(32..=500).contains(&cols)
                     || theme.len() > 100
                     || theme.chars().any(char::is_control)
+                    || working_directory.len() > 16_384
+                    || working_directory.chars().any(char::is_control)
+                    || working_directory_host.len() > 1_024
+                    || working_directory_host.chars().any(char::is_control)
+                    || initial_working_directory_host.len() > 1_024
+                    || initial_working_directory_host.chars().any(char::is_control)
                 {
                     send(
                         socket,
@@ -825,10 +931,40 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     send(socket, WsServer::Error(err.to_string())).await?;
                     continue;
                 }
+                let ssh_profile_id = session.shell_ssh_profile_id(source_id).unwrap_or_default();
+                let working_directory = if ssh_profile_id.is_empty() || working_directory.is_empty()
+                {
+                    String::new()
+                } else {
+                    match session.ssh_profile(&ssh_profile_id) {
+                        Ok(_)
+                            if same_ssh_host(
+                                &initial_working_directory_host,
+                                &working_directory_host,
+                            ) =>
+                        {
+                            working_directory
+                        }
+                        // A changed OSC 7 host indicates a manually nested SSH
+                        // session. Reusing its path on the first hop would be
+                        // incorrect, so fall back to that host's home.
+                        Ok(_) => String::new(),
+                        Err(error) => {
+                            send(
+                                socket,
+                                WsServer::Error(format!(
+                                    "Cannot duplicate this SSH connection: {error}"
+                                )),
+                            )
+                            .await?;
+                            continue;
+                        }
+                    }
+                };
                 let id = session.counter().next_sid();
                 session.sync_now();
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -841,7 +977,9 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         width: width.into(),
                         height: height.into(),
                         background: String::new(),
-                        working_directory: String::new(),
+                        working_directory,
+                        ssh_profile_id,
+                        copy_history: true,
                     }))
                     .await?;
             }
@@ -870,7 +1008,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     continue;
                 }
                 if !session.page_exists(page_id)
-                    || session.check_shell_page(source_id, page_id).is_err()
+                    || session.check_shell_exists(source_id).is_err()
                     || !(240..=4_000).contains(&width)
                     || !(160..=4_000).contains(&height)
                     || !(8..=500).contains(&rows)
@@ -888,10 +1026,28 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     .await?;
                     continue;
                 }
+                let ssh_profile_id = session.shell_ssh_profile_id(source_id).unwrap_or_default();
+                let ssh_profile = if ssh_profile_id.is_empty() {
+                    None
+                } else {
+                    match session.ssh_profile(&ssh_profile_id) {
+                        Ok(profile) => Some(profile),
+                        Err(error) => {
+                            send(
+                                socket,
+                                WsServer::Error(format!(
+                                    "Cannot open a terminal for this SSH connection: {error}"
+                                )),
+                            )
+                            .await?;
+                            continue;
+                        }
+                    }
+                };
                 let id = session.counter().next_sid();
                 session.sync_now();
                 update_tx
-                    .send(ServerMessage::CreateShell(NewShell {
+                    .send(create_shell(NewShell {
                         id: id.0,
                         x,
                         y,
@@ -901,10 +1057,12 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         cols: cols.into(),
                         width: width.into(),
                         height: height.into(),
-                        ssh_profile: None,
+                        ssh_profile,
                         theme,
                         background: String::new(),
                         working_directory,
+                        ssh_profile_id,
+                        copy_history: false,
                     }))
                     .await?;
             }
@@ -935,6 +1093,27 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         cols: winsize.cols as u32,
                     });
                     session.update_tx().send(msg).await?;
+                }
+            }
+            WsClient::MoveCanvasItems(
+                source_page_id,
+                target_page_id,
+                terminals,
+                notes,
+                file_windows,
+            ) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if let Err(error) = session.move_canvas_items(
+                    source_page_id,
+                    target_page_id,
+                    terminals,
+                    notes,
+                    file_windows,
+                ) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
                 }
             }
             WsClient::CreateNote(x, y, page_id) => {
@@ -1290,7 +1469,60 @@ async fn proxy_redirect(socket: &mut WebSocket, host: &str, name: &str) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::valid_image_upload;
+    use sshx_core::Sid;
+
+    use crate::web::protocol::WsClient;
+
+    use super::{same_ssh_host, valid_image_upload};
+
+    #[test]
+    fn matches_only_the_configured_ssh_host_for_clone_paths() {
+        assert!(same_ssh_host("Build.Example.Test.", "build.example.test"));
+        assert!(same_ssh_host("[2001:db8::1]", "2001:db8::1"));
+        assert!(!same_ssh_host("jump.example.test", "target.example.test"));
+    }
+
+    #[test]
+    fn accepts_legacy_and_location_aware_clone_messages() {
+        let round_trip = |message: &WsClient| {
+            let mut encoded = Vec::new();
+            ciborium::into_writer(message, &mut encoded).expect("clone message should encode");
+            ciborium::from_reader::<WsClient, _>(encoded.as_slice())
+                .expect("clone message should decode")
+        };
+        let legacy = round_trip(&WsClient::CloneWindowed(
+            Sid(7),
+            10,
+            20,
+            700,
+            500,
+            24,
+            80,
+            1,
+            "Tokyo Night".into(),
+        ));
+        assert!(matches!(legacy, WsClient::CloneWindowed(Sid(7), ..)));
+
+        let current = round_trip(&WsClient::CloneWindowedAt(
+            Sid(7),
+            "/work".into(),
+            "host.example".into(),
+            "host.example".into(),
+            10,
+            20,
+            700,
+            500,
+            24,
+            80,
+            1,
+            "Tokyo Night".into(),
+        ));
+        assert!(matches!(
+            current,
+            WsClient::CloneWindowedAt(Sid(7), path, host, ..)
+                if path == "/work" && host == "host.example"
+        ));
+    }
 
     #[test]
     fn validates_image_upload_boundaries() {

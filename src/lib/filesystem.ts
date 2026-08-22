@@ -46,6 +46,15 @@ export function ancestorPaths(rootPath: string, targetPath: string) {
   return paths;
 }
 
+export function revealDirectoryPaths(expandedPaths: string[], path: string) {
+  const result = [...expandedPaths];
+  for (const ancestor of ancestorPaths(filesystemRoot(path), path)) {
+    if (!result.some((candidate) => samePath(candidate, ancestor)))
+      result.push(ancestor);
+  }
+  return result;
+}
+
 export function isPathInside(rootPath: string, path: string) {
   const root = normalizedPath(rootPath);
   const candidate = normalizedPath(path);
@@ -107,14 +116,29 @@ export function safeUploadPath(path: string) {
 export function previewType(filename: string): FilePreviewKind {
   const extension = filename.split(".").at(-1)?.toLowerCase();
   if (
-    ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"].includes(
+    [
+      "png",
+      "apng",
+      "jpg",
+      "jpeg",
+      "jfif",
+      "gif",
+      "webp",
+      "avif",
+      "bmp",
+      "svg",
+      "ico",
+    ].includes(extension ?? "")
+  )
+    return "image";
+  if (
+    ["mp3", "wav", "ogg", "oga", "opus", "flac", "aac", "m4a", "weba"].includes(
       extension ?? "",
     )
   )
-    return "image";
-  if (["mp3", "wav", "ogg", "flac", "m4a"].includes(extension ?? ""))
     return "audio";
-  if (["mp4", "webm", "mov"].includes(extension ?? "")) return "video";
+  if (["mp4", "m4v", "webm", "mov", "ogv"].includes(extension ?? ""))
+    return "video";
   if (extension === "pdf") return "pdf";
   return "binary";
 }
@@ -124,20 +148,30 @@ export function mimeType(filename: string) {
   return (
     {
       png: "image/png",
+      apng: "image/apng",
       jpg: "image/jpeg",
       jpeg: "image/jpeg",
+      jfif: "image/jpeg",
       gif: "image/gif",
       webp: "image/webp",
+      avif: "image/avif",
+      bmp: "image/bmp",
       svg: "image/svg+xml",
       ico: "image/x-icon",
       mp3: "audio/mpeg",
       wav: "audio/wav",
       ogg: "audio/ogg",
+      oga: "audio/ogg",
+      opus: "audio/ogg; codecs=opus",
       flac: "audio/flac",
+      aac: "audio/aac",
       m4a: "audio/mp4",
+      weba: "audio/webm",
       mp4: "video/mp4",
+      m4v: "video/mp4",
       webm: "video/webm",
       mov: "video/quicktime",
+      ogv: "video/ogg",
       pdf: "application/pdf",
     }[extension ?? ""] ?? "application/octet-stream"
   );

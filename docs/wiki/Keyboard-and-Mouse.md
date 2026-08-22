@@ -2,17 +2,41 @@
 
 ## Canvas
 
-- Drag empty canvas space to pan.
+- Left-drag empty canvas space to draw a selection marquee. Any terminal, note,
+  or file window touched by the changing marquee becomes selected immediately;
+  leaving the marquee removes it from the selection immediately.
+- Right-drag empty canvas space to pan. A right-click without movement opens the
+  canvas action menu and does not change the current selection.
+- The browser-local **Canvas mouse buttons** setting can exchange the two
+  blank-canvas drag gestures: right-drag selects and left-drag pans. A
+  stationary right-click still opens the canvas action menu; a completed
+  right-drag does not.
 - Middle-button drag always pans, even when the pointer is over a window.
-- `Ctrl` + wheel always zooms the canvas and suppresses browser zoom.
+- `Ctrl` + wheel always zooms the canvas and suppresses browser zoom. Wheel zoom
+  uses the faster canvas step; it does not change browser page scale.
 - Plain wheel is routed to a hovered terminal, note, menu, tree, directory grid,
   or editor. Outside windows, it zooms when no canvas item is active.
 - When a component is full-screen, canvas pan/zoom is disabled. Clicking the
   visible space outside the component exits full-screen.
+- Double-click a page name in the bottom pager to rename it inline; there is no
+  separate edit action.
 
 ## Windows
 
-- Drag the title bar to move a window.
+- Window title bars keep the normal pointer cursor. A click focuses the window,
+  a double-click edits its title inline, and movement beyond the drag threshold
+  moves it without changing focus.
+- Selection and input/editing focus are mutually exclusive. Clicking a window
+  focuses only that window and clears the complete selection; clicking empty
+  canvas or pressing Escape also clears it. Dragging one of several selected
+  windows moves the complete group with one shared offset. Selected windows use
+  a pulsing yellow border; the selection is local to the current viewer and
+  page.
+- While moving one window or a selected group, hover another page in the bottom
+  pager. Only the page under the pointer receives target feedback; the moving
+  windows shrink and fade toward it, then reverse that preview when the pointer
+  leaves. Releasing moves the exact selection to that page and opens it locally.
+  The windows keep their original coordinates and relative layout.
 - Drag any edge or corner to resize. Every direction uses the same terminal
   minimum of 32 columns by 8 rows; the effective visual minimum also retains
   title-bar/chrome space and never goes below 240 by 160 canvas pixels.
@@ -41,6 +65,9 @@
   paragraph bodies to select a visual range without creating a browser text
   selection. Then drag any selected handle to move the group inside the note or
   copy it to another target.
+- The handle menu contains paragraph-local delete, copy, and insertion actions.
+  Hover a paragraph and use its right-side send button to choose a linked
+  target.
 - `Ctrl`/`Cmd` + C and V preserve paragraph boundaries between notes. Terminals
   and file editors receive the same selection as multiline plain text.
 - Delete/Backspace outside paragraph editing, or Delete in the handle menu,

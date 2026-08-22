@@ -2,20 +2,19 @@
   import { createEventDispatcher } from "svelte";
   import {
     ChevronDownIcon,
-    Edit2Icon,
     FileTextIcon,
     MessageSquareIcon,
-    PlusIcon,
     SearchIcon,
     SettingsIcon,
-    Trash2Icon,
     WifiIcon,
   } from "svelte-feather-icons";
   import logo from "$lib/assets/logo.svg";
   import { settings } from "$lib/settings";
   import type { WsSshProfile, WsUser } from "$lib/protocol";
+  import { createSshProfileDraft } from "$lib/sshProfiles";
   import NameList from "./NameList.svelte";
   import SshProfileEditor from "./SshProfileEditor.svelte";
+  import SshProfileList from "./SshProfileList.svelte";
 
   export let connected: boolean;
   export let connectionStatus: "connected" | "connecting" | "unavailable";
@@ -41,37 +40,6 @@
   let editingProfile: WsSshProfile | null = null;
   let connectionControl: HTMLElement;
 
-  function uniqueConnectionName() {
-    const used = new Set(
-      profiles.map((profile) => profile.name.toLocaleLowerCase()),
-    );
-    for (let suffix = 1; ; suffix += 1) {
-      const name = suffix === 1 ? "SSH connection" : `SSH connection ${suffix}`;
-      if (!used.has(name.toLocaleLowerCase())) return name;
-    }
-  }
-
-  function newProfile(): WsSshProfile {
-    const id = crypto.randomUUID
-      ? crypto.randomUUID()
-      : Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("");
-    return {
-      id,
-      name: uniqueConnectionName(),
-      host: "",
-      port: 22,
-      username: "",
-      authMethod: "default",
-      keyPath: "",
-      acceptNewHostKey: true,
-      theme: $settings.theme,
-      backgroundEnabled: false,
-      background: "#181818",
-    };
-  }
-
   function openEditor(profile: WsSshProfile) {
     connectionsOpen = false;
     editingProfile = { ...profile };
@@ -85,11 +53,6 @@
       !connectionControl?.contains(event.target)
     )
       connectionsOpen = false;
-  }
-
-  function deleteProfile(profile: WsSshProfile) {
-    if (window.confirm(`Delete SSH connection “${profile.name}”?`))
-      dispatch("deleteSshProfile", profile.id);
   }
 
   $: networkTitle =
@@ -134,62 +97,17 @@
         >
         {#if connectionsOpen}
           <div class="connection-menu">
-            <div class="max-h-72 overflow-y-auto py-1">
-              {#if profiles.length === 0}
-                <p class="px-3 py-4 text-center text-xs text-zinc-500">
-                  No saved SSH connections
-                </p>
-              {:else}
-                {#each profiles as profile (profile.id)}
-                  <div
-                    class="connection-item"
-                    role="button"
-                    tabindex="0"
-                    on:click={() => {
-                      connectionsOpen = false;
-                      dispatch("createSsh", profile.id);
-                    }}
-                    on:keydown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        connectionsOpen = false;
-                        dispatch("createSsh", profile.id);
-                      }
-                    }}
-                  >
-                    <div class="min-w-0 flex-1">
-                      <p class="truncate text-sm text-zinc-200">
-                        {profile.name}
-                      </p>
-                      <p class="truncate text-xs text-zinc-500">
-                        {profile.username
-                          ? `${profile.username}@`
-                          : ""}{profile.host}:{profile.port}
-                      </p>
-                    </div>
-                    <button
-                      class="item-action"
-                      aria-label="Edit {profile.name}"
-                      title="Edit"
-                      on:click|stopPropagation={() => openEditor(profile)}
-                      ><Edit2Icon /></button
-                    >
-                    <button
-                      class="item-action danger"
-                      aria-label="Delete {profile.name}"
-                      title="Delete"
-                      on:click|stopPropagation={() => deleteProfile(profile)}
-                      ><Trash2Icon /></button
-                    >
-                  </div>
-                {/each}
-              {/if}
-            </div>
-            <button
-              class="add-connection"
-              on:click={() => openEditor(newProfile())}
-              ><PlusIcon />Add SSH connection</button
-            >
+            <SshProfileList
+              {profiles}
+              on:select={(event) => {
+                connectionsOpen = false;
+                dispatch("createSsh", event.detail);
+              }}
+              on:edit={(event) => openEditor(event.detail)}
+              on:delete={(event) => dispatch("deleteSshProfile", event.detail)}
+              on:add={() =>
+                openEditor(createSshProfileDraft(profiles, $settings.theme))}
+            />
           </div>
         {/if}
       </div>
@@ -199,15 +117,6 @@
         on:click={() => dispatch("createNote")}
         disabled={!connected || !hasWriteAccess}
         title="Create note"><FileTextIcon strokeWidth={1.5} /></button
-      >
-      <button
-        class="icon-button"
-        aria-label="Chat"
-        title="Chat"
-        on:click={() => dispatch("chat")}
-        ><MessageSquareIcon strokeWidth={1.5} />{#if newMessages}<div
-            class="activity"
-          ></div>{/if}</button
       >
       <button
         class="icon-button"
@@ -233,10 +142,19 @@
       on:click={() => dispatch("networkInfo")}
       ><WifiIcon strokeWidth={1.5} /></button
     >
-    {#if users.length > 0}
-      <div class="v-divider"></div>
-      <NameList {users} />
-    {/if}
+    <div class="v-divider"></div>
+    <div class="flex items-center gap-1">
+      <button
+        class="icon-button"
+        aria-label="Chat"
+        title="Chat"
+        on:click={() => dispatch("chat")}
+        ><MessageSquareIcon strokeWidth={1.5} />{#if newMessages}<div
+            class="activity"
+          ></div>{/if}</button
+      >
+      {#if users.length > 0}<NameList {users} />{/if}
+    </div>
   </div>
 </div>
 
@@ -283,24 +201,6 @@
   }
   .connection-menu {
     @apply absolute left-0 top-[calc(100%+0.6rem)] z-50 w-80 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl shadow-black/50;
-  }
-  .connection-item {
-    @apply mx-1 flex cursor-pointer items-center gap-1 rounded-md px-2 py-2 hover:bg-zinc-800 outline-none focus:bg-zinc-800;
-  }
-  .item-action {
-    @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded p-0 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100;
-  }
-  .item-action :global(svg) {
-    @apply h-3.5 w-3.5;
-  }
-  .item-action.danger {
-    @apply hover:bg-red-950 hover:text-red-300;
-  }
-  .add-connection {
-    @apply flex w-full items-center gap-2 border-t border-zinc-700 px-3 py-2.5 text-sm text-zinc-300 hover:bg-zinc-800;
-  }
-  .add-connection :global(svg) {
-    @apply h-4 w-4;
   }
   .activity {
     @apply absolute top-1 right-0.5 text-xs p-[4.5px] bg-red-500 rounded-full;

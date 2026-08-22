@@ -56,11 +56,16 @@ upgrading the daemon reconnects to the same hosted PTYs and processes.
 Restarting `sshxx-terminal-host` remains destructive and is deliberately never
 automatic.
 
+In the default single-server mode, a server restart briefly disconnects viewers;
+the daemon automatically recreates a missing server session from its durable
+workspace and reattaches the hosted terminals. A configured fixed session name
+preserves the URL. Without one, the replacement receives a new random URL.
+
 ## State and trust boundaries
 
 | State                                                      | Owner and lifetime                                                       | Scope                                                                                           |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| Pages, canvas items, notes/links, file-window/editor state | Daemon `.sshx-workspace`                                                 | Shared within the session; every canvas mutation retains its page ID                            |
+| Pages, canvas items, notes/links, file-window/editor state | Daemon `.sshx-workspace`                                                 | Shared within the session; includes the non-secret SSH profile ID used by each remote terminal  |
 | Shell and SSH processes                                    | `sshxx-terminal-host` memory                                             | Shared stream/input; survives viewer and daemon restarts, not host/OS restarts                  |
 | Per-terminal shell history                                 | Daemon launch policy and owner-only local history data                   | One history namespace/file per local terminal; nested remote shells follow remote configuration |
 | Reusable SSH profiles                                      | Authenticated-encrypted `.sshx-connections` with an owner-only local key | Session-visible metadata; writer-only mutation; passwords are never stored                      |
@@ -87,9 +92,18 @@ runtimes:
 ```shell
 mise install
 npm ci
-docker compose up -d
 mprocs
 ```
+
+Normal development and single-server deployments do not use Redis. The
+repository keeps an opt-in service only for multi-server coordination tests:
+
+```shell
+docker compose --profile multi-server up -d
+sshxx-server --redis-url redis://localhost:12601 # add to each test server
+```
+
+Without the explicit profile and `--redis-url`, Redis remains disabled.
 
 The default development session is:
 
@@ -170,6 +184,10 @@ when coordinating multiple server instances.
 
 - A terminal-host or operating-system restart disconnects hosted processes;
   application-specific recovery such as Codex resume remains manual.
+- The terminal host retains bounded raw PTY output rather than an emulator
+  screen snapshot. After high-volume output rolls over that buffer, a renderer
+  rebuild may not reproduce the exact previous screen even though the process
+  remains alive.
 - Windows ConPTY cannot currently report a child process working directory, so
   terminal duplication may fall back to the daemon directory.
 - Image paste currently targets local daemon shells; remote SSH forwarding still
