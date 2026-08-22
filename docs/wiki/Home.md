@@ -10,6 +10,7 @@ render the same canvas.
 ## Guides
 
 - [Complete feature guide and screenshots](Features)
+- [Installation, runtime packages, and releases](Installation-and-Releases)
 - [Keyboard and mouse controls](Keyboard-and-Mouse)
 - [Architecture, synchronization, persistence, and security](Architecture-and-State)
 

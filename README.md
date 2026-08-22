@@ -51,6 +51,12 @@ for the full capability set and screenshots, or start from the
 | `sshxx-server`        | `crates/sshx-server`         | Authorizes and coordinates encrypted, page-aware sessions                    |
 | `sshxx-client`        | `src/`, `src-tauri/`         | Renders and controls a session in the browser or packaged app                |
 
+The supported connection path is `viewer ↔ server ↔ daemon ↔ terminal-host`. The
+daemon has no browser-facing listener and cannot be used alone. A minimal
+self-hosted workspace therefore needs the server, daemon, terminal host, and the
+Web build shipped with the server. The Tauri client is an optional viewer, not a
+replacement for those runtime services.
+
 Closing or refreshing a viewer does not end its terminals. Restarting or
 upgrading the daemon reconnects to the same hosted PTYs and processes.
 Restarting `sshxx-terminal-host` remains destructive and is deliberately never
@@ -60,6 +66,29 @@ In the default single-server mode, a server restart briefly disconnects viewers;
 the daemon automatically recreates a missing server session from its durable
 workspace and reattaches the hosted terminals. A configured fixed session name
 preserves the URL. Without one, the replacement receives a new random URL.
+
+## Install and run
+
+The release installer downloads the matching Linux/macOS runtime archive,
+verifies its SHA-256 checksum, installs all three required executables plus the
+Web client, and starts a local server and daemon:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.sh | sh -s -- --run
+```
+
+Windows PowerShell (x64):
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.ps1))) -Run
+```
+
+The daemon prints the session URL and stores its local state in the directory
+where the command was started. Omit `--run`/`-Run` to install without starting
+the local stack. Desktop installers are optional downloads on the
+[Releases page](https://github.com/glight2000/sshxx/releases); complete package,
+platform, signing, and operator details are in
+**[Installation and Releases](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases)**.
 
 ## State and trust boundaries
 
@@ -164,6 +193,7 @@ when coordinating multiple server instances.
 ## Documentation
 
 - [Complete feature guide and screenshots](https://github.com/glight2000/sshxx/wiki/Features)
+- [Installation, runtime packages, and releases](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases)
 - [Keyboard and mouse controls](https://github.com/glight2000/sshxx/wiki/Keyboard-and-Mouse)
 - [Architecture, persistence, synchronization, and security](https://github.com/glight2000/sshxx/wiki/Architecture-and-State)
 - Versioned Wiki sources: [`docs/wiki`](docs/wiki/Home.md)
@@ -174,7 +204,8 @@ when coordinating multiple server instances.
 
 ### TODO
 
-- [ ] Validate signed desktop installers and Android/iOS targets in CI.
+- [ ] Add trusted desktop code signing/notarization and validate Android/iOS
+      targets.
 - [ ] Publish a maintained production deployment reference with TLS, upgrades,
       backups, and recovery.
 - [ ] Add versioned workspace migrations and end-to-end browser coverage for

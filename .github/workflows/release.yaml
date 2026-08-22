@@ -1,0 +1,285 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Release quality gate
+    uses: ./.github/workflows/ci.yaml
+
+  prepare:
+    name: Validate version and create draft
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Validate release tag and module versions
+        shell: bash
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          test "v$version" = "$GITHUB_REF_NAME" || {
+            echo "Tag $GITHUB_REF_NAME does not match repository version v$version" >&2
+            exit 1
+          }
+          node --test tests/versionConsistency.test.mjs
+
+      - name: Create or reuse draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true || {
+              echo "Release $GITHUB_REF_NAME is already published." >&2
+              exit 1
+            }
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --draft \
+              --generate-notes \
+              --title "sshxx $GITHUB_REF_NAME"
+          fi
+
+  runtime:
+    name: Runtime · ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            extension: tar.gz
+            package_shell: bash
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            extension: tar.gz
+            package_shell: bash
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            extension: tar.gz
+            package_shell: bash
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            extension: tar.gz
+            package_shell: bash
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            extension: zip
+            package_shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - uses: arduino/setup-protoc@v3
+
+      - name: Install Rust target
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+
+      - name: Build Web client and runtime binaries
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+          cargo build --release \
+            -p sshxx-daemon \
+            -p sshxx-server \
+            -p sshxx-terminal-host \
+            --target "${{ matrix.target }}"
+
+      - name: Resolve artifact name
+        id: artifact
+        shell: bash
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          archive="sshxx-runtime-$version-${{ matrix.target }}.${{ matrix.extension }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "path=dist/$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Package Unix runtime
+        if: matrix.package_shell == 'bash'
+        shell: bash
+        run: |
+          root="sshxx-runtime-${{ steps.artifact.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "dist/$root/bin"
+          cp "target/${{ matrix.target }}/release/sshxx-daemon" "dist/$root/bin/"
+          cp "target/${{ matrix.target }}/release/sshxx-server" "dist/$root/bin/"
+          cp "target/${{ matrix.target }}/release/sshxx-terminal-host" "dist/$root/bin/"
+          cp -R build "dist/$root/build"
+          cp LICENSE README.md README.zh-CN.md "dist/$root/"
+          tar -C dist -czf "${{ steps.artifact.outputs.path }}" "$root"
+
+      - name: Package Windows runtime
+        if: matrix.package_shell == 'pwsh'
+        shell: pwsh
+        run: |
+          $root = "sshxx-runtime-${{ steps.artifact.outputs.version }}-${{ matrix.target }}"
+          $rootPath = Join-Path "dist" $root
+          New-Item -ItemType Directory -Force -Path (Join-Path $rootPath "bin") | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/sshxx-daemon.exe" (Join-Path $rootPath "bin")
+          Copy-Item "target/${{ matrix.target }}/release/sshxx-server.exe" (Join-Path $rootPath "bin")
+          Copy-Item "target/${{ matrix.target }}/release/sshxx-terminal-host.exe" (Join-Path $rootPath "bin")
+          Copy-Item -Recurse "build" (Join-Path $rootPath "build")
+          Copy-Item "LICENSE", "README.md", "README.zh-CN.md" $rootPath
+          Compress-Archive -Path $rootPath -DestinationPath "${{ steps.artifact.outputs.path }}"
+
+      - name: Upload runtime archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "${{ steps.artifact.outputs.path }}" \
+            --clobber
+
+  desktop:
+    name: Desktop client · ${{ matrix.label }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            runner: ubuntu-22.04
+            target: ""
+            args: ""
+            signing_identity: ""
+          - label: macOS Apple Silicon
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+            signing_identity: "-"
+          - label: macOS Intel
+            runner: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+            signing_identity: "-"
+          - label: Windows x64
+            runner: windows-latest
+            target: ""
+            args: ""
+            signing_identity: ""
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux desktop dependencies
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install Rust targets
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          if [ -n "${{ matrix.target }}" ]; then
+            rustup target add "${{ matrix.target }}"
+          fi
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and upload desktop bundles
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.signing_identity }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseDraft: true
+          args: ${{ matrix.args }}
+
+  publish:
+    name: Checksums and publish
+    needs:
+      - runtime
+      - desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Download draft release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir assets
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir assets
+
+      - name: Generate checksums
+        run: |
+          cd assets
+          find . -maxdepth 1 -type f -printf '%P\0' \
+            | sort -z \
+            | xargs -0 sha256sum > ../SHA256SUMS
+
+      - name: Attest release assets and checksums
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            assets/*
+            SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest

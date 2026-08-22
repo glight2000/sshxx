@@ -2,6 +2,7 @@
 
 - [Home](Home)
 - [Feature guide](Features)
+- [Installation and releases](Installation-and-Releases)
 - [Keyboard and mouse controls](Keyboard-and-Mouse)
 - [Architecture, state, and security](Architecture-and-State)
 

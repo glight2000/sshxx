@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches:
       - main
@@ -19,9 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - run: rustup toolchain install nightly --profile minimal -c rustfmt
+      - run: rustup toolchain install stable --profile minimal -c rustfmt
 
-      - run: cargo +nightly fmt -- --check
+      - run: cargo fmt --all -- --check
 
   rust:
     name: Rust lint and test
@@ -41,7 +42,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
 
   windows_test:
-    name: Daemon and terminal host test (Windows)
+    name: Runtime tests (Windows)
     runs-on: windows-latest
 
     steps:
@@ -53,7 +54,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo test -p sshxx-daemon -p sshxx-terminal-host
+      - run: cargo test -p sshxx-daemon -p sshxx-server -p sshxx-terminal-host
 
   web:
     name: Web lint, check, and build

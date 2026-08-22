@@ -6,12 +6,12 @@ component material stay with the code they operate.
 
 ## Canonical locations
 
-| Audience                       | Location                                                                                                                                                   | Content                                                                              |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| New users                      | [`README.md`](../README.md), [`README.zh-CN.md`](../README.zh-CN.md)                                                                                       | Project purpose, boundaries, quick development/build entry points, and links onward  |
-| Users and operators            | [`docs/wiki/`](wiki/Home.md)                                                                                                                               | Complete features, controls, architecture/state/security contract, known limitations |
-| Terminal-host maintainers      | [`crates/sshxx-terminal-host/README.md`](../crates/sshxx-terminal-host/README.md) and [`docs/PROTOCOL.md`](../crates/sshxx-terminal-host/docs/PROTOCOL.md) | Independently operated host lifecycle and its local protocol                         |
-| Contributors and coding agents | [`AGENTS.md`](../AGENTS.md)                                                                                                                                | Repository architecture, modularity, security, validation, and documentation rules   |
+| Audience                       | Location                                                                                                                                                   | Content                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| New users                      | [`README.md`](../README.md), [`README.zh-CN.md`](../README.zh-CN.md)                                                                                       | Project purpose, boundaries, quick development/build entry points, and links onward     |
+| Users and operators            | [`docs/wiki/`](wiki/Home.md)                                                                                                                               | Installation/releases, features, controls, architecture/state/security, and limitations |
+| Terminal-host maintainers      | [`crates/sshxx-terminal-host/README.md`](../crates/sshxx-terminal-host/README.md) and [`docs/PROTOCOL.md`](../crates/sshxx-terminal-host/docs/PROTOCOL.md) | Independently operated host lifecycle and its local protocol                            |
+| Contributors and coding agents | [`AGENTS.md`](../AGENTS.md)                                                                                                                                | Repository architecture, modularity, security, validation, and documentation rules      |
 
 ## Maintenance rules
 

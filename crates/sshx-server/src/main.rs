@@ -6,8 +6,10 @@ use std::{
 use anyhow::Result;
 use clap::Parser;
 use sshx_server::{Server, ServerOptions};
-use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info};
+
+#[cfg(unix)]
+use tokio::signal::unix::{signal, SignalKind};
 
 /// The sshxx server CLI interface.
 #[derive(Parser, Debug)]
@@ -43,12 +45,25 @@ struct Args {
     session_name: Option<String>,
 }
 
+#[cfg(unix)]
+async fn wait_for_shutdown() -> Result<()> {
+    let mut sigterm = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        _ = sigterm.recv() => (),
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown() -> Result<()> {
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn start(args: Args) -> Result<()> {
     let addr = SocketAddr::new(args.listen, args.port);
-
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut sigint = signal(SignalKind::interrupt())?;
 
     let mut options = ServerOptions::default();
     options.secret = args.secret;
@@ -65,11 +80,7 @@ async fn start(args: Args) -> Result<()> {
     };
 
     let signals_task = async {
-        tokio::select! {
-            Some(()) = sigterm.recv() => (),
-            Some(()) = sigint.recv() => (),
-            else => return Ok(()),
-        }
+        wait_for_shutdown().await?;
         info!("gracefully shutting down...");
         server.shutdown();
         Ok(())

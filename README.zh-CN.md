@@ -46,10 +46,32 @@ README 只保留项目级介绍。完整功能和全量截图请查看
 | `sshxx-server`        | `crates/sshx-server`         | 鉴权并协调加密、页面感知的会话                  |
 | `sshxx-client`        | `src/`、`src-tauri/`         | 通过浏览器或打包应用渲染和操作会话              |
 
+受支持的连接路径是
+`浏览端 ↔ server ↔ daemon ↔ terminal-host`。daemon 没有面向浏览器的监听端口，不能单独使用。最小自建工作区必须包含 server、daemon、terminal-host，以及随 server 发布的 Web 构建；Tauri 客户端只是可选浏览端，不能替代这些运行时服务。
+
 关闭或刷新浏览端不会结束终端；daemon 重启或升级后会重新连接同一个 PTY 和进程。重启
 `sshxx-terminal-host` 仍会中断全部托管进程，因此永远不会随 daemon 自动重启。
 
 默认单 server 模式下，server 重启会让浏览端短暂断线；daemon 会从持久化工作区自动重建已丢失的 server 会话，并重新挂接 host 中的终端。配置固定会话名时 URL 保持不变；未配置时，替代会话会得到新的随机 URL。
+
+## 安装并运行
+
+Release 安装器会下载匹配平台的 Linux/macOS 运行时包，校验 SHA-256，安装三个必需可执行文件和 Web 客户端，然后启动本地 server 与 daemon：
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.sh | sh -s -- --run
+```
+
+Windows PowerShell（x64）：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.ps1))) -Run
+```
+
+daemon 会输出会话 URL，本地状态保存在执行命令时所在的目录。去掉 `--run`/`-Run`
+即可只安装而不启动。本地桌面客户端是
+[Releases 页面](https://github.com/glight2000/sshxx/releases)中的可选下载；完整的包内容、平台、签名和运维说明见
+**[安装与发布](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases)**。
 
 ## 状态与信任边界
 
@@ -138,6 +160,7 @@ sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2
 ## 文档
 
 - [完整功能说明与全量截图](https://github.com/glight2000/sshxx/wiki/Features)
+- [安装、运行时包与发布流程](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases)
 - [键盘和鼠标操作](https://github.com/glight2000/sshxx/wiki/Keyboard-and-Mouse)
 - [架构、持久化、同步和安全](https://github.com/glight2000/sshxx/wiki/Architecture-and-State)
 - Wiki 的版本化源文件：[`docs/wiki`](docs/wiki/Home.md)
@@ -148,7 +171,7 @@ sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2
 
 ### TODO
 
-- [ ] 在 CI 中验证带签名的桌面安装包及 Android/iOS 目标。
+- [ ] 增加可信桌面代码签名/公证，并验证 Android/iOS 目标。
 - [ ] 发布包含 TLS、升级、备份与恢复的长期维护生产部署参考。
 - [ ] 增加版本化工作区迁移，并为页面、便利贴、吸附、搜索、终端输入和多人编辑补充端到端测试。
 - [ ] 在增加 AI
