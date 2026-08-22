@@ -10,7 +10,7 @@
     "app:dev": "tauri dev",
     "app:build": "tauri build",
     "app:info": "tauri info",
-    "test:runtime": "node --test tests/*.test.mjs",
+    "test:runtime": "node --test --test-concurrency=1 tests/*.test.mjs",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "lint": "prettier --ignore-path .gitignore --check . && eslint .",
