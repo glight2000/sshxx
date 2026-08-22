@@ -8,7 +8,7 @@ const tauriDevHost = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   define: {
-    __APP_VERSION__: JSON.stringify("0.6.0-" + commitHash),
+    __APP_VERSION__: JSON.stringify("0.7.0-" + commitHash),
   },
 
   plugins: [sveltekit()],
