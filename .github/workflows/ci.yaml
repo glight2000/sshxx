@@ -102,7 +102,26 @@ jobs:
 
       - run: npm run check
 
-      - run: npm run test:runtime
+      - name: Run runtime tests
+        shell: bash
+        run: |
+          set +e
+          npm run test:runtime > runtime-tests.log 2>&1
+          status=$?
+          cat runtime-tests.log
+          if [ "$status" -ne 0 ]; then
+            message=$(tail -n 120 runtime-tests.log | node -e '
+              let text = "";
+              process.stdin.on("data", chunk => text += chunk);
+              process.stdin.on("end", () => process.stdout.write(
+                text.replaceAll("%", "%25")
+                  .replaceAll("\r", "%0D")
+                  .replaceAll("\n", "%0A")
+              ));
+            ')
+            echo "::error file=package.json,line=1::$message"
+            exit "$status"
+          fi
 
       - run: npm run build
 
