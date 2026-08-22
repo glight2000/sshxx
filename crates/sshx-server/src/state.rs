@@ -1,8 +1,10 @@
 //! Stateful components of the server, managing multiple sessions.
 
-use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
+
+#[cfg(feature = "redis-mesh")]
+use std::pin::pin;
 
 use anyhow::Result;
 use dashmap::DashMap;
@@ -10,13 +12,16 @@ use hmac::{Hmac, KeyInit};
 use sha2::Sha256;
 use sshx_core::rand_alphanumeric;
 use tokio::time;
+#[cfg(feature = "redis-mesh")]
 use tokio_stream::StreamExt;
 use tracing::error;
 
+#[cfg(feature = "redis-mesh")]
 use self::mesh::StorageMesh;
 use crate::session::Session;
 use crate::ServerOptions;
 
+#[cfg(feature = "redis-mesh")]
 pub mod mesh;
 
 /// Timeout for a disconnected session to be evicted and closed.
@@ -37,7 +42,8 @@ pub struct ServerState {
     /// A concurrent map of session IDs to session objects.
     store: DashMap<String, Arc<Session>>,
 
-    /// Storage and distributed communication provider, if enabled.
+    /// Storage and distributed communication provider, when compiled and enabled.
+    #[cfg(feature = "redis-mesh")]
     mesh: Option<StorageMesh>,
 
     /// Fixed session name used for local testing.
@@ -57,14 +63,21 @@ impl ServerState {
             );
         }
         let secret = options.secret.unwrap_or_else(|| rand_alphanumeric(22));
+        #[cfg(feature = "redis-mesh")]
         let mesh = match options.redis_url {
             Some(url) => Some(StorageMesh::new(&url, options.host.as_deref())?),
             None => None,
         };
+        #[cfg(not(feature = "redis-mesh"))]
+        anyhow::ensure!(
+            options.redis_url.is_none(),
+            "this sshxx-server build does not include Redis coordination; rebuild with --features redis-mesh"
+        );
         Ok(Self {
             mac: Hmac::new_from_slice(secret.as_bytes()).unwrap(),
             override_origin: options.override_origin,
             store: DashMap::new(),
+            #[cfg(feature = "redis-mesh")]
             mesh,
             session_name: options.session_name,
         })
@@ -92,6 +105,7 @@ impl ServerState {
 
     /// Insert a session into the local store.
     pub fn insert(&self, name: &str, session: Arc<Session>) {
+        #[cfg(feature = "redis-mesh")]
         if let Some(mesh) = &self.mesh {
             let name = name.to_string();
             let session = session.clone();
@@ -118,6 +132,7 @@ impl ServerState {
     /// Close a session permanently on this and other servers.
     pub async fn close_session(&self, name: &str) -> Result<()> {
         self.remove(name);
+        #[cfg(feature = "redis-mesh")]
         if let Some(mesh) = &self.mesh {
             mesh.mark_closed(name).await?;
         }
@@ -131,6 +146,7 @@ impl ServerState {
             return Ok(Some(session));
         }
 
+        #[cfg(feature = "redis-mesh")]
         if let Some(mesh) = &self.mesh {
             let (owner, snapshot) = mesh.get_owner_snapshot(name).await?;
             if let Some(snapshot) = snapshot {
@@ -155,6 +171,7 @@ impl ServerState {
             return Ok(Ok(session));
         }
 
+        #[cfg(feature = "redis-mesh")]
         if let Some(mesh) = &self.mesh {
             let mut owner = mesh.get_owner(name).await?;
             if owner.is_some() && owner.as_deref() == mesh.host() {
@@ -169,6 +186,7 @@ impl ServerState {
 
     /// Listen for and remove sessions that are transferred away from this host.
     pub async fn listen_for_transfers(&self) {
+        #[cfg(feature = "redis-mesh")]
         if let Some(mesh) = &self.mesh {
             let mut transfers = pin!(mesh.listen_for_transfers());
             while let Some(name) = transfers.next().await {
@@ -201,5 +219,20 @@ impl ServerState {
         for entry in &self.store {
             entry.value().shutdown();
         }
+    }
+}
+
+#[cfg(all(test, not(feature = "redis-mesh")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_build_rejects_accidental_redis_configuration() {
+        let options = ServerOptions {
+            redis_url: Some("redis://127.0.0.1:6379".to_owned()),
+            ..ServerOptions::default()
+        };
+        let error = ServerState::new(options).err().expect("expected an error");
+        assert!(error.to_string().contains("--features redis-mesh"));
     }
 }

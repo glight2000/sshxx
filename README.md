@@ -100,10 +100,12 @@ repository keeps an opt-in service only for multi-server coordination tests:
 
 ```shell
 docker compose --profile multi-server up -d
-sshxx-server --redis-url redis://localhost:12601 # add to each test server
+cargo run -p sshxx-server --features redis-mesh -- \
+  --redis-url redis://localhost:12601 # add to each test server
 ```
 
-Without the explicit profile and `--redis-url`, Redis remains disabled.
+The default server build excludes Redis support. Without the explicit build
+feature, Compose profile, and `--redis-url`, Redis remains disabled.
 
 The default development session is:
 

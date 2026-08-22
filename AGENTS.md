@@ -87,5 +87,9 @@ here.
 - Rust changes must pass `cargo fmt --all -- --check`,
   `cargo test --workspace --all-targets`, and
   `cargo clippy --workspace --all-targets -- -D warnings`.
+- Changes touching server state or dependencies must also compile and test the
+  opt-in Redis path with
+  `cargo test -p sshxx-server --all-targets --features redis-mesh`; the default
+  build must remain Redis-free.
 - Put tests beside the closest existing test style and cover compatibility,
   invalid input, cleanup, and synchronization boundaries relevant to the change.

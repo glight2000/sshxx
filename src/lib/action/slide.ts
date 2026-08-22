@@ -1,7 +1,5 @@
-import { tweened } from "svelte/motion";
 import { cubicOut } from "svelte/easing";
 import type { Action } from "svelte/action";
-import { PerfectCursor } from "perfect-cursors";
 
 export type SlideParams = {
   x: number;
@@ -11,56 +9,89 @@ export type SlideParams = {
   immediate?: boolean;
 };
 
-/** An action for tweened transitions with global transformations. */
-export const slide: Action<HTMLElement, SlideParams> = (node, params) => {
-  let center = params?.center ?? [0, 0];
-  let zoom = params?.zoom ?? 1;
+type Position = { x: number; y: number };
 
-  const pos = { x: params?.x ?? 0, y: params?.y ?? 0 };
-  const spos = tweened(pos, { duration: 150, easing: cubicOut });
+const TRANSITION_DURATION = 150;
 
-  const disposeSub = spos.subscribe((pos) => {
-    node.style.transform = `scale(${(zoom * 100).toFixed(3)}%)
-      translate3d(${pos.x - center[0]}px, ${pos.y - center[1]}px, 0)`;
-  });
+function samePosition(a: Position, b: Position) {
+  return a.x === b.x && a.y === b.y;
+}
 
-  return {
-    update(params) {
-      center = params?.center ?? [0, 0];
-      zoom = params?.zoom ?? 1;
-      const pos = { x: params?.x ?? 0, y: params?.y ?? 0 };
-      spos.set(pos, { duration: params.immediate ? 0 : 150 });
-    },
-
-    destroy() {
-      disposeSub();
-      node.style.transform = "";
-    },
-  };
-};
+function snapTranslation(value: number, zoom: number) {
+  const devicePixelRatio = window.devicePixelRatio || 1;
+  const scale = zoom * devicePixelRatio;
+  return Number.isFinite(scale) && scale > 0
+    ? Math.round(value * scale) / scale
+    : value;
+}
 
 /**
- * An action using perfect-cursors to transition an element.
- *
- * The transitions are really smooth geometrically, but they seem to introduce
- * too much noticeable delay. Keeping this function for reference.
+ * Position a canvas item while keeping camera updates in the same animation
+ * frame as the background grid. Only remote/programmatic item movement is
+ * eased; direct manipulation and camera pan/zoom render immediately.
  */
-export const slideCursor: Action<HTMLElement, SlideParams> = (node, params) => {
-  const pos = params ?? { x: 0, y: 0 };
+export const slide: Action<HTMLElement, SlideParams> = (node, params) => {
+  let center = params.center ?? [0, 0];
+  let zoom = params.zoom ?? 1;
+  let current = { x: params.x ?? 0, y: params.y ?? 0 };
+  let target = current;
+  let animationFrame: number | null = null;
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-  const pc = new PerfectCursor(([x, y]: number[]) => {
-    node.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-  });
-  pc.addPoint([pos.x, pos.y]);
+  const render = () => {
+    const x = snapTranslation(current.x - center[0], zoom);
+    const y = snapTranslation(current.y - center[1], zoom);
+    node.style.transform = `scale(${zoom}) translate(${x}px, ${y}px)`;
+  };
+
+  const stopAnimation = () => {
+    if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+    animationFrame = null;
+  };
+
+  const animateTo = (next: Position) => {
+    stopAnimation();
+    const start = current;
+    const startedAt = performance.now();
+    target = next;
+
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / TRANSITION_DURATION);
+      const eased = cubicOut(progress);
+      current = {
+        x: start.x + (target.x - start.x) * eased,
+        y: start.y + (target.y - start.y) * eased,
+      };
+      render();
+      if (progress < 1) animationFrame = requestAnimationFrame(tick);
+      else animationFrame = null;
+    };
+    animationFrame = requestAnimationFrame(tick);
+  };
+
+  render();
 
   return {
-    update(params) {
-      const pos = params ?? { x: 0, y: 0 };
-      pc.addPoint([pos.x, pos.y]);
+    update(nextParams) {
+      center = nextParams.center ?? [0, 0];
+      zoom = nextParams.zoom ?? 1;
+      const next = { x: nextParams.x ?? 0, y: nextParams.y ?? 0 };
+
+      if (nextParams.immediate || reducedMotion.matches) {
+        stopAnimation();
+        current = next;
+        target = next;
+        render();
+      } else if (!samePosition(next, target)) {
+        animateTo(next);
+      } else {
+        // Camera changes must never wait for the per-item position tween.
+        render();
+      }
     },
 
     destroy() {
-      pc.dispose();
+      stopAnimation();
       node.style.transform = "";
     },
   };

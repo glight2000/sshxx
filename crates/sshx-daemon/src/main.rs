@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode};
 
-use ansi_term::Color::{Cyan, Fixed, Green};
+use anstyle::{Ansi256Color, AnsiColor};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use sshx_daemon::{
@@ -196,35 +196,30 @@ fn print_greeting(shell: &str, controller: &Controller) {
         Some(version) => format!("v{version}"),
         None => String::from("[dev]"),
     };
+    let green = AnsiColor::Green.on_default();
+    let green_bold = green.bold();
+    let cyan_underlined = AnsiColor::Cyan.on_default().underline();
+    let dim = Ansi256Color(8).on_default();
     if let Some(write_url) = controller.write_url() {
         println!(
             r#"
-  {sshx} {version}
+  {green_bold}sshxx-daemon{green_bold:#} {green}{version_str}{green:#}
 
-  {arr}  Read-only link: {link_v}
-  {arr}  Writable link:  {link_e}
-  {arr}  Shell:          {shell_v}
+  {green}➜{green:#}  Read-only link: {cyan_underlined}{}{cyan_underlined:#}
+  {green}➜{green:#}  Writable link:  {cyan_underlined}{write_url}{cyan_underlined:#}
+  {green}➜{green:#}  Shell:          {dim}{shell}{dim:#}
 "#,
-            sshx = Green.bold().paint("sshxx-daemon"),
-            version = Green.paint(&version_str),
-            arr = Green.paint("➜"),
-            link_v = Cyan.underline().paint(controller.url()),
-            link_e = Cyan.underline().paint(write_url),
-            shell_v = Fixed(8).paint(shell),
+            controller.url(),
         );
     } else {
         println!(
             r#"
-  {sshx} {version}
+  {green_bold}sshxx-daemon{green_bold:#} {green}{version_str}{green:#}
 
-  {arr}  Link:  {link_v}
-  {arr}  Shell: {shell_v}
+  {green}➜{green:#}  Link:  {cyan_underlined}{}{cyan_underlined:#}
+  {green}➜{green:#}  Shell: {dim}{shell}{dim:#}
 "#,
-            sshx = Green.bold().paint("sshxx-daemon"),
-            version = Green.paint(&version_str),
-            arr = Green.paint("➜"),
-            link_v = Cyan.underline().paint(controller.url()),
-            shell_v = Fixed(8).paint(shell),
+            controller.url(),
         );
     }
 }

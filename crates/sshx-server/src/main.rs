@@ -29,7 +29,7 @@ struct Args {
     #[clap(long)]
     override_origin: Option<String>,
 
-    /// URL of the Redis server that stores session data.
+    /// URL for optional multi-server coordination (requires redis-mesh build feature).
     #[clap(long, env = "SSHXX_REDIS_URL")]
     redis_url: Option<String>,
 

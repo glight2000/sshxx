@@ -3,7 +3,7 @@
 <script lang="ts">
   import * as tree from "@zag-js/tree-view";
   import { normalizeProps, useMachine } from "@zag-js/svelte";
-  import { onDestroy, onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import { ChevronRightIcon, FolderIcon } from "svelte-feather-icons";
 
   import type { FileTreeEntry } from "$lib/protocol";
@@ -41,6 +41,12 @@
   let treeElement: HTMLDivElement;
   let applyingSharedScroll = false;
   let scrollTimer: number | undefined;
+  let lastRequestedExpansion = "";
+  let sharedExpansionTarget: string | null = null;
+
+  function expansionKey(paths: string[]) {
+    return [...new Set(paths)].sort().join("\u0000");
+  }
 
   let collection = $state(
     tree.collection<FileNode>({
@@ -133,6 +139,11 @@
     selectedValue,
     onExpandedChange: ({ expandedValue: next }) => {
       expandedValue = next;
+      if (sharedExpansionTarget !== null) {
+        if (expansionKey(next) === sharedExpansionTarget)
+          sharedExpansionTarget = null;
+        return;
+      }
       updateExpandedPaths(next);
     },
     loadChildren: async ({ node, signal }) => {
@@ -158,11 +169,25 @@
   const api = $derived(tree.connect(service, normalizeProps));
 
   $effect(() => {
-    const requested = expandedPaths;
-    const added = requested.filter((path) => !expandedValue.includes(path));
-    const removed = expandedValue.filter((path) => !requested.includes(path));
-    if (added.length) api.expand(added);
-    if (removed.length) api.collapse(removed);
+    const requested = [...expandedPaths];
+    const requestedKey = expansionKey(requested);
+    if (requestedKey === lastRequestedExpansion) return;
+    lastRequestedExpansion = requestedKey;
+
+    untrack(() => {
+      const current = [...expandedValue];
+      const added = requested.filter((path) => !current.includes(path));
+      const removed = current.filter((path) => !requested.includes(path));
+      if (!added.length && !removed.length) return;
+
+      sharedExpansionTarget = requestedKey;
+      if (added.length) api.expand(added);
+      if (removed.length) api.collapse(removed);
+      queueMicrotask(() => {
+        if (sharedExpansionTarget === requestedKey)
+          sharedExpansionTarget = null;
+      });
+    });
   });
 
   $effect(() => {

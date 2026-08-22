@@ -10,7 +10,15 @@ import {
   type Handler,
   type WebKitGestureEvent,
 } from "@use-gesture/vanilla";
-import Vec from "@tldraw/vec";
+import {
+  addVector,
+  clamp,
+  divideVector,
+  lerpVector,
+  multiplyVector,
+  subtractVector,
+  vectorsEqual,
+} from "$lib/vector2";
 
 // Credits: from excalidraw
 // https://github.com/excalidraw/excalidraw/blob/07ebd7c68ce6ff92ddbc22d1c3d215f2b21328d6/src/utils.ts#L542-L563
@@ -107,6 +115,8 @@ export class TouchZoom {
   #secondaryMoved = false;
   #suppressContextMenu = false;
   #dragPanning = false;
+  #moveFrame: number | null = null;
+  #pendingMoveIsManual = false;
 
   #callbacks = new Set<(manual: boolean) => void>();
 
@@ -256,11 +266,11 @@ export class TouchZoom {
     event.preventDefault();
     event.stopPropagation();
     const point = [event.clientX, event.clientY];
-    const delta = Vec.sub(point, this.#middleLastPoint);
+    const delta = subtractVector(point, this.#middleLastPoint);
     this.#middleLastPoint = point;
-    if (Vec.isEqual(delta, [0, 0])) return;
+    if (vectorsEqual(delta, [0, 0])) return;
 
-    this.center = Vec.sub(this.center, Vec.div(delta, this.zoom));
+    this.center = subtractVector(this.center, divideVector(delta, this.zoom));
     this.#moved();
   };
 
@@ -312,12 +322,12 @@ export class TouchZoom {
     event.preventDefault();
     event.stopPropagation();
     const point = [event.clientX, event.clientY];
-    const delta = Vec.sub(point, this.#secondaryLastPoint);
+    const delta = subtractVector(point, this.#secondaryLastPoint);
     this.#secondaryLastPoint = point;
-    if (Vec.isEqual(delta, [0, 0])) return;
+    if (vectorsEqual(delta, [0, 0])) return;
 
     if (!this.#secondaryMoved) {
-      const total = Vec.sub(point, this.#secondaryStartPoint);
+      const total = subtractVector(point, this.#secondaryStartPoint);
       if (Math.hypot(total[0], total[1]) < 3) return;
       this.#secondaryMoved = true;
       this.#node.classList.add("canvas-secondary-panning");
@@ -325,7 +335,7 @@ export class TouchZoom {
       window.getSelection()?.removeAllRanges();
     }
 
-    this.center = Vec.sub(this.center, Vec.div(delta, this.zoom));
+    this.center = subtractVector(this.center, divideVector(delta, this.zoom));
     this.#moved();
   };
 
@@ -380,7 +390,11 @@ export class TouchZoom {
       if (t > totalTime) break;
       const k = smoothstep(t / totalTime);
 
-      this.center = Vec.lrp(start, pos, k);
+      this.center = lerpVector(
+        start as [number, number],
+        pos as [number, number],
+        k,
+      );
       this.zoom = 1 / (startZ * (1 - k) + finishZ * k);
       this.#moved(false);
       await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -397,9 +411,14 @@ export class TouchZoom {
   }
 
   #moved(manual = true) {
-    for (const callback of this.#callbacks) {
-      callback(manual);
-    }
+    this.#pendingMoveIsManual ||= manual;
+    if (this.#moveFrame !== null) return;
+    this.#moveFrame = requestAnimationFrame(() => {
+      this.#moveFrame = null;
+      const isManual = this.#pendingMoveIsManual;
+      this.#pendingMoveIsManual = false;
+      for (const callback of this.#callbacks) callback(isManual);
+    });
   }
 
   #handleForcedWheel = (event: WheelEvent) => {
@@ -447,11 +466,10 @@ export class TouchZoom {
       const delta = z * 0.618 * WHEEL_ZOOM_SPEED;
 
       let newZoom = (1 - delta / 320) * this.zoom;
-      newZoom = Vec.clamp(newZoom, MIN_ZOOM, MAX_ZOOM);
+      newZoom = clamp(newZoom, MIN_ZOOM, MAX_ZOOM);
 
-      const offset = Vec.sub(point, [0, 0]);
-      const movement = Vec.mul(offset, 1 / this.zoom - 1 / newZoom);
-      this.center = Vec.add(this.center, movement);
+      const movement = multiplyVector(point, 1 / this.zoom - 1 / newZoom);
+      this.center = addVector(this.center, movement);
       this.zoom = newZoom;
 
       this.#moved();
@@ -459,7 +477,7 @@ export class TouchZoom {
     }
 
     // otherwise pan
-    const delta = Vec.mul(
+    const delta = multiplyVector(
       e.shiftKey && !isDarwin()
         ? // shift+scroll = pan horizontally
           [y, 0]
@@ -468,9 +486,9 @@ export class TouchZoom {
       0.5,
     );
 
-    if (Vec.isEqual(delta, [0, 0])) return;
+    if (vectorsEqual(delta, [0, 0])) return;
 
-    this.center = Vec.add(this.center, Vec.div(delta, this.zoom));
+    this.center = addVector(this.center, divideVector(delta, this.zoom));
     this.#moved();
   }
 
@@ -494,15 +512,21 @@ export class TouchZoom {
     if (!this.#isEnabled() || event instanceof WheelEvent) return;
 
     if (!this.#originPoint) return;
-    const delta = Vec.sub(this.#originPoint, origin);
-    const trueDelta = Vec.sub(delta, this.#delta);
+    const delta = subtractVector(
+      this.#originPoint as [number, number],
+      origin as [number, number],
+    );
+    const trueDelta = subtractVector(delta, this.#delta as [number, number]);
     this.#delta = delta;
 
     const zoomLevel = movement[0] / this.#lastMovement;
     this.#lastMovement = movement[0];
 
-    this.center = Vec.add(this.center, Vec.div(trueDelta, this.zoom * 2));
-    this.zoom = Vec.clamp(this.zoom * zoomLevel, MIN_ZOOM, MAX_ZOOM);
+    this.center = addVector(
+      this.center,
+      divideVector(trueDelta, this.zoom * 2),
+    );
+    this.zoom = clamp(this.zoom * zoomLevel, MIN_ZOOM, MAX_ZOOM);
     this.#moved();
   };
 
@@ -523,7 +547,10 @@ export class TouchZoom {
   > = ({ delta, elapsedTime }) => {
     if (!this.#isEnabled() || !this.#dragPanning) return;
     if (delta[0] === 0 && delta[1] === 0 && elapsedTime < 200) return;
-    this.center = Vec.sub(this.center, Vec.div(delta, this.zoom));
+    this.center = subtractVector(
+      this.center,
+      divideVector(delta as [number, number], this.zoom),
+    );
     this.#moved();
   };
 
@@ -617,6 +644,10 @@ export class TouchZoom {
       this.#node.classList.remove("canvas-panning");
 
       this.#resizeObserver.disconnect();
+
+      if (this.#moveFrame !== null) cancelAnimationFrame(this.#moveFrame);
+      this.#moveFrame = null;
+      this.#pendingMoveIsManual = false;
 
       this.#gesture.destroy();
       this.#node = null as any;

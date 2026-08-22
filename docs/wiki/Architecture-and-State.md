@@ -96,9 +96,10 @@ only in memory. Terminal output has a bounded rolling server buffer; a Redis
 snapshot retains at most 32 KiB per terminal.
 
 Normal development and single-server deployments deliberately leave Redis
-disabled. The repository's Compose service belongs to the `multi-server` profile
-and starts only with `docker compose --profile multi-server up -d`; each
-participating test server must also explicitly receive `--redis-url`.
+disabled. The default server build excludes Redis dependencies. The repository's
+Compose service belongs to the `multi-server` profile and starts only with
+`docker compose --profile multi-server up -d`; each participating test server
+must be built with `--features redis-mesh` and explicitly receive `--redis-url`.
 
 If a single server loses its in-memory session, the daemon recognizes the
 missing-session response, opens a replacement using its current durable

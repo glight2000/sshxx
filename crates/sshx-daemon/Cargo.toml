@@ -14,7 +14,7 @@ name = "sshx_daemon"
 [dependencies]
 aes = "0.9.2"
 aes-gcm.workspace = true
-ansi_term = "0.12.1"
+anstyle = "1.0.14"
 anyhow.workspace = true
 base64 = "0.23.1"
 bytes = "1.11.1"

@@ -39,7 +39,10 @@ pub struct ServerOptions {
     /// Override the origin returned for the Open() RPC.
     pub override_origin: Option<String>,
 
-    /// URL of the Redis server that stores session data.
+    /// URL for optional multi-server coordination.
+    ///
+    /// This is rejected unless the server was built with the `redis-mesh`
+    /// feature, which keeps normal single-server builds Redis-free.
     pub redis_url: Option<String>,
 
     /// Hostname of this server, if running multiple servers.

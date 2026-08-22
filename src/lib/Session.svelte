@@ -3017,6 +3017,7 @@
           cols={ws.cols}
           windowWidth={ws.width}
           windowHeight={ws.height}
+          canvasZoom={zoom}
           title={ws.title}
           background={ws.background}
           colorTheme={ws.theme}
@@ -3556,6 +3557,7 @@
   }
   :global(.canvas-interacting) {
     z-index: 2;
+    will-change: transform;
   }
   :global([data-canvas-terminal].canvas-selected > .term-container),
   :global([data-canvas-note-wrapper].canvas-selected > .note-container),

@@ -2,6 +2,7 @@
 # and single-server deployments do not need Redis and start no Compose service.
 # Explicitly enable it with:
 #   docker compose --profile multi-server up -d
+# Build participating servers with `--features redis-mesh`.
 
 services:
   redis:

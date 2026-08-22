@@ -44,8 +44,16 @@
         class:selected={selectedKind === entry.kind &&
           samePath(selectedPath, entry.path)}
         title={entry.path}
-        on:click={() => dispatch("select", entry)}
-        on:dblclick={() => dispatch("open", entry)}
+        on:click={(event) => {
+          // A double click emits two click events before dblclick. The second
+          // selection would otherwise race the directory-open mutation.
+          if (event.detail <= 1) dispatch("select", entry);
+        }}
+        on:dblclick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dispatch("open", entry);
+        }}
         on:contextmenu={(event) =>
           dispatch("context", { entry, source: "grid", event })}
       >

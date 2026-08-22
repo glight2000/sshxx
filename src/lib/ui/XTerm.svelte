@@ -2,34 +2,32 @@
 <script lang="ts" context="module">
   import { makeToast } from "$lib/toast";
 
-  // Deduplicated terminal font loading.
-  const waitForFonts = (() => {
-    let state: "initial" | "loading" | "loaded" = "initial";
-    const waitlist: (() => void)[] = [];
+  let terminalFontPromise: Promise<void> | null = null;
 
-    return async function waitForFonts() {
-      if (state === "loaded") return;
-      else if (state === "initial") {
-        const FontFaceObserver = (await import("fontfaceobserver")).default;
-        state = "loading";
-        try {
-          await new FontFaceObserver("Fira Code VF").load();
-        } catch (error) {
-          makeToast({
-            kind: "error",
-            message: "Could not load terminal font.",
-          });
-        }
-        state = "loaded";
-        for (const fn of waitlist) fn();
-      } else {
-        await new Promise<void>((resolve) => {
-          if (state === "loaded") resolve();
-          else waitlist.push(resolve);
-        });
+  /** Deduplicate loading with the browser-native Font Loading API. */
+  function waitForFonts() {
+    terminalFontPromise ??= (async () => {
+      if (!("fonts" in document)) return;
+      let timeout: number | undefined;
+      try {
+        await Promise.race([
+          document.fonts.load('14px "Fira Code VF"'),
+          new Promise<never>((_, reject) => {
+            timeout = window.setTimeout(
+              () => reject(new Error("terminal font load timed out")),
+              3000,
+            );
+          }),
+        ]);
+      } catch (error) {
+        console.warn("Could not load terminal font.", error);
+        makeToast({ kind: "error", message: "Could not load terminal font." });
+      } finally {
+        if (timeout !== undefined) window.clearTimeout(timeout);
       }
-    };
-  })();
+    })();
+    return terminalFontPromise;
+  }
 </script>
 
 <script lang="ts">
@@ -88,6 +86,7 @@
   export let rows: number, cols: number;
   export let windowWidth = 0;
   export let windowHeight = 0;
+  export let canvasZoom = 1;
   export let title = "";
   export let background = "";
   export let colorTheme = "";
@@ -103,6 +102,10 @@
   export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
   let term: Terminal | null = null;
   let mouseCoordinateAdapter: { dispose(): void } | null = null;
+  let webglAddon: import("@xterm/addon-webgl").WebglAddon | null = null;
+  let webglContextLoss: { dispose(): void } | null = null;
+  let webglRefreshTimer: number | null = null;
+  let lastRefreshedZoom = canvasZoom;
 
   let legacyTheme = $settings.theme;
   let previewTheme: ThemeName | null = null;
@@ -122,6 +125,21 @@
     term.options.theme = terminalTheme;
     term.options.scrollback = $settings.scrollback;
   }
+
+  function scheduleWebglRefresh(nextZoom: number) {
+    if (!loaded || nextZoom === lastRefreshedZoom) return;
+    if (webglRefreshTimer !== null) window.clearTimeout(webglRefreshTimer);
+    webglRefreshTimer = window.setTimeout(() => {
+      webglRefreshTimer = null;
+      lastRefreshedZoom = nextZoom;
+      webglAddon?.clearTextureAtlas();
+      if (term && term.rows > 0) term.refresh(0, term.rows - 1);
+    }, 120);
+  }
+
+  // The reactive dependency is intentionally only the incoming zoom. Timer
+  // bookkeeping lives in the function so it cannot retrigger this statement.
+  $: scheduleWebglRefresh(canvasZoom);
 
   let loaded = false;
   let focused = false;
@@ -454,7 +472,17 @@
     });
     term.onBell(requestAttention);
     try {
-      term.loadAddon(new WebglAddon());
+      const addon = new WebglAddon();
+      webglContextLoss = addon.onContextLoss(() => {
+        if (webglAddon !== addon) return;
+        console.warn("WebGL context lost; using the DOM terminal renderer.");
+        webglContextLoss?.dispose();
+        webglContextLoss = null;
+        webglAddon = null;
+        addon.dispose();
+      });
+      term.loadAddon(addon);
+      webglAddon = addon;
     } catch (error) {
       console.warn(
         "WebGL renderer unavailable; using the DOM renderer.",
@@ -505,6 +533,8 @@
   });
 
   onDestroy(() => {
+    if (webglRefreshTimer !== null) window.clearTimeout(webglRefreshTimer);
+    webglContextLoss?.dispose();
     mouseCoordinateAdapter?.dispose();
     term?.dispose();
   });

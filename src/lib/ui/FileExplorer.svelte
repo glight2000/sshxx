@@ -151,6 +151,11 @@
   let reportedFloating = false;
   let mounted = false;
   let observedOnline = online;
+  let openingGridEntry = "";
+  const directoryListings = new Map<
+    string,
+    Promise<{ path: string; entries: FileTreeEntry[] }>
+  >();
   let editorInsertText: (
     text: string,
     position?: TextInsertPosition,
@@ -471,13 +476,25 @@
   const toNode = (entry: FileTreeEntry): FileNode => ({ ...entry });
 
   async function listDirectory(path: string) {
-    const response = await request({ operation: "list", path });
-    if (!response.ok)
-      throw new Error(response.error || "Could not open directory.");
-    return {
-      path: response.path,
-      entries: response.entries ?? [],
-    };
+    const key = normalizedPath(path);
+    const existing = directoryListings.get(key);
+    if (existing) return existing;
+
+    const pending = (async () => {
+      const response = await request({ operation: "list", path });
+      if (!response.ok)
+        throw new Error(response.error || "Could not open directory.");
+      return {
+        path: response.path,
+        entries: response.entries ?? [],
+      };
+    })();
+    directoryListings.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      if (directoryListings.get(key) === pending) directoryListings.delete(key);
+    }
   }
 
   function directoryNode(path: string, entries: FileTreeEntry[]): FileNode {
@@ -685,12 +702,19 @@
   }
 
   async function openGridEntry(entry: FileTreeEntry) {
-    if (entry.kind === "directory") {
-      expandedPaths = revealDirectoryPaths(expandedPaths, entry.path);
-      updateSharedState({ expandedPaths });
-      await selectDirectory(entry);
-    } else {
-      await selectFile(entry);
+    const entryKey = `${entry.kind}:${normalizedPath(entry.path)}`;
+    if (openingGridEntry) return;
+    openingGridEntry = entryKey;
+    try {
+      if (entry.kind === "directory") {
+        expandedPaths = revealDirectoryPaths(expandedPaths, entry.path);
+        updateSharedState({ expandedPaths });
+        await selectDirectory(entry);
+      } else {
+        await selectFile(entry);
+      }
+    } finally {
+      if (openingGridEntry === entryKey) openingGridEntry = "";
     }
   }
 

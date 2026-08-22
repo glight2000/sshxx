@@ -83,10 +83,12 @@ mprocs
 
 ```shell
 docker compose --profile multi-server up -d
-sshxx-server --redis-url redis://localhost:12601 # 添加到每个测试 server
+cargo run -p sshxx-server --features redis-mesh -- \
+  --redis-url redis://localhost:12601 # 添加到每个测试 server
 ```
 
-未显式启用该 profile 且未传入 `--redis-url` 时，Redis 保持禁用。
+默认 server 构建不包含 Redis 支持。只有同时启用构建 feature、Compose
+profile 并传入 `--redis-url` 时才会使用 Redis。
 
 默认开发会话：
 
