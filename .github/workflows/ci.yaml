@@ -41,7 +41,7 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install "$RUST_VERSION"
+          rustup toolchain install "$RUST_VERSION" --profile minimal -c clippy
           rustup default "$RUST_VERSION"
 
       - uses: Swatinem/rust-cache@v2
