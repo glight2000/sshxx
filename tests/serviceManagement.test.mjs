@@ -69,6 +69,7 @@ function fixture({ hostStopFails = false, platform = "Linux" } = {}) {
     env: {
       ...process.env,
       HOME: home,
+      XDG_CONFIG_HOME: join(home, ".config"),
       PATH: `${fakeBin}:${process.env.PATH}`,
       SSHXX_INSTALL_ROOT: installRoot,
       SSHXX_BIN_DIR: bin,
