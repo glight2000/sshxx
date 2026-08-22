@@ -12,6 +12,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  RUST_VERSION: "1.98.0"
+
 jobs:
   quality:
     name: Release quality gate
@@ -104,8 +107,8 @@ jobs:
       - name: Install Rust target
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
           rustup target add "${{ matrix.target }}"
 
       - name: Build Web client and runtime binaries
@@ -218,8 +221,8 @@ jobs:
       - name: Install Rust targets
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
           if [ -n "${{ matrix.target }}" ]; then
             rustup target add "${{ matrix.target }}"
           fi

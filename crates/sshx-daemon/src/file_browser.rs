@@ -572,13 +572,11 @@ fn read_success(
 }
 
 fn decode_utf16(bytes: &[u8], decode: fn([u8; 2]) -> u16) -> Option<String> {
-    if !bytes.len().is_multiple_of(2) {
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    if !remainder.is_empty() {
         return None;
     }
-    let units = bytes
-        .chunks_exact(2)
-        .map(|chunk| decode([chunk[0], chunk[1]]))
-        .collect::<Vec<_>>();
+    let units = pairs.iter().copied().map(decode).collect::<Vec<_>>();
     String::from_utf16(&units).ok()
 }
 
