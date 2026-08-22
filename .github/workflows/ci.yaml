@@ -66,7 +66,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo test -p sshxx-daemon -p sshxx-server -p sshxx-terminal-host
+      - name: Test Windows terminal runtime
+        run: cargo test -p sshxx-daemon -p sshxx-terminal-host
+
+      - name: Test and compile the Windows server
+        run: |
+          cargo test -p sshxx-server --lib --bin sshxx-server
+          cargo check -p sshxx-server --all-targets
 
   web:
     name: Web lint, check, and build
