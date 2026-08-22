@@ -55,4 +55,6 @@ test("installers verify checksums and require every runtime component", () => {
       assert.match(installer, new RegExp(component));
     }
   }
+  assert.match(unixInstaller, /while \[ -L "\$SCRIPT_PATH" \]/);
+  assert.match(unixInstaller, /ln -sfn sshxx-launcher/);
 });

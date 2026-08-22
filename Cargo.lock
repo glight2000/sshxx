@@ -4599,7 +4599,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-client"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "tauri",
  "tauri-build",
@@ -4607,7 +4607,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "prost",
  "rand 0.10.2",
@@ -4619,7 +4619,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-daemon"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "aes 0.9.2",
  "aes-gcm",
@@ -4653,7 +4653,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-server"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -4693,7 +4693,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-terminal-host"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "clap",

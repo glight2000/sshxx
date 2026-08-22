@@ -169,31 +169,42 @@ elif [ ! -x "$VERSION_DIR/bin/sshxx-daemon" ] ||
 fi
 printf '%s\n' "$VERSION" >"$INSTALL_ROOT/current-version"
 
-cat >"$INSTALL_ROOT/bin/sshxx-daemon" <<'EOF'
+cat >"$INSTALL_ROOT/bin/sshxx-launcher" <<'EOF'
 #!/bin/sh
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+set -eu
+
+COMMAND=${0##*/}
+SCRIPT_PATH=$0
+while [ -L "$SCRIPT_PATH" ]; do
+	SCRIPT_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+	LINK_TARGET=$(readlink "$SCRIPT_PATH")
+	case "$LINK_TARGET" in
+	/*) SCRIPT_PATH=$LINK_TARGET ;;
+	*) SCRIPT_PATH=$SCRIPT_DIRECTORY/$LINK_TARGET ;;
+	esac
+done
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
 VERSION=$(cat "$ROOT/current-version")
-exec "$ROOT/versions/$VERSION/bin/sshxx-daemon" "$@"
+case "$COMMAND" in
+sshxx-daemon | sshxx-terminal-host)
+	exec "$ROOT/versions/$VERSION/bin/$COMMAND" "$@"
+	;;
+sshxx-server)
+	cd "$ROOT/versions/$VERSION"
+	exec ./bin/sshxx-server "$@"
+	;;
+*)
+	echo "Unsupported sshxx command: $COMMAND" >&2
+	exit 1
+	;;
+esac
 EOF
 
-cat >"$INSTALL_ROOT/bin/sshxx-terminal-host" <<'EOF'
-#!/bin/sh
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=$(cat "$ROOT/current-version")
-exec "$ROOT/versions/$VERSION/bin/sshxx-terminal-host" "$@"
-EOF
-
-cat >"$INSTALL_ROOT/bin/sshxx-server" <<'EOF'
-#!/bin/sh
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=$(cat "$ROOT/current-version")
-cd "$ROOT/versions/$VERSION"
-exec ./bin/sshxx-server "$@"
-EOF
-
-chmod 755 "$INSTALL_ROOT/bin/sshxx-daemon" \
-	"$INSTALL_ROOT/bin/sshxx-terminal-host" \
-	"$INSTALL_ROOT/bin/sshxx-server"
+chmod 755 "$INSTALL_ROOT/bin/sshxx-launcher"
+ln -sfn sshxx-launcher "$INSTALL_ROOT/bin/sshxx-daemon"
+ln -sfn sshxx-launcher "$INSTALL_ROOT/bin/sshxx-terminal-host"
+ln -sfn sshxx-launcher "$INSTALL_ROOT/bin/sshxx-server"
 link_command() {
 	source=$1
 	destination=$2
