@@ -110,7 +110,7 @@ jobs:
           status=$?
           cat runtime-tests.log
           if [ "$status" -ne 0 ]; then
-            message=$(tail -n 120 runtime-tests.log | node -e '
+            message=$(sed -n "/^✖/,+35p" runtime-tests.log | head -c 3500 | node -e '
               let text = "";
               process.stdin.on("data", chunk => text += chunk);
               process.stdin.on("end", () => process.stdout.write(
