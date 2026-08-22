@@ -13,7 +13,9 @@ use sshxx_terminal_host::protocol::wire::CreateTerminal;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
+    time::{self, Duration},
 };
+use tracing::warn;
 
 use crate::encrypt::Encrypt;
 use crate::terminal::Terminal;
@@ -113,6 +115,52 @@ impl Runner {
         match self {
             Self::HostedShell { host, .. } => host.clone_history(source_id.0, target_id.0).await,
             Self::Shell(_) | Self::Echo => Ok(false),
+        }
+    }
+
+    /// Restart the independent terminal-host runtime, explicitly terminating
+    /// every PTY it owns. The host process keeps supervising its local endpoint
+    /// so this works without OS service-manager privileges.
+    pub(crate) async fn restart_terminal_host(&self) -> Result<()> {
+        let Self::HostedShell { host, .. } = self else {
+            bail!("terminal-host is unavailable for the active runner");
+        };
+        let mut client = TerminalHostClient::connect(
+            &host.endpoint,
+            host.authentication_token.clone(),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await?;
+        let request_id = client.restart(true).await?;
+        match receive_host_response(&mut client, request_id).await? {
+            HostMessage::Ack(_) => {}
+            HostMessage::Error(error) => {
+                bail!("terminal host {}: {}", error.code, error.message)
+            }
+            _ => bail!("terminal host returned an invalid restart response"),
+        }
+        // The acknowledgement precedes listener teardown so the response is
+        // not lost with the control connection. Confirm the replacement
+        // runtime is actually accepting authenticated connections.
+        time::sleep(Duration::from_millis(150)).await;
+        let deadline = time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match TerminalHostClient::connect(
+                &host.endpoint,
+                host.authentication_token.clone(),
+                env!("CARGO_PKG_VERSION"),
+            )
+            .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error) if time::Instant::now() < deadline => {
+                    warn!(?error, "waiting for restarted terminal host");
+                    time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => {
+                    return Err(error).context("terminal host did not recover after restart")
+                }
+            }
         }
     }
 }
@@ -249,14 +297,6 @@ async fn hosted_shell_task(
     options: ShellOptions,
 ) -> Result<()> {
     let terminal_id = host.terminal_id(id.0);
-    let mut client = TerminalHostClient::connect(
-        &host.endpoint,
-        host.authentication_token.clone(),
-        env!("CARGO_PKG_VERSION"),
-    )
-    .await
-    .context("failed to connect to sshxx-terminal-host")?;
-
     let mut environment = terminal_environment();
     if local_shell {
         environment.extend(history_launch_policy(
@@ -267,16 +307,86 @@ async fn hosted_shell_task(
             options.working_directory.as_deref(),
         ));
     }
-    attach_or_create_hosted_terminal(
-        &mut client,
-        &terminal_id,
-        program,
-        args,
-        Some(environment),
-        &options,
-    )
-    .await?;
+    let durable_ssh_preset = !options.ssh_profile_id.is_empty();
+    let mut recovering = false;
+    loop {
+        let mut client = match TerminalHostClient::connect(
+            &host.endpoint,
+            host.authentication_token.clone(),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await
+        {
+            Ok(client) => client,
+            Err(error) if recovering => {
+                warn!(%id, ?error, "waiting for terminal host to recover SSH preset");
+                time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+            Err(error) => return Err(error).context("failed to connect to sshxx-terminal-host"),
+        };
 
+        if let Err(error) = attach_or_create_hosted_terminal(
+            &mut client,
+            &terminal_id,
+            program,
+            args.clone(),
+            Some(environment.clone()),
+            &options,
+        )
+        .await
+        {
+            if recovering {
+                warn!(%id, ?error, "retrying SSH preset after terminal host restart");
+                time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+            return Err(error);
+        }
+
+        match forward_hosted_terminal(
+            id,
+            &terminal_id,
+            &encrypt,
+            &mut client,
+            &mut shell_rx,
+            &output_tx,
+        )
+        .await
+        {
+            Ok(HostedShellEnd::Detached) => return Ok(()),
+            Ok(HostedShellEnd::Closed | HostedShellEnd::Exited) => {
+                host.remove_history(id.0).await?;
+                return Ok(());
+            }
+            Err(error) if durable_ssh_preset => {
+                warn!(%id, ?error, "terminal host state was lost; recreating SSH preset");
+                output_tx
+                    .send(ClientMessage::RestartedShell(id.0))
+                    .await
+                    .context("failed to reset recovered SSH terminal output")?;
+                recovering = true;
+                time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+enum HostedShellEnd {
+    Closed,
+    Detached,
+    Exited,
+}
+
+async fn forward_hosted_terminal(
+    id: Sid,
+    terminal_id: &str,
+    encrypt: &Encrypt,
+    client: &mut TerminalHostClient,
+    shell_rx: &mut mpsc::Receiver<ShellData>,
+    output_tx: &mpsc::Sender<ClientMessage>,
+) -> Result<HostedShellEnd> {
     let mut content = String::new();
     let mut content_offset = 0usize;
     let mut decoder = UTF_8.new_decoder();
@@ -307,6 +417,9 @@ async fn hosted_shell_task(
                         }
                     }
                     Some(HostMessage::TerminalExited(exit)) if exit.terminal_id == terminal_id => {
+                        if exit.host_shutdown {
+                            bail!("terminal host shut down");
+                        }
                         finished = true;
                     }
                     Some(HostMessage::WorkingDirectory(directory)) => {
@@ -328,7 +441,7 @@ async fn hosted_shell_task(
             item = shell_rx.recv() => {
                 match item {
                     Some(ShellData::Data(data)) => {
-                        client.input(&terminal_id, data).await?;
+                        client.input(terminal_id, data).await?;
                     }
                     Some(ShellData::Sync(seq2)) => {
                         if seq2 < seq as u64 {
@@ -339,25 +452,24 @@ async fn hosted_shell_task(
                         }
                     }
                     Some(ShellData::Size(rows, cols)) => {
-                        client.resize(&terminal_id, rows, cols).await?;
+                        client.resize(terminal_id, rows, cols).await?;
                     }
                     Some(ShellData::WorkingDirectory(sender)) => {
-                        let request_id = client.get_working_directory(&terminal_id).await?;
+                        let request_id = client.get_working_directory(terminal_id).await?;
                         pending_working_directories.insert(request_id, sender);
                     }
                     Some(ShellData::Close) => {
-                        let request_id = client.close_terminal(&terminal_id).await?;
-                        match receive_host_response(&mut client, request_id).await? {
+                        let request_id = client.close_terminal(terminal_id).await?;
+                        match receive_host_response(client, request_id).await? {
                             HostMessage::Ack(_) => {}
                             HostMessage::Error(error) => {
                                 bail!("terminal host {}: {}", error.code, error.message)
                             }
                             _ => bail!("terminal host returned an invalid close response"),
                         }
-                        host.remove_history(id.0).await?;
-                        return Ok(());
+                        return Ok(HostedShellEnd::Closed);
                     }
-                    None => return Ok(()), // Daemon/controller stopped; leave the hosted PTY alive.
+                    None => return Ok(HostedShellEnd::Detached), // Daemon/controller stopped; leave the hosted PTY alive.
                 }
             }
         }
@@ -398,14 +510,13 @@ async fn hosted_shell_task(
     }
     // Natural process exit is terminal: remove the retained host entry so a
     // future shell reusing this server ID cannot attach to a dead process.
-    let request_id = client.close_terminal(&terminal_id).await?;
-    match receive_host_response(&mut client, request_id).await? {
+    let request_id = client.close_terminal(terminal_id).await?;
+    match receive_host_response(client, request_id).await? {
         HostMessage::Ack(_) => {}
         HostMessage::Error(error) => bail!("terminal host {}: {}", error.code, error.message),
         _ => bail!("terminal host returned an invalid close response"),
     }
-    host.remove_history(id.0).await?;
-    Ok(())
+    Ok(HostedShellEnd::Exited)
 }
 
 async fn attach_or_create_hosted_terminal(
@@ -994,6 +1105,114 @@ mod tests {
         let shutdown = client.shutdown(false).await?;
         wait_for_ack(&mut client, shutdown).await?;
         tokio::time::timeout(Duration::from_secs(3), server).await???;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ssh_preset_restarts_after_terminal_host_state_loss() -> anyhow::Result<()> {
+        let state = tempfile::tempdir()?;
+        let endpoint = state
+            .path()
+            .join("host.sock")
+            .to_string_lossy()
+            .into_owned();
+        let token = vec![31; 32];
+        let first_endpoint = endpoint.clone();
+        let first_token = token.clone();
+        let first_server = tokio::spawn(async move {
+            sshxx_terminal_host::server::serve(&first_endpoint, first_token).await
+        });
+        wait_for_host(&endpoint, &token).await?;
+
+        let history_directory = state.path().join("history");
+        std::fs::create_dir(&history_directory)?;
+        let runner = Runner::HostedShell {
+            shell: "/bin/bash".into(),
+            host: TerminalHostConfig {
+                endpoint: endpoint.clone(),
+                authentication_token: token.clone(),
+                instance_id: "sshxx-preset-recovery".into(),
+                history_directory,
+            },
+        };
+        let (shell_tx, shell_rx) = mpsc::channel(8);
+        let (output_tx, mut output_rx) = mpsc::channel(32);
+        let mut options = test_shell_options();
+        // The durable profile identity is what distinguishes an SSH preset
+        // from a default local terminal during host-loss recovery.
+        options.ssh_profile_id = "saved-ssh-profile".into();
+        let task = tokio::spawn(async move {
+            runner
+                .run(
+                    Sid(11),
+                    Encrypt::new("host-recovery-test"),
+                    shell_rx,
+                    output_tx,
+                    options,
+                )
+                .await
+        });
+        let first_pid = wait_for_terminal_pid(&endpoint, &token).await?;
+
+        let mut admin =
+            TerminalHostClient::connect(&endpoint, token.clone(), env!("CARGO_PKG_VERSION"))
+                .await?;
+        let shutdown = admin.shutdown(true).await?;
+        wait_for_ack(&mut admin, shutdown).await?;
+        tokio::time::timeout(Duration::from_secs(3), first_server).await???;
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if matches!(
+                    output_rx.recv().await,
+                    Some(sshx_core::proto::client_update::ClientMessage::RestartedShell(11))
+                ) {
+                    break;
+                }
+            }
+        })
+        .await?;
+
+        let second_endpoint = endpoint.clone();
+        let second_token = token.clone();
+        let second_server = tokio::spawn(async move {
+            sshxx_terminal_host::server::serve(&second_endpoint, second_token).await
+        });
+        wait_for_host(&endpoint, &token).await?;
+        let second_pid = wait_for_terminal_pid(&endpoint, &token).await?;
+        assert_ne!(first_pid, second_pid);
+
+        shell_tx
+            .send(ShellData::Data(
+                b"printf 'SSH_PRESET_RECOVERED\\n'\r".to_vec(),
+            ))
+            .await?;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(sshx_core::proto::client_update::ClientMessage::Data(data)) =
+                    output_rx.recv().await
+                {
+                    let plaintext = Encrypt::new("host-recovery-test").segment(
+                        0x100000000 | 11,
+                        data.seq,
+                        &data.data,
+                    );
+                    if String::from_utf8_lossy(&plaintext).contains("SSH_PRESET_RECOVERED") {
+                        break;
+                    }
+                }
+            }
+        })
+        .await?;
+
+        shell_tx.send(ShellData::Close).await?;
+        tokio::time::timeout(Duration::from_secs(3), task).await???;
+        let mut admin =
+            TerminalHostClient::connect(&endpoint, token, env!("CARGO_PKG_VERSION")).await?;
+        let shutdown = admin.shutdown(false).await?;
+        wait_for_ack(&mut admin, shutdown).await?;
+        tokio::time::timeout(Duration::from_secs(3), second_server).await???;
         Ok(())
     }
 

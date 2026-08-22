@@ -12,7 +12,9 @@ use sshx_core::{Sid, Uid};
 use sshx_daemon::encrypt::Encrypt;
 use sshx_server::{
     state::ServerState,
-    web::protocol::{WsClient, WsFileWindow, WsNote, WsPage, WsServer, WsUser, WsWinsize},
+    web::protocol::{
+        WsClient, WsFileWindow, WsNote, WsPage, WsServer, WsTerminalChunks, WsUser, WsWinsize,
+    },
     Server, ServerOptions,
 };
 use tokio::net::{TcpListener, TcpStream};
@@ -104,6 +106,7 @@ pub struct ClientSocket {
     pub data: HashMap<Sid, String>,
     pub chunk_replays: Vec<(Sid, bool)>,
     pub messages: Vec<(Uid, String, String)>,
+    pub system_action_results: Vec<(String, String, bool, String)>,
     pub errors: Vec<String>,
 }
 
@@ -129,6 +132,7 @@ impl ClientSocket {
             data: HashMap::new(),
             chunk_replays: Vec::new(),
             messages: Vec::new(),
+            system_action_results: Vec::new(),
             errors: Vec::new(),
         };
         this.authenticate().await;
@@ -222,7 +226,22 @@ impl ClientSocket {
                         note.text = paragraphs.join("\n");
                         note.paragraphs = paragraphs;
                     }
-                    WsServer::Chunks(id, page_id, replay, seqnum, chunks) => {
+                    WsServer::Chunks(WsTerminalChunks::Legacy(
+                        id,
+                        page_id,
+                        replay,
+                        seqnum,
+                        chunks,
+                    ))
+                    | WsServer::Chunks(WsTerminalChunks::Generation(
+                        id,
+                        page_id,
+                        _,
+                        replay,
+                        seqnum,
+                        chunks,
+                    ))
+                    | WsServer::ChunksGeneration(id, page_id, _, replay, seqnum, chunks) => {
                         assert_eq!(self.shells.get(&id).unwrap().page_id, page_id);
                         self.chunk_replays.push((id, replay));
                         let value = self.data.entry(id).or_default();
@@ -241,6 +260,10 @@ impl ClientSocket {
                     }
                     WsServer::ShellLatency(_) => {}
                     WsServer::FileResponse(_, _, _) => {}
+                    WsServer::SystemActionResult(request_id, action, ok, message) => {
+                        self.system_action_results
+                            .push((request_id, action, ok, message));
+                    }
                     WsServer::Pong(_) => {}
                     WsServer::Error(err) => self.errors.push(err),
                 }

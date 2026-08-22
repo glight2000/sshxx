@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ use bytes::Bytes;
 use futures_util::SinkExt;
 use sshx_core::proto::{
     server_update::ServerMessage, FileRequest as ProtoFileRequest, ImageUploadChunk, NewShell,
-    TerminalInput, TerminalSize,
+    SystemAction, SystemActionRequest, TerminalInput, TerminalSize,
 };
 use sshx_core::Sid;
 use subtle::ConstantTimeEq;
@@ -21,30 +21,69 @@ use tokio_stream::StreamExt;
 use tracing::{error, info_span, warn, Instrument};
 
 use crate::session::Session;
-use crate::web::protocol::{WsClient, WsServer};
+use crate::web::protocol::{WsClient, WsServer, WsTerminalChunks, WsTerminalSubscription};
 use crate::ServerState;
 
 const IMAGE_UPLOAD_CHUNK_BYTES: usize = 64 << 10;
 const IMAGE_UPLOAD_MAX_BYTES: u64 = 20 << 20;
 const FILE_REQUEST_MAX_BYTES: usize = 12 << 20;
 const TERMINAL_RENDER_ACK_CAPABILITY: &str = "terminal-render-ack-v1";
+const TERMINAL_GENERATION_CAPABILITY: &str = "terminal-generation-v1";
+const SYSTEM_ACTION_CAPABILITY: &str = "system-action-v1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalChunkProtocol {
+    Legacy,
+    Transitional,
+    Generation,
+}
+
+type TerminalChunks = (Sid, u32, u32, TerminalChunkProtocol, bool, u64, Vec<Bytes>);
+
+fn resolve_terminal_subscription(
+    session: &Session,
+    subscription: WsTerminalSubscription,
+) -> Option<(Sid, u32, u32, TerminalChunkProtocol, u64)> {
+    match subscription {
+        WsTerminalSubscription::Legacy(id, page_id, chunknum) => {
+            session.shell_generation(id).map(|generation| {
+                (
+                    id,
+                    page_id,
+                    generation,
+                    TerminalChunkProtocol::Legacy,
+                    chunknum,
+                )
+            })
+        }
+        WsTerminalSubscription::Generation(id, page_id, generation, chunknum) => Some((
+            id,
+            page_id,
+            generation,
+            TerminalChunkProtocol::Transitional,
+            chunknum,
+        )),
+    }
+}
 
 fn spawn_chunk_forwarder(
     session: Arc<Session>,
     id: Sid,
+    generation: u32,
+    protocol: TerminalChunkProtocol,
     chunknum: u64,
-    chunks_tx: mpsc::Sender<(Sid, u32, bool, u64, Vec<Bytes>)>,
+    chunks_tx: mpsc::Sender<TerminalChunks>,
     mut rendered_rx: Option<mpsc::Receiver<()>>,
 ) {
     tokio::spawn(async move {
-        let stream = session.subscribe_chunks(id, chunknum);
+        let stream = session.subscribe_chunks(id, generation, chunknum);
         tokio::pin!(stream);
         while let Some((replay, seqnum, chunks)) = stream.next().await {
             let Some(page_id) = session.shell_page(id) else {
                 break;
             };
             if chunks_tx
-                .send((id, page_id, replay, seqnum, chunks))
+                .send((id, page_id, generation, protocol, replay, seqnum, chunks))
                 .await
                 .is_err()
             {
@@ -90,6 +129,13 @@ fn valid_file_request(
         && response_stream & (1 << 63) != 0
         && request_stream != response_stream
         && (1..=FILE_REQUEST_MAX_BYTES).contains(&len)
+}
+
+fn valid_request_id(request_id: &str) -> bool {
+    request_id.len() == 32
+        && request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn valid_image_upload(
@@ -238,22 +284,30 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
 
     let update_tx = session.update_tx(); // start listening for updates before any state reads
     let mut broadcast_stream = session.subscribe_broadcast();
-    send(
-        socket,
-        WsServer::Capabilities(vec![TERMINAL_RENDER_ACK_CAPABILITY.into()]),
-    )
-    .await?;
+    let mut capabilities = vec![
+        TERMINAL_RENDER_ACK_CAPABILITY.into(),
+        TERMINAL_GENERATION_CAPABILITY.into(),
+    ];
+    if metadata
+        .daemon_capabilities
+        .iter()
+        .any(|capability| capability == SYSTEM_ACTION_CAPABILITY)
+    {
+        capabilities.push(SYSTEM_ACTION_CAPABILITY.into());
+    }
+    send(socket, WsServer::Capabilities(capabilities)).await?;
     send(socket, WsServer::Users(session.list_users())).await?;
     for (id, page_id, editor) in session.list_note_editors() {
         send(socket, WsServer::NoteEditing(id, page_id, Some(editor))).await?;
     }
 
-    let mut subscribed = HashSet::new(); // prevent duplicate subscriptions
+    let mut subscribed = HashMap::<Sid, (u32, TerminalChunkProtocol)>::new();
     let mut render_acks = HashMap::<Sid, mpsc::Sender<()>>::new();
     // Filesystem responses are returned only to the WebSocket that requested
     // them, even though the daemon-to-server transport is session-scoped.
     let mut pending_file_requests = HashMap::<String, Instant>::new();
-    let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u32, bool, u64, Vec<Bytes>)>(1);
+    let mut pending_system_actions = HashMap::<String, Instant>::new();
+    let (chunks_tx, mut chunks_rx) = mpsc::channel::<TerminalChunks>(1);
 
     let mut shells_stream = session.subscribe_shells();
     let mut notes_stream = session.subscribe_notes();
@@ -267,6 +321,11 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 let msg = result.context("client fell behind on broadcast stream")?;
                 if let WsServer::FileResponse(request_id, _, _) = &msg {
                     if pending_file_requests.remove(request_id).is_none() {
+                        continue;
+                    }
+                }
+                if let WsServer::SystemActionResult(request_id, _, _, _) = &msg {
+                    if pending_system_actions.remove(request_id).is_none() {
                         continue;
                     }
                 }
@@ -293,8 +352,19 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 send(socket, WsServer::SshProfiles(profiles)).await?;
                 continue;
             }
-            Some((id, page_id, replay, seqnum, chunks)) = chunks_rx.recv() => {
-                send(socket, WsServer::Chunks(id, page_id, replay, seqnum, chunks)).await?;
+            Some((id, page_id, generation, protocol, replay, seqnum, chunks)) = chunks_rx.recv() => {
+                let message = match protocol {
+                    TerminalChunkProtocol::Legacy => WsServer::Chunks(WsTerminalChunks::Legacy(
+                        id, page_id, replay, seqnum, chunks,
+                    )),
+                    TerminalChunkProtocol::Transitional => WsServer::Chunks(WsTerminalChunks::Generation(
+                        id, page_id, generation, replay, seqnum, chunks,
+                    )),
+                    TerminalChunkProtocol::Generation => {
+                        WsServer::ChunksGeneration(id, page_id, generation, replay, seqnum, chunks)
+                    }
+                };
+                send(socket, message).await?;
                 continue;
             }
             result = recv(socket) => {
@@ -1409,31 +1479,138 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     }))
                     .await?;
             }
-            WsClient::Subscribe(id, page_id, chunknum) => {
-                if let Err(err) = session.check_shell_page(id, page_id) {
-                    send(socket, WsServer::Error(err.to_string())).await?;
+            WsClient::SystemAction(request_id, action) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
                     continue;
                 }
-                if subscribed.contains(&id) {
+                if !metadata
+                    .daemon_capabilities
+                    .iter()
+                    .any(|capability| capability == SYSTEM_ACTION_CAPABILITY)
+                {
+                    send(
+                        socket,
+                        WsServer::Error(
+                            "The connected daemon does not support runtime controls.".into(),
+                        ),
+                    )
+                    .await?;
                     continue;
                 }
-                subscribed.insert(id);
-                spawn_chunk_forwarder(Arc::clone(&session), id, chunknum, chunks_tx.clone(), None);
+                let action_value = match action.as_str() {
+                    "restartDaemon" => SystemAction::RestartDaemon,
+                    "restartTerminalHost" => SystemAction::RestartTerminalHost,
+                    _ => {
+                        send(socket, WsServer::Error("Invalid system action.".into())).await?;
+                        continue;
+                    }
+                };
+                pending_system_actions
+                    .retain(|_, created| created.elapsed() < Duration::from_secs(20));
+                if !valid_request_id(&request_id) || pending_system_actions.len() >= 2 {
+                    send(
+                        socket,
+                        WsServer::Error("Invalid or excessive system action request.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                pending_system_actions.insert(request_id.clone(), Instant::now());
+                update_tx
+                    .send(ServerMessage::SystemAction(SystemActionRequest {
+                        request_id,
+                        action: action_value.into(),
+                    }))
+                    .await?;
             }
-            WsClient::SubscribeFlowControlled(id, page_id, chunknum) => {
+            WsClient::Subscribe(subscription) => {
+                let Some((id, page_id, generation, protocol, chunknum)) =
+                    resolve_terminal_subscription(&session, subscription)
+                else {
+                    continue;
+                };
                 if let Err(err) = session.check_shell_page(id, page_id) {
                     send(socket, WsServer::Error(err.to_string())).await?;
                     continue;
                 }
-                if subscribed.contains(&id) {
+                if subscribed.get(&id) == Some(&(generation, protocol)) {
                     continue;
                 }
-                subscribed.insert(id);
+                subscribed.insert(id, (generation, protocol));
+                render_acks.remove(&id);
+                spawn_chunk_forwarder(
+                    Arc::clone(&session),
+                    id,
+                    generation,
+                    protocol,
+                    chunknum,
+                    chunks_tx.clone(),
+                    None,
+                );
+            }
+            WsClient::SubscribeFlowControlled(subscription) => {
+                let Some((id, page_id, generation, protocol, chunknum)) =
+                    resolve_terminal_subscription(&session, subscription)
+                else {
+                    continue;
+                };
+                if let Err(err) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                if subscribed.get(&id) == Some(&(generation, protocol)) {
+                    continue;
+                }
+                subscribed.insert(id, (generation, protocol));
                 let (rendered_tx, rendered_rx) = mpsc::channel(1);
                 render_acks.insert(id, rendered_tx);
                 spawn_chunk_forwarder(
                     Arc::clone(&session),
                     id,
+                    generation,
+                    protocol,
+                    chunknum,
+                    chunks_tx.clone(),
+                    Some(rendered_rx),
+                );
+            }
+            WsClient::SubscribeGeneration(id, page_id, generation, chunknum) => {
+                if let Err(err) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                if subscribed.get(&id) == Some(&(generation, TerminalChunkProtocol::Generation)) {
+                    continue;
+                }
+                subscribed.insert(id, (generation, TerminalChunkProtocol::Generation));
+                render_acks.remove(&id);
+                spawn_chunk_forwarder(
+                    Arc::clone(&session),
+                    id,
+                    generation,
+                    TerminalChunkProtocol::Generation,
+                    chunknum,
+                    chunks_tx.clone(),
+                    None,
+                );
+            }
+            WsClient::SubscribeFlowControlledGeneration(id, page_id, generation, chunknum) => {
+                if let Err(err) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                if subscribed.get(&id) == Some(&(generation, TerminalChunkProtocol::Generation)) {
+                    continue;
+                }
+                subscribed.insert(id, (generation, TerminalChunkProtocol::Generation));
+                let (rendered_tx, rendered_rx) = mpsc::channel(1);
+                render_acks.insert(id, rendered_tx);
+                spawn_chunk_forwarder(
+                    Arc::clone(&session),
+                    id,
+                    generation,
+                    TerminalChunkProtocol::Generation,
                     chunknum,
                     chunks_tx.clone(),
                     Some(rendered_rx),
@@ -1518,9 +1695,33 @@ async fn proxy_redirect(socket: &mut WebSocket, host: &str, name: &str) -> Resul
 mod tests {
     use sshx_core::Sid;
 
-    use crate::web::protocol::WsClient;
+    use crate::web::protocol::{WsClient, WsTerminalSubscription};
 
-    use super::{same_ssh_host, valid_image_upload};
+    use super::{same_ssh_host, valid_image_upload, valid_request_id};
+
+    #[test]
+    fn accepts_only_bounded_hex_system_request_ids() {
+        assert!(valid_request_id("0123456789abcdef0123456789abcdef"));
+        assert!(!valid_request_id("0123456789ABCDEF0123456789ABCDEF"));
+        assert!(!valid_request_id("../../../../../../../../../../../../etc"));
+    }
+
+    #[test]
+    fn round_trips_system_action_messages() {
+        let action = WsClient::SystemAction(
+            "0123456789abcdef0123456789abcdef".into(),
+            "restartDaemon".into(),
+        );
+        let mut encoded = Vec::new();
+        ciborium::into_writer(&action, &mut encoded).expect("system action should encode");
+        assert!(matches!(
+            ciborium::from_reader::<WsClient, _>(encoded.as_slice())
+                .expect("system action should decode"),
+            WsClient::SystemAction(request_id, action)
+                if request_id == "0123456789abcdef0123456789abcdef"
+                    && action == "restartDaemon"
+        ));
+    }
 
     #[test]
     fn matches_only_the_configured_ssh_host_for_clone_paths() {
@@ -1568,6 +1769,53 @@ mod tests {
             current,
             WsClient::CloneWindowedAt(Sid(7), path, host, ..)
                 if path == "/work" && host == "host.example"
+        ));
+    }
+
+    #[test]
+    fn accepts_legacy_and_generation_aware_terminal_subscriptions() {
+        let round_trip = |message: &WsClient| {
+            let mut encoded = Vec::new();
+            ciborium::into_writer(message, &mut encoded).expect("subscription should encode");
+            ciborium::from_reader::<WsClient, _>(encoded.as_slice())
+                .expect("subscription should decode")
+        };
+
+        assert!(matches!(
+            round_trip(&WsClient::Subscribe(WsTerminalSubscription::Legacy(
+                Sid(7),
+                1,
+                12,
+            ))),
+            WsClient::Subscribe(WsTerminalSubscription::Legacy(Sid(7), 1, 12))
+        ));
+        assert!(matches!(
+            round_trip(&WsClient::Subscribe(WsTerminalSubscription::Generation(
+                Sid(7),
+                1,
+                3,
+                12
+            ),)),
+            WsClient::Subscribe(WsTerminalSubscription::Generation(Sid(7), 1, 3, 12))
+        ));
+        assert!(matches!(
+            round_trip(&WsClient::SubscribeGeneration(Sid(7), 1, 3, 12)),
+            WsClient::SubscribeGeneration(Sid(7), 1, 3, 12)
+        ));
+    }
+
+    #[test]
+    fn accepts_the_frontend_render_ack_shape() {
+        // Produced by cbor-x for `{ renderedChunks: 23 }`. The variant is a
+        // newtype, so its value must be a scalar rather than a one-item array.
+        let encoded = [
+            0xb9, 0x00, 0x01, 0x6e, b'r', b'e', b'n', b'd', b'e', b'r', b'e', b'd', b'C', b'h',
+            b'u', b'n', b'k', b's', 0x17,
+        ];
+        assert!(matches!(
+            ciborium::from_reader::<WsClient, _>(encoded.as_slice())
+                .expect("frontend render acknowledgement should decode"),
+            WsClient::RenderedChunks(Sid(23))
         ));
     }
 

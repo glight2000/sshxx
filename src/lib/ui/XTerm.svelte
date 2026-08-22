@@ -49,6 +49,7 @@
   import { settings } from "$lib/settings";
   import { TerminalWriteQueue } from "$lib/terminalWriteQueue";
   import { parseOsc7Location } from "$lib/terminalLocation";
+  import { splitTerminalTitle } from "$lib/terminalTitle";
   import { TypeAheadAddon } from "$lib/typeahead";
   import { installXtermMouseCoordinateAdapter } from "$lib/xtermMouseCoordinates";
 
@@ -146,6 +147,7 @@
   let focused = false;
   let titleEditing = false;
   let currentTitle = "Remote Terminal";
+  let titleActivity = "";
   let appearanceOpen = false;
   let appearanceButton: HTMLButtonElement;
   let appearancePanel: HTMLDivElement;
@@ -159,6 +161,7 @@
   let workingDirectory = ".";
   let workingDirectoryHost = "";
   let initialWorkingDirectoryHost = "";
+  const pendingExecuteTimers = new Set<number>();
   function requestAttention() {
     if (suppressAttention === 0 && !focused) attention = true;
     return true;
@@ -225,6 +228,36 @@
       focused = isFocused;
       dispatch("blur");
     }
+  }
+
+  function handleContainerMouseDown(event: MouseEvent) {
+    dispatch("bringToFront");
+    if (
+      event.button !== 0 ||
+      !(event.target instanceof Element) ||
+      event.target.closest(".xterm") ||
+      event.target.closest(
+        "[data-canvas-titlebar], button, input, textarea, select, a",
+      )
+    ) {
+      return;
+    }
+    // A primary press on non-focusable chrome makes browsers focus the body as
+    // their default action. Prevent that before focusing xterm, otherwise the
+    // lower padding briefly focuses the terminal and immediately blurs it.
+    // The actual xterm surface is excluded above so selection and mouse-mode
+    // input retain their native behavior.
+    event.preventDefault();
+    setFocused(true);
+    term?.focus();
+  }
+
+  function scheduleExecute() {
+    const timer = window.setTimeout(() => {
+      pendingExecuteTimers.delete(timer);
+      dispatch("data", new Uint8Array([13]));
+    }, 75);
+    pendingExecuteTimers.add(timer);
   }
 
   const supportedImageTypes = new Set([
@@ -465,11 +498,15 @@
     writeQueue.setSink((data, complete) => term!.write(data, complete));
     sendText = (data: string, execute = false) => {
       term?.paste(data);
-      if (execute) dispatch("data", new Uint8Array([13]));
+      // Keep Enter out of the same PTY read burst as bracketed paste. TUIs
+      // otherwise occasionally classify it as another pasted newline.
+      if (execute) scheduleExecute();
     };
-    term.onTitleChange((title) => {
-      currentTitle = title;
-      dispatch("title", title);
+    term.onTitleChange((rawTitle) => {
+      const next = splitTerminalTitle(rawTitle);
+      currentTitle = next.title || "Remote Terminal";
+      titleActivity = next.activity;
+      dispatch("title", currentTitle);
     });
 
     const focusObserver = new MutationObserver((mutations) => {
@@ -508,6 +545,8 @@
     if (webglRefreshTimer !== null) window.clearTimeout(webglRefreshTimer);
     webglContextLoss?.dispose();
     mouseCoordinateAdapter?.dispose();
+    for (const timer of pendingExecuteTimers) window.clearTimeout(timer);
+    pendingExecuteTimers.clear();
     term?.dispose();
   });
 </script>
@@ -526,7 +565,7 @@
   style:opacity={opacity / 100}
   style:width={windowWidth > 0 ? `${windowWidth}px` : undefined}
   style:height={windowHeight > 0 ? `${windowHeight}px` : undefined}
-  on:mousedown={() => dispatch("bringToFront")}
+  on:mousedown|capture={handleContainerMouseDown}
   on:pointerdown={(event) => event.stopPropagation()}
   on:paste|capture={handlePaste}
   on:dragover={handleDragOver}
@@ -586,6 +625,13 @@
     <div
       class="flex h-full w-0 flex-grow-[4] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap px-2 text-center text-sm font-medium text-zinc-300"
     >
+      {#if titleActivity}
+        <span
+          class="terminal-title-activity"
+          aria-hidden="true"
+          title="Terminal activity">{titleActivity}</span
+        >
+      {/if}
       <InlineTitle
         value={title}
         fallback={currentTitle}
@@ -808,6 +854,10 @@
 
   .terminal-catchup {
     @apply inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-100/80;
+  }
+
+  .terminal-title-activity {
+    @apply inline-flex h-4 w-4 shrink-0 items-center justify-center font-mono text-xs text-indigo-300;
   }
 
   .terminal-catchup > span {

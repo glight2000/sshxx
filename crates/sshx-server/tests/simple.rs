@@ -21,6 +21,7 @@ async fn test_rpc() -> Result<()> {
         daemon_version: "test-daemon".into(),
         workspace: None,
         ssh_profiles: None,
+        capabilities: Vec::new(),
     };
     let resp = client.open(req).await?;
     assert!(!resp.into_inner().name.is_empty());
@@ -67,6 +68,7 @@ async fn test_fixed_session_name() -> Result<()> {
             daemon_version: "test-daemon".into(),
             workspace: None,
             ssh_profiles: None,
+            capabilities: Vec::new(),
         })
         .await?
         .into_inner();
@@ -84,6 +86,7 @@ async fn test_fixed_session_name() -> Result<()> {
             daemon_version: "restarted-daemon".into(),
             workspace: None,
             ssh_profiles: None,
+            capabilities: Vec::new(),
         })
         .await?;
     let replacement_session = server.state().lookup("dev").unwrap();
@@ -174,6 +177,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             daemon_version: "test-daemon".into(),
             workspace: Some(workspace.clone()),
             ssh_profiles: None,
+            capabilities: Vec::new(),
         })
         .await?
         .into_inner();
@@ -254,6 +258,7 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
                 format_version: sshx_core::SSH_PROFILE_FORMAT_VERSION,
                 profiles: vec![profile.clone()],
             }),
+            capabilities: Vec::new(),
         })
         .await?
         .into_inner();
@@ -288,6 +293,7 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
                 format_version: sshx_core::SSH_PROFILE_FORMAT_VERSION,
                 profiles: vec![profile],
             }),
+            capabilities: Vec::new(),
         })
         .await?
         .into_inner();

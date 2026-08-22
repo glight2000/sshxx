@@ -39,6 +39,10 @@ pub struct WsWinsize {
     /// Per-terminal color theme, or empty for a legacy client default.
     #[serde(default)]
     pub theme: String,
+    /// Volatile PTY generation. Incremented when a persisted SSH terminal is
+    /// recreated after terminal-host state loss.
+    #[serde(default)]
+    pub generation: u32,
 }
 
 fn default_opacity() -> u8 {
@@ -75,6 +79,7 @@ impl Default for WsWinsize {
             opacity: default_opacity(),
             page_id: default_page_id(),
             theme: String::new(),
+            generation: 0,
         }
     }
 }
@@ -250,6 +255,29 @@ pub struct WsUser {
     pub can_write: bool,
 }
 
+/// Terminal chunks encoded by either the legacy or the transitional Web
+/// protocol. The transitional shape used the legacy message name with a PTY
+/// generation field and must remain readable by rolling deployments.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum WsTerminalChunks {
+    /// Original five-field chunk tuple without a PTY generation.
+    Legacy(Sid, u32, bool, u64, Vec<Bytes>),
+    /// Transitional six-field tuple carrying a PTY generation.
+    Generation(Sid, u32, u32, bool, u64, Vec<Bytes>),
+}
+
+/// A legacy message name with either its original three fields or the brief
+/// transitional four-field generation-aware shape.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum WsTerminalSubscription {
+    /// Original terminal ID, page ID, and chunk index tuple.
+    Legacy(Sid, u32, u64),
+    /// Transitional tuple with a PTY generation before the chunk index.
+    Generation(Sid, u32, u32, u64),
+}
+
 /// A real-time message sent from the server over WebSocket.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -282,14 +310,18 @@ pub enum WsServer {
     NoteText(Sid, u32, String),
     /// Character-level live structured paragraph update for a note.
     NoteParagraphs(Sid, u32, Vec<String>),
-    /// Subscription results, in the form of terminal data chunks.
-    Chunks(Sid, u32, bool, u64, Vec<Bytes>),
+    /// Legacy subscription results, in the form of terminal data chunks.
+    Chunks(WsTerminalChunks),
+    /// Generation-aware terminal data chunks.
+    ChunksGeneration(Sid, u32, u32, bool, u64, Vec<Bytes>),
     /// Get a chat message tuple `(uid, name, text)` from the room.
     Hear(Uid, String, String),
     /// Forward a latency measurement between the server and backend shell.
     ShellLatency(u64),
     /// End-to-end encrypted filesystem response from sshxx-daemon.
     FileResponse(String, u64, Bytes),
+    /// Result of an authenticated daemon-owned lifecycle action.
+    SystemActionResult(String, String, bool, String),
     /// Echo back a timestamp, for the the client's own latency measurement.
     Pong(u64),
     /// Alert the client of an application error.
@@ -394,10 +426,16 @@ pub enum WsClient {
     UploadImage(Sid, u32, String, String, u64, u64, u64, Bytes, bool),
     /// End-to-end encrypted filesystem request for a terminal's host.
     FileRequest(Sid, u32, String, u64, u64, Bytes),
-    /// Subscribe to a shell, starting at a given chunk index.
-    Subscribe(Sid, u32, u64),
-    /// Subscribe with one rendered batch in flight at a time.
-    SubscribeFlowControlled(Sid, u32, u64),
+    /// Request a daemon-owned lifecycle action by random request ID and name.
+    SystemAction(String, String),
+    /// Legacy shell subscription, starting at a given chunk index.
+    Subscribe(WsTerminalSubscription),
+    /// Legacy flow-controlled subscription.
+    SubscribeFlowControlled(WsTerminalSubscription),
+    /// Subscribe to a specific PTY generation.
+    SubscribeGeneration(Sid, u32, u32, u64),
+    /// Subscribe to a specific PTY generation with one rendered batch in flight.
+    SubscribeFlowControlledGeneration(Sid, u32, u32, u64),
     /// Confirm that the latest flow-controlled batch reached the renderer.
     RenderedChunks(Sid),
     /// Send a a chat message to the room.

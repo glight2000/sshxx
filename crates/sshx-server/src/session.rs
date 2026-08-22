@@ -55,6 +55,9 @@ pub struct Metadata {
 
     /// Version of the daemon hosting the terminal processes.
     pub daemon_version: String,
+
+    /// Optional protocol capabilities explicitly advertised by the daemon.
+    pub daemon_capabilities: Vec<String>,
 }
 
 /// In-memory state for a single sshxx session.
@@ -520,6 +523,7 @@ impl Session {
                     .context("terminal opacity overflow")?,
                 page_id: if shell.page_id == 0 { 1 } else { shell.page_id },
                 theme: shell.theme,
+                generation: 0,
                 width: shell.width.try_into().context("terminal width overflow")?,
                 height: shell
                     .height
@@ -824,11 +828,15 @@ impl Session {
     pub fn subscribe_chunks(
         &self,
         id: Sid,
+        generation: u32,
         mut chunknum: u64,
     ) -> impl Stream<Item = (bool, u64, Vec<Bytes>)> + '_ {
         async_stream::stream! {
             let mut replay = true;
             while !self.shutdown.is_terminated() {
+                if self.shell_generation(id) != Some(generation) {
+                    return;
+                }
                 // We absolutely cannot hold `shells` across an await point,
                 // since that would cause deadlocks.
                 let (seqnum, chunks, notified, caught_up) = {
@@ -882,6 +890,37 @@ impl Session {
                 }
             }
         }
+    }
+
+    pub(crate) fn shell_generation(&self, id: Sid) -> Option<u32> {
+        self.source
+            .borrow()
+            .iter()
+            .find(|(shell_id, _)| *shell_id == id)
+            .map(|(_, shell)| shell.generation)
+    }
+
+    /// Reset volatile output state while preserving the window and its SSH
+    /// profile. This is used only when a persisted SSH terminal is recreated
+    /// after terminal-host state loss.
+    pub fn restart_shell(&self, id: Sid) -> Result<()> {
+        let mut found = false;
+        self.source.send_modify(|source| {
+            if let Some((_, shell)) = source.iter_mut().find(|(shell_id, _)| *shell_id == id) {
+                shell.generation = shell.generation.wrapping_add(1);
+                found = true;
+            }
+        });
+        if !found {
+            bail!("cannot restart shell with id={id}, layout does not exist");
+        }
+        {
+            let mut shell = self.get_shell_mut(id)?;
+            shell.notify.notify_waiters();
+            *shell = State::default();
+        }
+        self.sync_now();
+        Ok(())
     }
 
     /// Add a new shell to the session.
@@ -954,6 +993,7 @@ impl Session {
                 height: requested_height,
                 theme: requested_theme,
                 background: requested_background,
+                generation: 0,
                 ..Default::default()
             };
             source.push((id, winsize));
@@ -1613,6 +1653,22 @@ impl Session {
             .ok();
     }
 
+    /// Broadcast a correlated lifecycle result. Each WebSocket forwards it
+    /// only when it owns the matching pending request ID.
+    pub fn send_system_action_response(
+        &self,
+        request_id: String,
+        action: String,
+        ok: bool,
+        message: String,
+    ) {
+        self.broadcast
+            .send(WsServer::SystemActionResult(
+                request_id, action, ok, message,
+            ))
+            .ok();
+    }
+
     /// Show a daemon-side operational error to connected browser clients.
     pub fn send_error(&self, message: String) {
         self.broadcast.send(WsServer::Error(message)).ok();
@@ -1675,5 +1731,87 @@ impl Session {
     /// Resolves when the session has received a shutdown signal.
     pub async fn terminated(&self) {
         self.shutdown.wait().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_stream::StreamExt;
+
+    fn session() -> Session {
+        Session::new(Metadata {
+            encrypted_zeros: Bytes::new(),
+            name: "test".into(),
+            write_password_hash: None,
+            daemon_version: "test".into(),
+            daemon_capabilities: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn restart_shell_resets_output_but_preserves_layout_and_ssh_profile() {
+        let session = session();
+        let id = Sid(7);
+        session
+            .add_shell(
+                id,
+                (120, 240),
+                1,
+                (24, 80),
+                (640, 480),
+                ("sshxx-dark".into(), String::new(), "profile-1".into()),
+            )
+            .unwrap();
+        session
+            .add_data(id, Bytes::from_static(b"old output"), 0)
+            .unwrap();
+
+        session.restart_shell(id).unwrap();
+
+        let source = session.source.borrow();
+        let (_, window) = source.iter().find(|(shell_id, _)| *shell_id == id).unwrap();
+        assert_eq!(window.generation, 1);
+        assert_eq!((window.x, window.y), (120, 240));
+        drop(source);
+        assert_eq!(
+            session.workspace_state().shells[0].ssh_profile_id,
+            "profile-1"
+        );
+        let shell = session.shells.read();
+        let state = shell.get(&id).unwrap();
+        assert_eq!(state.seqnum, 0);
+        assert!(state.data.is_empty());
+        assert!(!state.closed);
+    }
+
+    #[tokio::test]
+    async fn restart_shell_ends_old_output_generation_subscriptions() {
+        let session = session();
+        let id = Sid(8);
+        session
+            .add_shell(
+                id,
+                (0, 0),
+                1,
+                (24, 80),
+                (640, 480),
+                (String::new(), String::new(), "profile-2".into()),
+            )
+            .unwrap();
+        let old_stream = session.subscribe_chunks(id, 0, 0);
+        tokio::pin!(old_stream);
+
+        session.restart_shell(id).unwrap();
+        session
+            .add_data(id, Bytes::from_static(b"new output"), 0)
+            .unwrap();
+
+        assert!(old_stream.next().await.is_none());
+        let new_stream = session.subscribe_chunks(id, 1, 0);
+        tokio::pin!(new_stream);
+        let (_, sequence, chunks) = new_stream.next().await.unwrap();
+        assert_eq!(sequence, 0);
+        assert_eq!(chunks, vec![Bytes::from_static(b"new output")]);
     }
 }

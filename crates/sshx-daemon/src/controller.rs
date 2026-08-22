@@ -10,7 +10,7 @@ use bytes::Bytes;
 use sshx_core::proto::{
     client_update::ClientMessage, server_update::ServerMessage,
     sshx_service_client::SshxServiceClient, ClientUpdate, CloseRequest, FileResponse, NewShell,
-    OpenRequest, WorkspacePage, WorkspaceState,
+    OpenRequest, SystemAction, SystemActionResponse, WorkspacePage, WorkspaceState,
 };
 use sshx_core::{rand_alphanumeric, Sid, MAX_GRPC_MESSAGE_BYTES, WORKSPACE_FORMAT_VERSION};
 use tokio::sync::{mpsc, oneshot, watch, Semaphore};
@@ -30,6 +30,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Interval to automatically reestablish connections.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
+const SYSTEM_ACTION_CAPABILITY: &str = "system-action-v1";
 
 /// Returns the host portion of an HTTP(S) origin without adding a URL parser
 /// dependency to the daemon. Tonic performs the full URI validation when it
@@ -259,6 +260,7 @@ impl Controller {
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             workspace: workspace_state.clone(),
             ssh_profiles: ssh_profile_state,
+            capabilities: vec![SYSTEM_ACTION_CAPABILITY.into()],
         };
         let mut resp = client.open(req).await?.into_inner();
         resp.url = resp.url + "#" + &encryption_key;
@@ -399,6 +401,7 @@ impl Controller {
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             workspace,
             ssh_profiles,
+            capabilities: vec![SYSTEM_ACTION_CAPABILITY.into()],
         };
         let mut client = Self::connect(&self.origin).await?;
         let response = client.open(request).await?.into_inner();
@@ -596,6 +599,64 @@ impl Controller {
                             .await
                             .ok();
                     });
+                }
+                ServerMessage::SystemAction(request) => {
+                    let action =
+                        SystemAction::try_from(request.action).unwrap_or(SystemAction::Unspecified);
+                    match action {
+                        SystemAction::RestartDaemon => {
+                            send_msg(
+                                &tx,
+                                ClientMessage::SystemActionResponse(SystemActionResponse {
+                                    request_id: request.request_id,
+                                    action: action.into(),
+                                    ok: true,
+                                    message: "Daemon control channel is restarting; hosted terminal processes remain running."
+                                        .into(),
+                                }),
+                            )
+                            .await?;
+                            // Give tonic's outbound stream time to deliver the
+                            // acknowledgement before this channel is dropped.
+                            time::sleep(Duration::from_millis(100)).await;
+                            // Returning from this channel recreates the daemon's
+                            // authenticated server bridge without disturbing PTYs.
+                            return Ok(());
+                        }
+                        SystemAction::RestartTerminalHost => {
+                            let result = self.runner.restart_terminal_host().await;
+                            let (ok, message) = match result {
+                                Ok(()) => (
+                                    true,
+                                    "Terminal host is restarting; all terminal processes were terminated."
+                                        .to_owned(),
+                                ),
+                                Err(error) => (false, format!("Could not restart terminal host: {error}")),
+                            };
+                            send_msg(
+                                &tx,
+                                ClientMessage::SystemActionResponse(SystemActionResponse {
+                                    request_id: request.request_id,
+                                    action: action.into(),
+                                    ok,
+                                    message,
+                                }),
+                            )
+                            .await?;
+                        }
+                        SystemAction::Unspecified => {
+                            send_msg(
+                                &tx,
+                                ClientMessage::SystemActionResponse(SystemActionResponse {
+                                    request_id: request.request_id,
+                                    action: action.into(),
+                                    ok: false,
+                                    message: "Unsupported system action.".into(),
+                                }),
+                            )
+                            .await?;
+                        }
+                    }
                 }
                 ServerMessage::CreateShell(new_shell) => {
                     let new_shell = *new_shell;

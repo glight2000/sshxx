@@ -57,6 +57,7 @@ message OpenRequest {
   string daemon_version = 5;              // Version of the daemon hosting terminal processes.
   optional WorkspaceState workspace = 6;  // Locally persisted workspace to restore.
   optional SshProfileCollection ssh_profiles = 7; // Locally persisted SSH connection profiles.
+  repeated string capabilities = 8;        // Optional daemon protocol capabilities.
 }
 
 // Details of a newly-created sshxx session.
@@ -106,6 +107,25 @@ message FileResponse {
   bytes data = 3; // Encrypted JSON response body.
 }
 
+// An authenticated workspace operator request for daemon-owned lifecycle work.
+enum SystemAction {
+  SYSTEM_ACTION_UNSPECIFIED = 0;
+  SYSTEM_ACTION_RESTART_DAEMON = 1;
+  SYSTEM_ACTION_RESTART_TERMINAL_HOST = 2;
+}
+
+message SystemActionRequest {
+  string request_id = 1; // Random lowercase hexadecimal browser request ID.
+  SystemAction action = 2;
+}
+
+message SystemActionResponse {
+  string request_id = 1;
+  SystemAction action = 2;
+  bool ok = 3;
+  string message = 4;
+}
+
 // Bidirectional streaming update from the client.
 message ClientUpdate {
   reserved 5;
@@ -114,7 +134,9 @@ message ClientUpdate {
     TerminalData data = 2;      // Stream data from the terminal.
     NewShell created_shell = 3; // Acknowledge that a new shell was created.
     uint32 closed_shell = 4;    // Acknowledge that a shell was closed.
+    uint32 restarted_shell = 6; // PTY state was lost and restarted in place.
     FileResponse file_response = 9; // Encrypted filesystem operation result.
+    SystemActionResponse system_action_response = 10; // Lifecycle action result.
     fixed64 pong = 14;          // Response for latency measurement.
     string error = 15;
   }
@@ -132,6 +154,7 @@ message ServerUpdate {
     SshProfileCollection ssh_profiles = 7; // SSH connection profiles to persist locally.
     ImageUploadChunk image_upload = 8; // Encrypted browser image stored by the daemon.
     FileRequest file_request = 9; // Encrypted filesystem operation for the daemon.
+    SystemActionRequest system_action = 10; // Authenticated lifecycle action.
     fixed64 ping = 14;         // Request a pong, with the timestamp.
     string error = 15;
   }
@@ -259,6 +282,7 @@ message SerializedSession {
   repeated SerializedPage pages = 9;
   repeated SshProfile ssh_profiles = 10;
   repeated SerializedFileWindow file_windows = 11;
+  repeated string daemon_capabilities = 12;
 }
 
 message SerializedShell {

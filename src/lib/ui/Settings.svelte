@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { ChevronDownIcon } from "svelte-feather-icons";
+  import { createEventDispatcher } from "svelte";
+  import {
+    AlertTriangleIcon,
+    ChevronDownIcon,
+    RefreshCwIcon,
+  } from "svelte-feather-icons";
 
   import { settings, updateSettings } from "$lib/settings";
   import OverlayMenu from "./OverlayMenu.svelte";
@@ -9,6 +14,34 @@
   export let open: boolean;
   export let serverVersion: string;
   export let daemonVersion: string;
+  export let hasWriteAccess: boolean | undefined;
+  export let systemActionsAvailable: boolean;
+  export let systemActionPending: boolean;
+
+  const dispatch = createEventDispatcher<{
+    restartDaemon: void;
+    restartTerminalHost: void;
+  }>();
+
+  function restartDaemon() {
+    if (
+      window.confirm(
+        "Restart the daemon control channel? Hosted terminal processes will remain running.",
+      )
+    ) {
+      dispatch("restartDaemon");
+    }
+  }
+
+  function restartTerminalHost() {
+    if (
+      window.confirm(
+        "Restart terminal host? This will terminate every running terminal process. Saved SSH terminals can be recreated, but local terminal processes cannot be recovered.",
+      )
+    ) {
+      dispatch("restartTerminalHost");
+    }
+  }
 
   let inputName: string;
   let inputTheme: ThemeName;
@@ -31,8 +64,8 @@
 </script>
 
 <OverlayMenu
-  title="Terminal Settings"
-  description="Customize your collaborative terminal."
+  title="Settings"
+  description="Customize the workspace and manage its runtime."
   showCloseButton
   {open}
   on:close
@@ -55,6 +88,46 @@
         />
         Enabled
       </label>
+    </div>
+    <div class="item runtime-item">
+      <div>
+        <p class="item-title">Runtime</p>
+        <p class="item-subtitle">
+          Restart daemon-owned runtime services without granting the browser
+          operating-system service permissions.
+        </p>
+      </div>
+      <div class="runtime-actions">
+        <button
+          type="button"
+          class="runtime-button"
+          disabled={hasWriteAccess !== true ||
+            !systemActionsAvailable ||
+            systemActionPending}
+          on:click={restartDaemon}
+        >
+          <RefreshCwIcon size="15" />
+          Restart daemon
+        </button>
+        <button
+          type="button"
+          class="runtime-button danger"
+          disabled={hasWriteAccess !== true ||
+            !systemActionsAvailable ||
+            systemActionPending}
+          on:click={restartTerminalHost}
+        >
+          <AlertTriangleIcon size="15" />
+          Restart terminal host
+        </button>
+        {#if !systemActionsAvailable}
+          <span class="runtime-hint"
+            >Update server and daemon to use runtime controls.</span
+          >
+        {:else if hasWriteAccess !== true}
+          <span class="runtime-hint">Write access is required.</span>
+        {/if}
+      </div>
     </div>
     <div class="item">
       <div>
@@ -210,6 +283,28 @@
     @apply w-52 px-3 py-2 text-sm rounded-md bg-transparent hover:bg-white/5;
     @apply border border-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/50;
     @apply appearance-none transition-colors;
+  }
+
+  .runtime-item {
+    @apply border border-zinc-700/60;
+  }
+
+  .runtime-actions {
+    @apply w-full sm:w-52 flex flex-col gap-2;
+  }
+
+  .runtime-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-md border border-zinc-600;
+    @apply px-3 py-2 text-sm text-zinc-200 bg-zinc-800/70 transition-colors;
+    @apply hover:bg-zinc-700/80 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .runtime-button.danger {
+    @apply border-red-800/80 text-red-200 hover:bg-red-950/70;
+  }
+
+  .runtime-hint {
+    @apply text-xs leading-4 text-zinc-500;
   }
 
   select.input-common {

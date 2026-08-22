@@ -11,13 +11,13 @@ authenticated local connection.
 
 ## Lifecycle contract
 
-| Event                                    | Terminal process result                                |
-| ---------------------------------------- | ------------------------------------------------------ |
-| Browser refresh/disconnect               | Unaffected                                             |
-| `sshxx-daemon` exit/restart/upgrade      | Unaffected; the daemon reconnects                      |
-| Explicit terminal close                  | The host closes that PTY and process                   |
-| `sshxx-terminal-host` stop/crash/upgrade | All hosted terminal processes disconnect               |
-| Operating-system restart                 | Processes stop; application-level recovery is required |
+| Event                                    | Terminal process result                            |
+| ---------------------------------------- | -------------------------------------------------- |
+| Browser refresh/disconnect               | Unaffected                                         |
+| `sshxx-daemon` exit/restart/upgrade      | Unaffected; the daemon reconnects                  |
+| Explicit terminal close                  | The host closes that PTY and process               |
+| `sshxx-terminal-host` stop/crash/upgrade | Processes stop; saved SSH-profile windows relaunch |
+| Operating-system restart                 | Processes stop; saved SSH-profile windows relaunch |
 
 The daemon may discover and start the host, but the host is an independent OS
 process and never exits merely because daemon connections disappear. Under an OS
@@ -29,6 +29,12 @@ survives a daemon restart. Source-derived creation actions, including
 file-browser “Open terminal here”, do not reuse a stale colliding host entry:
 they replace it so the requested working directory and connection profile are
 always applied.
+
+If host state is lost, the daemon distinguishes durable SSH-profile terminals
+from default local terminals. It resets the former window's volatile output and
+reruns its saved SSH launch configuration; the latter window closes. This is a
+new process, not process checkpoint/restore. Authentication must still succeed
+normally, and nested SSH/application state remains the user's responsibility.
 
 ## Disruptive upgrades
 

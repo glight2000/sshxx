@@ -8,7 +8,7 @@ use crate::protocol::wire::{
     AttachTerminal, CloseTerminal, CreateTerminal, Frame, GetWorkingDirectory, Hello,
     ListTerminals, ResizeTerminal, ShutdownHost, TerminalInput,
 };
-use crate::protocol::{frame, read_frame, write_frame};
+use crate::protocol::{frame, write_frame, FrameReader};
 use crate::PROTOCOL_VERSION;
 
 trait LocalIo: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -19,7 +19,7 @@ type BoxedLocalIo = Box<dyn LocalIo>;
 /// A low-level protocol client. sshxx-daemon owns routing and acknowledgement
 /// policy; this type deliberately exposes asynchronous host events unchanged.
 pub struct Client {
-    reader: ReadHalf<BoxedLocalIo>,
+    reader: FrameReader<ReadHalf<BoxedLocalIo>>,
     writer: WriteHalf<BoxedLocalIo>,
     next_request_id: u64,
     host_version: String,
@@ -35,7 +35,7 @@ impl Client {
         let stream = connect_transport(endpoint).await?;
         let (reader, writer) = tokio::io::split(stream);
         let mut client = Self {
-            reader,
+            reader: FrameReader::new(reader),
             writer,
             next_request_id: 1,
             host_version: String::new(),
@@ -136,12 +136,23 @@ impl Client {
     }
 
     pub async fn shutdown(&mut self, force: bool) -> Result<u64> {
-        self.send(Message::ShutdownHost(ShutdownHost { force }))
-            .await
+        self.send(Message::ShutdownHost(ShutdownHost {
+            force,
+            restart: false,
+        }))
+        .await
+    }
+
+    pub async fn restart(&mut self, force: bool) -> Result<u64> {
+        self.send(Message::ShutdownHost(ShutdownHost {
+            force,
+            restart: true,
+        }))
+        .await
     }
 
     pub async fn receive(&mut self) -> Result<Option<Frame>> {
-        read_frame(&mut self.reader).await
+        self.reader.read_frame().await
     }
 
     async fn send(&mut self, message: Message) -> Result<u64> {

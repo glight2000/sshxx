@@ -17,8 +17,9 @@ render the same canvas.
 ## Important limitations
 
 - Restarting the daemon reconnects to terminals owned by the independent local
-  terminal host. Restarting the terminal host or operating system still ends
-  those processes; application-specific recovery remains manual.
+  terminal host. Restarting the host or operating system still ends those
+  processes; saved SSH-profile windows rerun their launch configuration, while
+  default terminals close and application-specific recovery remains manual.
 - A single server can restart without Redis: the daemon recreates its missing
   session from the durable workspace. Configure a fixed session name if the
   browser URL must remain stable across that recovery.

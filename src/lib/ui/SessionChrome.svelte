@@ -32,6 +32,8 @@
   export let settingsOpen: boolean;
   export let serverVersion: string;
   export let daemonVersion: string;
+  export let systemActionsAvailable: boolean;
+  export let systemActionPending: boolean;
   export let pages: WsPage[];
   export let activePageId: number;
   export let canvasDropPageId: number | null;
@@ -50,6 +52,8 @@
     chat: string;
     closeChat: void;
     closeSettings: void;
+    restartDaemon: void;
+    restartTerminalHost: void;
     selectPage: number;
     createPage: void;
     renamePage: { id: number; name: string };
@@ -120,7 +124,12 @@
   open={settingsOpen}
   {serverVersion}
   {daemonVersion}
+  {hasWriteAccess}
+  {systemActionsAvailable}
+  {systemActionPending}
   on:close={() => dispatch("closeSettings")}
+  on:restartDaemon={() => dispatch("restartDaemon")}
+  on:restartTerminalHost={() => dispatch("restartTerminalHost")}
 />
 
 <ChooseName />

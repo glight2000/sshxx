@@ -11,6 +11,34 @@ use sshxx_terminal_host::protocol::wire::{CreateTerminal, Frame};
 
 const TOKEN: [u8; 32] = [0x5a; 32];
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_restart_rebinds_the_same_endpoint() -> Result<()> {
+    let state = tempfile::tempdir()?;
+    let endpoint = state.path().join("restart.sock");
+    let endpoint = endpoint.to_string_lossy().into_owned();
+    let server_endpoint = endpoint.clone();
+    let server = tokio::spawn(async move {
+        sshxx_terminal_host::server::serve(&server_endpoint, TOKEN.to_vec()).await
+    });
+
+    let mut first = connect_when_ready(&endpoint).await?;
+    let restart = first.restart(false).await?;
+    expect_ack(&mut first, restart).await?;
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut second = connect_when_ready(&endpoint).await?;
+    let list = second.list_terminals().await?;
+    assert!(expect_terminal_list(&mut second, list).await?.is_empty());
+    let shutdown = second.shutdown(false).await?;
+    expect_ack(&mut second, shutdown).await?;
+    drop(second);
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .context("terminal host did not stop after restart")???;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn terminal_survives_client_restart_and_keeps_private_history() -> Result<()> {
     let state = tempfile::tempdir()?;

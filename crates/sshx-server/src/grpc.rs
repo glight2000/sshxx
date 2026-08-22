@@ -8,7 +8,7 @@ use hmac::Mac;
 use sshx_core::proto::{
     client_update::ClientMessage, server_update::ServerMessage, sshx_service_server::SshxService,
     ClientUpdate, CloseRequest, CloseResponse, OpenRequest, OpenResponse, ServerUpdate,
-    TerminalSize,
+    SystemAction, TerminalSize,
 };
 use sshx_core::{rand_alphanumeric, Sid};
 use tokio::sync::mpsc;
@@ -68,6 +68,7 @@ impl SshxService for GrpcServer {
             name: request.name,
             write_password_hash: request.write_password_hash,
             daemon_version: request.daemon_version,
+            daemon_capabilities: request.capabilities,
         };
         let session = Arc::new(Session::new(metadata));
         if let Some(profiles) = request.ssh_profiles {
@@ -272,8 +273,26 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
                 return send_err(tx, format!("close shell: {:?}", err)).await;
             }
         }
+        Some(ClientMessage::RestartedShell(id)) => {
+            if let Err(err) = session.restart_shell(Sid(id)) {
+                return send_err(tx, format!("restart shell: {:?}", err)).await;
+            }
+        }
         Some(ClientMessage::FileResponse(response)) => {
             session.send_file_response(response.request_id, response.stream_num, response.data);
+        }
+        Some(ClientMessage::SystemActionResponse(response)) => {
+            let action = match SystemAction::try_from(response.action) {
+                Ok(SystemAction::RestartDaemon) => "restartDaemon",
+                Ok(SystemAction::RestartTerminalHost) => "restartTerminalHost",
+                _ => "unknown",
+            };
+            session.send_system_action_response(
+                response.request_id,
+                action.into(),
+                response.ok,
+                response.message,
+            );
         }
         Some(ClientMessage::Pong(ts)) => {
             let latency = get_time_ms().saturating_sub(ts);

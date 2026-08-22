@@ -38,6 +38,46 @@ async fn test_fixed_encryption_key() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_writer_can_restart_daemon_control_channel() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
+    let name = controller.name().to_owned();
+    let key = controller.encryption_key().to_owned();
+    tokio::spawn(async move { controller.run().await });
+
+    let mut writer = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
+    writer.flush().await;
+    let mut observer = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
+    observer.flush().await;
+    let request_id = "0123456789abcdef0123456789abcdef";
+    writer
+        .send(WsClient::SystemAction(
+            request_id.into(),
+            "restartDaemon".into(),
+        ))
+        .await;
+    time::timeout(Duration::from_secs(3), async {
+        loop {
+            writer.flush().await;
+            if !writer.system_action_results.is_empty() {
+                break;
+            }
+        }
+    })
+    .await
+    .context("daemon restart acknowledgement timed out")?;
+    assert_eq!(writer.system_action_results.len(), 1);
+    let (received_id, action, ok, message) = &writer.system_action_results[0];
+    assert_eq!(received_id, request_id);
+    assert_eq!(action, "restartDaemon");
+    assert!(*ok);
+    assert!(message.contains("remain running"));
+    observer.flush().await;
+    assert!(observer.system_action_results.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_daemon_reopens_a_missing_fixed_session() -> Result<()> {
     let mut options = sshx_server::ServerOptions::default();
     options.session_name = Some("dev".into());
@@ -176,7 +216,7 @@ async fn test_ws_basic() -> Result<()> {
     assert_eq!(s.shells.get(&Sid(1)).unwrap().width, 714);
     assert_eq!(s.shells.get(&Sid(1)).unwrap().height, 518);
 
-    s.send(WsClient::Subscribe(Sid(1), 1, 0)).await;
+    s.send(WsClient::SubscribeGeneration(Sid(1), 1, 0, 0)).await;
     assert_eq!(s.read(Sid(1)), "");
 
     s.send_input(Sid(1), b"hello!").await;
@@ -191,7 +231,9 @@ async fn test_ws_basic() -> Result<()> {
 
     let mut viewer = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
     viewer.flush().await;
-    viewer.send(WsClient::Subscribe(Sid(1), 1, 0)).await;
+    viewer
+        .send(WsClient::SubscribeGeneration(Sid(1), 1, 0, 0))
+        .await;
     viewer.flush().await;
     assert_eq!(viewer.read(Sid(1)), "hello! 123");
     assert_eq!(viewer.chunk_replays, [(Sid(1), true)]);
@@ -245,7 +287,7 @@ async fn test_flow_control_waits_for_terminal_render_ack() -> Result<()> {
     }
 
     client
-        .send(WsClient::SubscribeFlowControlled(Sid(1), 1, 0))
+        .send(WsClient::SubscribeFlowControlledGeneration(Sid(1), 1, 0, 0))
         .await;
     client.flush().await;
     assert_eq!(client.read(Sid(1)).len(), 4 * chunk.len());
@@ -357,7 +399,9 @@ async fn test_open_terminal_here_uses_requested_local_directory() -> Result<()> 
     assert!(client.errors.is_empty(), "{:?}", client.errors);
     assert!(client.shells.contains_key(&Sid(2)));
 
-    client.send(WsClient::Subscribe(Sid(2), 1, 0)).await;
+    client
+        .send(WsClient::SubscribeGeneration(Sid(2), 1, 0, 0))
+        .await;
     client
         .send_input(Sid(2), b"printf '__SSHXX_CWD__%s\\n' \"$PWD\"\r")
         .await;
@@ -457,7 +501,9 @@ async fn test_pages_and_live_note_editing() -> Result<()> {
     writer.send(WsClient::UpdateNote(Sid(2), 1, None)).await;
     writer.send(WsClient::CloseNote(Sid(2), 1)).await;
     writer.send(WsClient::SetFocus(Some((Sid(1), 1)))).await;
-    writer.send(WsClient::Subscribe(Sid(1), 1, 0)).await;
+    writer
+        .send(WsClient::SubscribeGeneration(Sid(1), 1, 0, 0))
+        .await;
     writer.flush().await;
     assert_eq!(writer.errors.len(), previous_errors + 5);
     assert_eq!(writer.shells.get(&Sid(1)).unwrap().page_id, page_id);
@@ -773,6 +819,19 @@ async fn test_read_write_permissions() -> Result<()> {
     // connect with read-only access
     let mut reader = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
     reader.flush().await;
+
+    reader
+        .send(WsClient::SystemAction(
+            "fedcba9876543210fedcba9876543210".into(),
+            "restartDaemon".into(),
+        ))
+        .await;
+    reader.flush().await;
+    assert!(
+        !reader.errors.is_empty(),
+        "Reader should not be able to restart daemon runtime"
+    );
+    reader.errors.clear();
 
     // test read-only restrictions
     reader.send(WsClient::Create(0, 0, 1)).await;

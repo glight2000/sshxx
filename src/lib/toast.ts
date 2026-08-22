@@ -5,6 +5,8 @@ import { writable } from "svelte/store";
 export const toastStore = writable<(Toast & { expires: number })[]>([]);
 
 export type Toast = {
+  /** Replaces an existing toast with the same ID instead of stacking it. */
+  id?: string;
   kind: "info" | "success" | "error";
   message: string;
   action?: string;
@@ -13,5 +15,8 @@ export type Toast = {
 
 export function makeToast(toast: Toast, duration = 3000) {
   const obj = Object.assign({ expires: Date.now() + duration }, toast);
-  toastStore.update(($toasts) => [...$toasts, obj]);
+  toastStore.update(($toasts) => [
+    ...$toasts.filter((existing) => !toast.id || existing.id !== toast.id),
+    obj,
+  ]);
 }

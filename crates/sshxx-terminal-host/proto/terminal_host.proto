@@ -82,6 +82,8 @@ message ListTerminals {}
 message ShutdownHost {
   // A non-forced shutdown is rejected while any terminal process is active.
   bool force = 1;
+  // Restart the host runtime after shutdown instead of exiting the process.
+  bool restart = 2;
 }
 
 message GetWorkingDirectory {
@@ -103,6 +105,8 @@ message TerminalExited {
   string terminal_id = 1;
   uint32 exit_code = 2;
   string signal = 3;
+  // True when the process was terminated by an explicit terminal-host shutdown.
+  bool host_shutdown = 4;
 }
 
 message TerminalSummary {

@@ -60,7 +60,9 @@ replacement for those runtime services.
 Closing or refreshing a viewer does not end its terminals. Restarting or
 upgrading the daemon reconnects to the same hosted PTYs and processes.
 Restarting `sshxx-terminal-host` remains destructive and is deliberately never
-automatic.
+automatic. If host state is nevertheless lost, persisted SSH-profile windows are
+recreated in place and rerun their saved SSH launch configuration; default local
+terminals close, and nested/application state is not reconstructed.
 
 In the default single-server mode, a server restart briefly disconnects viewers;
 the daemon automatically recreates a missing server session from its durable
@@ -179,15 +181,15 @@ details are in
 
 ## State and trust boundaries
 
-| State                                                      | Owner and lifetime                                                       | Scope                                                                                           |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| Pages, canvas items, notes/links, file-window/editor state | Daemon `.sshx-workspace`                                                 | Shared within the session; includes the non-secret SSH profile ID used by each remote terminal  |
-| Shell and SSH processes                                    | `sshxx-terminal-host` memory                                             | Shared stream/input; survives viewer and daemon restarts, not host/OS restarts                  |
-| Per-terminal shell history                                 | Daemon launch policy and owner-only local history data                   | One history namespace/file per local terminal; nested remote shells follow remote configuration |
-| Reusable SSH profiles                                      | Authenticated-encrypted `.sshx-connections` with an owner-only local key | Session-visible metadata; writer-only mutation; passwords are never stored                      |
-| Active page, per-page pan/zoom, user settings              | Browser `localStorage`                                                   | Local to one browser profile and never synchronized                                             |
-| Focus, menus, drag state, full-screen, undo/redo           | Browser memory                                                           | Local and temporary                                                                             |
-| Presence and editing ownership                             | Server memory                                                            | Transient within the session                                                                    |
+| State                                                      | Owner and lifetime                                                       | Scope                                                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pages, canvas items, notes/links, file-window/editor state | Daemon `.sshx-workspace`                                                 | Shared within the session; includes the non-secret SSH profile ID used by each remote terminal                                                     |
+| Shell and SSH processes                                    | `sshxx-terminal-host` memory                                             | Shared stream/input; survives viewer and daemon restarts; host/OS loss ends the process, then saved SSH-profile windows relaunch a new SSH process |
+| Per-terminal shell history                                 | Daemon launch policy and owner-only local history data                   | One history namespace/file per local terminal; nested remote shells follow remote configuration                                                    |
+| Reusable SSH profiles                                      | Authenticated-encrypted `.sshx-connections` with an owner-only local key | Session-visible metadata; writer-only mutation; passwords are never stored                                                                         |
+| Active page, per-page pan/zoom, user settings              | Browser `localStorage`                                                   | Local to one browser profile and never synchronized                                                                                                |
+| Focus, menus, drag state, full-screen, undo/redo           | Browser memory                                                           | Local and temporary                                                                                                                                |
+| Presence and editing ownership                             | Server memory                                                            | Transient within the session                                                                                                                       |
 
 Terminal streams, filesystem payloads, image chunks, and active editor content
 are encrypted through the server. Coordination metadata remains visible to the
@@ -259,6 +261,12 @@ acceptable. Under systemd, check status first and then restart the independent
 **[Architecture and State](https://github.com/glight2000/sshxx/wiki/Architecture-and-State#terminal-host-lifecycle-and-upgrades)**
 for the complete upgrade contract.
 
+Write-capable viewers can also restart the daemon control channel or force a
+terminal-host runtime reset from Settings. The first keeps hosted PTYs alive;
+the second displays a destructive confirmation and terminates every terminal
+process. Use the CLI/service-manager procedure above, not the in-app reset, to
+activate a newly installed terminal-host binary.
+
 ## Build
 
 ```shell
@@ -302,8 +310,10 @@ when coordinating multiple server instances.
 
 ### Known limitations
 
-- A terminal-host or operating-system restart disconnects hosted processes;
-  application-specific recovery such as Codex resume remains manual.
+- A terminal-host or operating-system restart disconnects hosted processes.
+  Saved SSH-profile windows rerun their SSH launch configuration, but default
+  terminals close and application-specific recovery such as Codex resume remains
+  manual.
 - The terminal host retains bounded raw PTY output rather than an emulator
   screen snapshot. After high-volume output rolls over that buffer, a renderer
   rebuild may not reproduce the exact previous screen even though the process

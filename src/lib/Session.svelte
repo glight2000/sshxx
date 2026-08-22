@@ -102,6 +102,8 @@
   const NOTE_INITIAL_WIDTH = 384;
   const NOTE_INITIAL_HEIGHT = 224;
   const TERMINAL_RENDER_ACK_CAPABILITY = "terminal-render-ack-v1";
+  const TERMINAL_GENERATION_CAPABILITY = "terminal-generation-v1";
+  const SYSTEM_ACTION_CAPABILITY = "system-action-v1";
   let fileExplorerModulePromise: Promise<
     typeof import("./ui/FileExplorer.svelte")
   > | null = null;
@@ -208,6 +210,7 @@
   let serverVersion = "unknown";
   let daemonVersion = "unknown";
   let terminalRenderFlowControl = false;
+  let terminalGenerationProtocol = false;
 
   function canvasItemFromTarget(target: EventTarget | null) {
     if (!(target instanceof Element)) return null;
@@ -540,6 +543,9 @@
   let encrypt: Encrypt;
   let fileRequests: FileRequestClient | null = null;
   let srocket: Srocket<WsServer, WsClient> | null = null;
+  let systemActionsAvailable = false;
+  let pendingSystemActionId: string | null = null;
+  let systemActionTimer: number | null = null;
 
   let connected = false;
   let sessionReady = false;
@@ -547,6 +553,7 @@
   let failureStage: "server" | "session" | null = null;
   let readinessTimer: number | null = null;
   let lastNotifiedConnectionIssue = "";
+  const CONNECTION_TOAST_ID = "session-connection";
 
   function clearReadinessTimer() {
     if (readinessTimer !== null) {
@@ -555,12 +562,46 @@
     }
   }
 
+  function clearSystemActionTimer() {
+    if (systemActionTimer !== null) {
+      window.clearTimeout(systemActionTimer);
+      systemActionTimer = null;
+    }
+  }
+
+  function requestSystemAction(
+    action: "restartDaemon" | "restartTerminalHost",
+  ) {
+    if (!srocket?.connected || !systemActionsAvailable) {
+      makeToast({
+        kind: "error",
+        message:
+          "Runtime controls are unavailable until server and daemon are connected.",
+      });
+      return;
+    }
+    const requestId = randomHex(16);
+    pendingSystemActionId = requestId;
+    clearSystemActionTimer();
+    systemActionTimer = window.setTimeout(() => {
+      if (pendingSystemActionId !== requestId) return;
+      pendingSystemActionId = null;
+      systemActionTimer = null;
+      makeToast({
+        kind: "error",
+        message: "The runtime restart request timed out.",
+      });
+    }, 15_000);
+    srocket.send({ systemAction: [requestId, action] });
+    makeToast({ kind: "info", message: "Restart request sent…" });
+  }
+
   function reportConnectionIssue(message: string, stage: "server" | "session") {
     exitReason = message;
     failureStage = stage;
     if (lastNotifiedConnectionIssue !== message) {
       lastNotifiedConnectionIssue = message;
-      makeToast({ kind: "error", message }, 7000);
+      makeToast({ id: CONNECTION_TOAST_ID, kind: "error", message }, 7000);
     }
   }
 
@@ -683,6 +724,45 @@
     } else {
       await writer(data, replay);
     }
+  }
+
+  function handleTerminalChunks(
+    id: number,
+    pageId: number,
+    generation: number | null,
+    replay: boolean,
+    seqnum: number,
+    chunks: Uint8Array[],
+  ) {
+    if (
+      !shells.some(
+        ([shellId, shell]) =>
+          shellId === id &&
+          shell.pageId === pageId &&
+          (generation === null || shell.generation === generation),
+      )
+    ) {
+      return;
+    }
+    locks[id]?.(async () => {
+      await tick();
+      chunknums[id] += chunks.length;
+      const plaintextChunks: string[] = [];
+      const decoder = new TextDecoder();
+      for (const data of chunks) {
+        const buf = await encrypt.segment(
+          0x100000000n | BigInt(id),
+          BigInt(seqnum),
+          data,
+        );
+        seqnum += data.length;
+        plaintextChunks.push(decoder.decode(buf));
+      }
+      await writeTerminalData(id, plaintextChunks.join(""), replay);
+      if (terminalRenderFlowControl) {
+        srocket?.send({ renderedChunks: id });
+      }
+    });
   }
 
   // May be undefined before `users` is first populated.
@@ -1137,6 +1217,7 @@
           serverVersion = message.hello[2] || "unknown";
           daemonVersion = message.hello[3] || "unknown";
           makeToast({
+            id: CONNECTION_TOAST_ID,
             kind: "success",
             message: `Connected to the server.`,
           });
@@ -1146,6 +1227,12 @@
           terminalRenderFlowControl = message.capabilities.includes(
             TERMINAL_RENDER_ACK_CAPABILITY,
           );
+          terminalGenerationProtocol = message.capabilities.includes(
+            TERMINAL_GENERATION_CAPABILITY,
+          );
+          systemActionsAvailable = message.capabilities.includes(
+            SYSTEM_ACTION_CAPABILITY,
+          );
         } else if (message.invalidAuth) {
           reportConnectionIssue(
             "The URL is not correct: the end-to-end encryption key is invalid.",
@@ -1153,33 +1240,25 @@
           );
           srocket?.dispose();
         } else if (message.chunks) {
-          let [id, pageId, replay, seqnum, chunks] = message.chunks;
-          if (
-            !shells.some(
-              ([shellId, shell]) => shellId === id && shell.pageId === pageId,
-            )
-          ) {
-            return;
+          if (message.chunks.length === 5) {
+            const [id, pageId, replay, seqnum, chunks] = message.chunks;
+            handleTerminalChunks(id, pageId, null, replay, seqnum, chunks);
+          } else {
+            const [id, pageId, generation, replay, seqnum, chunks] =
+              message.chunks;
+            handleTerminalChunks(
+              id,
+              pageId,
+              generation,
+              replay,
+              seqnum,
+              chunks,
+            );
           }
-          locks[id](async () => {
-            await tick();
-            chunknums[id] += chunks.length;
-            const plaintextChunks: string[] = [];
-            const decoder = new TextDecoder();
-            for (const data of chunks) {
-              const buf = await encrypt.segment(
-                0x100000000n | BigInt(id),
-                BigInt(seqnum),
-                data,
-              );
-              seqnum += data.length;
-              plaintextChunks.push(decoder.decode(buf));
-            }
-            await writeTerminalData(id, plaintextChunks.join(""), replay);
-            if (terminalRenderFlowControl) {
-              srocket?.send({ renderedChunks: [id] });
-            }
-          });
+        } else if (message.chunksGeneration) {
+          const [id, pageId, generation, replay, seqnum, chunks] =
+            message.chunksGeneration;
+          handleTerminalChunks(id, pageId, generation, replay, seqnum, chunks);
         } else if (message.users) {
           sessionReady = true;
           clearReadinessTimer();
@@ -1197,6 +1276,7 @@
             users = [...users, [id, { ...update, pageId: update.pageId ?? 1 }]];
           }
         } else if (message.shells) {
+          const previousShells = new Map(shells);
           const liveShellIds = new Set(
             message.shells.map(([shellId]) => shellId),
           );
@@ -1205,6 +1285,17 @@
             if (liveShellIds.has(shellId)) continue;
             subscriptions.delete(shellId);
             delete chunknums[shellId];
+            delete locks[shellId];
+            delete replayedWriters[shellId];
+            delete terminalTitles[shellId];
+          }
+          for (const [shellId, winsize] of message.shells) {
+            const previous = previousShells.get(shellId);
+            const generation = winsize.generation ?? 0;
+            if (!previous || previous.generation === generation) continue;
+            terminalHistory.delete(shellId);
+            subscriptions.delete(shellId);
+            chunknums[shellId] = 0;
             delete locks[shellId];
             delete replayedWriters[shellId];
             delete terminalTitles[shellId];
@@ -1220,6 +1311,7 @@
               opacity: winsize.opacity ?? 80,
               pageId: winsize.pageId ?? 1,
               theme: winsize.theme ?? "",
+              generation: winsize.generation ?? 0,
             },
           ]);
           if (movingIsDone) {
@@ -1230,17 +1322,31 @@
               chunknums[id] ??= 0;
               locks[id] ??= createLock();
               subscriptions.add(id);
-              const subscription: WsClient = terminalRenderFlowControl
-                ? {
-                    subscribeFlowControlled: [
-                      id,
-                      winsize.pageId ?? 1,
-                      chunknums[id],
-                    ],
-                  }
-                : {
-                    subscribe: [id, winsize.pageId ?? 1, chunknums[id]],
-                  };
+              const pageId = winsize.pageId ?? 1;
+              const generation = winsize.generation ?? 0;
+              const subscription: WsClient = terminalGenerationProtocol
+                ? terminalRenderFlowControl
+                  ? {
+                      subscribeFlowControlledGeneration: [
+                        id,
+                        pageId,
+                        generation,
+                        chunknums[id],
+                      ],
+                    }
+                  : {
+                      subscribeGeneration: [
+                        id,
+                        pageId,
+                        generation,
+                        chunknums[id],
+                      ],
+                    }
+                : terminalRenderFlowControl
+                  ? {
+                      subscribeFlowControlled: [id, pageId, chunknums[id]],
+                    }
+                  : { subscribe: [id, pageId, chunknums[id]] };
               srocket?.send(subscription);
             }
           }
@@ -1341,6 +1447,15 @@
         } else if (message.fileResponse) {
           const [requestId, stream, data] = message.fileResponse;
           fileRequests?.handleResponse(requestId, BigInt(stream), data);
+        } else if (message.systemActionResult) {
+          const [requestId, , ok, resultMessage] = message.systemActionResult;
+          if (requestId !== pendingSystemActionId) return;
+          pendingSystemActionId = null;
+          clearSystemActionTimer();
+          makeToast({
+            kind: ok ? "success" : "error",
+            message: resultMessage,
+          });
         } else if (message.pong !== undefined) {
           const serverLatency = Date.now() - Number(message.pong);
           serverLatencies = [...serverLatencies, serverLatency].slice(-10);
@@ -1371,6 +1486,8 @@
         serverLatencies = [];
         shellLatencies = [];
         terminalRenderFlowControl = false;
+        terminalGenerationProtocol = false;
+        systemActionsAvailable = false;
         fileRequests?.rejectAll(
           "Connection closed before the filesystem request completed.",
         );
@@ -1402,6 +1519,7 @@
 
   onDestroy(() => {
     clearReadinessTimer();
+    clearSystemActionTimer();
     fileRequests?.dispose();
     srocket?.dispose();
   });
@@ -2958,6 +3076,8 @@
     {settingsOpen}
     {serverVersion}
     {daemonVersion}
+    {systemActionsAvailable}
+    systemActionPending={pendingSystemActionId !== null}
     {pages}
     {activePageId}
     {canvasDropPageId}
@@ -2979,6 +3099,8 @@
     on:chat={(event) => srocket?.send({ chat: event.detail })}
     on:closeChat={() => (showChat = false)}
     on:closeSettings={() => (settingsOpen = false)}
+    on:restartDaemon={() => requestSystemAction("restartDaemon")}
+    on:restartTerminalHost={() => requestSystemAction("restartTerminalHost")}
     on:selectPage={(event) => switchPage(event.detail)}
     on:createPage={() => {
       selectCreatedPage = true;
@@ -3054,7 +3176,7 @@
     {/if}
 
     <div class="canvas-world pointer-events-none absolute inset-0">
-      {#each shells.filter(([, winsize]) => winsize.pageId === activePageId) as [id, winsize] (id)}
+      {#each shells.filter(([, winsize]) => winsize.pageId === activePageId) as [id, winsize] (`${id}:${winsize.generation}`)}
         {@const ws =
           groupTerminalStates[id] ??
           (id === moving
@@ -3213,7 +3335,11 @@
               disabled={!hasWriteAccess || fullscreenItems[`terminal:${id}`]}
               on:start={({ detail }) => {
                 pendingCanvasSelection = null;
-                clearCanvasSelection();
+                // Resize handles overlap the terminal border, including the
+                // whole lower hit strip, and live outside XTerm's DOM. Focus
+                // the terminal explicitly so clicking that area has the same
+                // focus behavior as clicking its content.
+                focusCanvasItem(terminalKey);
                 const canvasEl =
                   termElements[id].querySelector(".xterm-screen");
                 if (canvasEl) {

@@ -79,6 +79,7 @@ impl Session {
             name: self.metadata().name.clone(),
             write_password_hash: self.metadata().write_password_hash.clone(),
             daemon_version: self.metadata().daemon_version.clone(),
+            daemon_capabilities: self.metadata().daemon_capabilities.clone(),
             notes: self
                 .notes
                 .borrow()
@@ -162,6 +163,7 @@ impl Session {
             name: message.name,
             write_password_hash: message.write_password_hash,
             daemon_version: message.daemon_version,
+            daemon_capabilities: message.daemon_capabilities,
         };
 
         let session = Self::new(metadata);
@@ -208,6 +210,7 @@ impl Session {
                 theme: shell.theme,
                 width: shell.width.try_into().context("width overflow")?,
                 height: shell.height.try_into().context("height overflow")?,
+                generation: 0,
             };
             ensure!(
                 page_ids.contains(&winsize.page_id),

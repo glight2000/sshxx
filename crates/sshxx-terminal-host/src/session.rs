@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
@@ -16,8 +17,15 @@ const MAX_INPUT_BYTES: usize = 256 << 10;
 
 #[derive(Clone, Debug)]
 pub(crate) enum SessionEvent {
-    Output { sequence: u64, data: Arc<[u8]> },
-    Exited { exit_code: u32, signal: String },
+    Output {
+        sequence: u64,
+        data: Arc<[u8]>,
+    },
+    Exited {
+        exit_code: u32,
+        signal: String,
+        host_shutdown: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -91,6 +99,7 @@ pub(crate) struct TerminalSession {
     command_tx: mpsc::Sender<SessionCommand>,
     events: broadcast::Sender<SessionEvent>,
     state: Mutex<SessionState>,
+    host_shutdown: AtomicBool,
 }
 
 impl TerminalSession {
@@ -153,6 +162,7 @@ impl TerminalSession {
                 rows: size.rows,
                 columns: size.cols,
             }),
+            host_shutdown: AtomicBool::new(false),
         });
 
         spawn_command_thread(session.clone(), pair.master, writer, killer, command_rx);
@@ -182,6 +192,7 @@ impl TerminalSession {
         (!state.running).then(|| SessionEvent::Exited {
             exit_code: state.exit_code,
             signal: state.signal.clone(),
+            host_shutdown: self.host_shutdown.load(Ordering::Acquire),
         })
     }
 
@@ -208,6 +219,11 @@ impl TerminalSession {
         self.command_tx
             .try_send(SessionCommand::Close)
             .context("terminal command queue is unavailable")
+    }
+
+    pub fn close_for_host_shutdown(&self) -> Result<()> {
+        self.host_shutdown.store(true, Ordering::Release);
+        self.close()
     }
 
     pub fn is_running(&self) -> bool {
@@ -248,6 +264,7 @@ impl TerminalSession {
     }
 
     fn mark_exited(&self, exit_code: u32, signal: String) {
+        let host_shutdown = self.host_shutdown.load(Ordering::Acquire);
         {
             let mut state = self.state.lock().expect("terminal session state poisoned");
             state.running = false;
@@ -255,7 +272,11 @@ impl TerminalSession {
             state.signal.clone_from(&signal);
         }
         self.events
-            .send(SessionEvent::Exited { exit_code, signal })
+            .send(SessionEvent::Exited {
+                exit_code,
+                signal,
+                host_shutdown,
+            })
             .ok();
         self.command_tx.try_send(SessionCommand::Close).ok();
     }

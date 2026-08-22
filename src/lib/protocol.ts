@@ -14,6 +14,8 @@ export type WsWinsize = {
   opacity: number;
   pageId: number;
   theme: string;
+  /** Volatile PTY generation used to reset renderer subscriptions safely. */
+  generation: number;
 };
 
 /** Shared state for a note on the infinite canvas. */
@@ -144,10 +146,14 @@ export type WsServer = {
   noteEditing?: [Sid, number, Uid | null];
   noteText?: [Sid, number, string];
   noteParagraphs?: [Sid, number, string[]];
-  chunks?: [Sid, number, boolean, number, Uint8Array[]];
+  chunks?:
+    | [Sid, number, boolean, number, Uint8Array[]]
+    | [Sid, number, number, boolean, number, Uint8Array[]];
+  chunksGeneration?: [Sid, number, number, boolean, number, Uint8Array[]];
   hear?: [Uid, string, string];
   shellLatency?: number | bigint;
   fileResponse?: [string, bigint, Uint8Array];
+  systemActionResult?: [string, string, boolean, string];
   pong?: number | bigint;
   error?: string;
 };
@@ -269,9 +275,12 @@ export type WsClient = {
     boolean,
   ];
   fileRequest?: [Sid, number, string, bigint, bigint, Uint8Array];
+  systemAction?: [string, "restartDaemon" | "restartTerminalHost"];
   subscribe?: [Sid, number, number];
   subscribeFlowControlled?: [Sid, number, number];
-  renderedChunks?: [Sid];
+  subscribeGeneration?: [Sid, number, number, number];
+  subscribeFlowControlledGeneration?: [Sid, number, number, number];
+  renderedChunks?: Sid;
   chat?: string;
   ping?: bigint;
 };

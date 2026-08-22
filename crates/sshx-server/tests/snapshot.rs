@@ -45,6 +45,7 @@ async fn test_basic_restore() -> Result<()> {
         opacity: 72,
         page_id,
         theme: "Tokyo Night".into(),
+        generation: 0,
     };
     let note = WsNote {
         x: 120,
@@ -109,7 +110,8 @@ async fn test_basic_restore() -> Result<()> {
         .insert(&name, Arc::new(Session::restore(&data)?));
 
     let mut s = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
-    s.send(WsClient::Subscribe(Sid(1), page_id, 0)).await;
+    s.send(WsClient::SubscribeGeneration(Sid(1), page_id, 0, 0))
+        .await;
     s.flush().await;
 
     assert_eq!(s.read(Sid(1)), "hello there! - another message");

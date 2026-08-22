@@ -19,15 +19,24 @@ use crate::{HOST_VERSION, PROTOCOL_VERSION};
 
 const CONNECTION_QUEUE_CAPACITY: usize = 256;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostExit {
+    Stop,
+    Restart,
+}
+
 #[derive(Clone)]
 struct Host {
     authentication_token: Arc<[u8]>,
     sessions: SessionMap,
-    shutdown_tx: watch::Sender<bool>,
+    shutdown_tx: watch::Sender<Option<HostExit>>,
 }
 
 impl Host {
-    fn new(authentication_token: Vec<u8>, shutdown_tx: watch::Sender<bool>) -> Result<Self> {
+    fn new(
+        authentication_token: Vec<u8>,
+        shutdown_tx: watch::Sender<Option<HostExit>>,
+    ) -> Result<Self> {
         if authentication_token.len() < 32 {
             bail!("terminal-host authentication token must contain at least 32 bytes");
         }
@@ -300,14 +309,19 @@ impl Host {
                         if request.force {
                             let sessions = std::mem::take(&mut *self.sessions.write().await);
                             for session in sessions.into_values() {
-                                session.close().ok();
+                                session.close_for_host_shutdown().ok();
                             }
                         }
                         send_ack(&outgoing_tx, request_id, "").await;
                         let shutdown_tx = self.shutdown_tx.clone();
+                        let exit = if request.restart {
+                            HostExit::Restart
+                        } else {
+                            HostExit::Stop
+                        };
                         tokio::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                            shutdown_tx.send(true).ok();
+                            shutdown_tx.send(Some(exit)).ok();
                         });
                     }
                 }
@@ -461,10 +475,15 @@ async fn send_event(
             data: data.to_vec(),
             replay,
         }),
-        SessionEvent::Exited { exit_code, signal } => Message::TerminalExited(TerminalExited {
+        SessionEvent::Exited {
+            exit_code,
+            signal,
+            host_shutdown,
+        } => Message::TerminalExited(TerminalExited {
             terminal_id: terminal_id.into(),
             exit_code,
             signal,
+            host_shutdown,
         }),
     };
     outgoing_tx
@@ -529,17 +548,22 @@ fn tokens_equal(left: &[u8], right: &[u8]) -> bool {
 /// for shutdown. The host never exits merely because all daemon connections
 /// have disconnected.
 pub async fn serve(endpoint: &str, authentication_token: Vec<u8>) -> Result<()> {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let host = Host::new(authentication_token, shutdown_tx)?;
-    serve_transport(endpoint, host, shutdown_rx).await
+    loop {
+        let (shutdown_tx, shutdown_rx) = watch::channel(None);
+        let host = Host::new(authentication_token.clone(), shutdown_tx)?;
+        match serve_transport(endpoint, host, shutdown_rx).await? {
+            HostExit::Stop => return Ok(()),
+            HostExit::Restart => info!("restarting terminal host runtime"),
+        }
+    }
 }
 
 #[cfg(unix)]
 async fn serve_transport(
     endpoint: &str,
     host: Host,
-    mut shutdown_rx: watch::Receiver<bool>,
-) -> Result<()> {
+    mut shutdown_rx: watch::Receiver<Option<HostExit>>,
+) -> Result<HostExit> {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
@@ -565,27 +589,36 @@ async fn serve_transport(
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
     let _socket_guard = SocketGuard(PathBuf::from(path));
     info!(endpoint, "terminal host is ready");
+    let mut connections = JoinSet::new();
 
     loop {
         tokio::select! {
             changed = shutdown_rx.changed() => {
-                if changed.is_err() || *shutdown_rx.borrow() {
-                    break;
+                if changed.is_err() {
+                    connections.abort_all();
+                    while connections.join_next().await.is_some() {}
+                    return Ok(HostExit::Stop);
+                }
+                let exit = *shutdown_rx.borrow();
+                if let Some(exit) = exit {
+                    connections.abort_all();
+                    while connections.join_next().await.is_some() {}
+                    info!(?exit, "terminal host runtime stopped");
+                    return Ok(exit);
                 }
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted.context("failed to accept terminal-host client")?;
                 let host = host.clone();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     if let Err(error) = host.handle_connection(stream).await {
                         debug!(?error, "terminal-host client disconnected");
                     }
                 });
             }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
     }
-    info!("terminal host stopped");
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -602,11 +635,12 @@ impl Drop for SocketGuard {
 async fn serve_transport(
     endpoint: &str,
     host: Host,
-    mut shutdown_rx: watch::Receiver<bool>,
-) -> Result<()> {
+    mut shutdown_rx: watch::Receiver<Option<HostExit>>,
+) -> Result<HostExit> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
     let mut first_instance = true;
+    let mut connections = JoinSet::new();
     loop {
         let server = ServerOptions::new()
             .first_pipe_instance(first_instance)
@@ -615,21 +649,29 @@ async fn serve_transport(
         first_instance = false;
         tokio::select! {
             changed = shutdown_rx.changed() => {
-                if changed.is_err() || *shutdown_rx.borrow() {
-                    break;
+                if changed.is_err() {
+                    connections.abort_all();
+                    while connections.join_next().await.is_some() {}
+                    return Ok(HostExit::Stop);
+                }
+                let exit = *shutdown_rx.borrow();
+                if let Some(exit) = exit {
+                    connections.abort_all();
+                    while connections.join_next().await.is_some() {}
+                    info!(?exit, "terminal host runtime stopped");
+                    return Ok(exit);
                 }
             }
             connected = server.connect() => {
                 connected.context("failed to accept terminal-host pipe client")?;
                 let host = host.clone();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     if let Err(error) = host.handle_connection(server).await {
                         debug!(?error, "terminal-host client disconnected");
                     }
                 });
             }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
     }
-    info!("terminal host stopped");
-    Ok(())
 }
