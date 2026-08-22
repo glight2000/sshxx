@@ -103,6 +103,8 @@ jobs:
           cache: npm
 
       - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
 
       - name: Install Rust target
         shell: bash

@@ -21,6 +21,10 @@ const runtimeComponents = [
 ];
 
 test("release workflow builds complete runtime archives for supported targets", () => {
+  assert.match(
+    releaseWorkflow,
+    /uses: arduino\/setup-protoc@v3\n {8}with:\n {10}repo-token:/,
+  );
   for (const target of runtimeTargets) {
     assert.match(releaseWorkflow, new RegExp(`target: ${target}`));
   }
