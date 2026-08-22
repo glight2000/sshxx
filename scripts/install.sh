@@ -7,17 +7,29 @@ INSTALL_ROOT=${SSHXX_INSTALL_ROOT:-"$HOME/.local/share/sshxx"}
 BIN_DIR=${SSHXX_BIN_DIR:-"$HOME/.local/bin"}
 VERSION=""
 RUN_AFTER_INSTALL=false
+MANAGED=false
+WORKSPACE=${SSHXX_WORKSPACE:-"$HOME/sshxx-workspace"}
+SCOPE=user
+LISTEN=127.0.0.1
+PORT=8051
+CHECK_ONLY=false
 
 usage() {
 	cat <<'EOF'
 Install a self-hosted sshxx runtime bundle from GitHub Releases.
 
-Usage: install.sh [--version VERSION] [--install-root PATH] [--bin-dir PATH] [--run]
+Usage: install.sh [options]
 
   --version VERSION    Install a specific release; defaults to the latest.
   --install-root PATH  Versioned runtime location.
   --bin-dir PATH       Command-wrapper location; add it to PATH.
   --run                Start a local server and daemon after installation.
+  --managed            Register and start platform-managed background services.
+  --workspace PATH     Managed daemon data directory.
+  --scope user|system  Managed service scope (default: user).
+  --listen ADDRESS     Managed server listen address (default: 127.0.0.1).
+  --port PORT          Managed server port (default: 8051).
+  --check              Check the installed version against the latest Release.
 EOF
 }
 
@@ -51,6 +63,46 @@ while [ "$#" -gt 0 ]; do
 		RUN_AFTER_INSTALL=true
 		shift
 		;;
+	--managed)
+		MANAGED=true
+		shift
+		;;
+	--workspace)
+		[ "$#" -ge 2 ] || {
+			echo "--workspace requires a value" >&2
+			exit 2
+		}
+		WORKSPACE=$2
+		shift 2
+		;;
+	--scope)
+		[ "$#" -ge 2 ] || {
+			echo "--scope requires a value" >&2
+			exit 2
+		}
+		SCOPE=$2
+		shift 2
+		;;
+	--listen)
+		[ "$#" -ge 2 ] || {
+			echo "--listen requires a value" >&2
+			exit 2
+		}
+		LISTEN=$2
+		shift 2
+		;;
+	--port)
+		[ "$#" -ge 2 ] || {
+			echo "--port requires a value" >&2
+			exit 2
+		}
+		PORT=$2
+		shift 2
+		;;
+	--check)
+		CHECK_ONLY=true
+		shift
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -62,6 +114,12 @@ while [ "$#" -gt 0 ]; do
 		;;
 	esac
 done
+
+if { [ "$RUN_AFTER_INSTALL" = true ] && [ "$MANAGED" = true ]; } ||
+	{ [ "$CHECK_ONLY" = true ] && { [ "$RUN_AFTER_INSTALL" = true ] || [ "$MANAGED" = true ]; }; }; then
+	echo "--run, --managed, and --check are mutually exclusive" >&2
+	exit 2
+fi
 
 for command in curl tar; do
 	command -v "$command" >/dev/null 2>&1 || {
@@ -102,6 +160,22 @@ case "$VERSION" in
 	exit 1
 	;;
 esac
+
+if [ "$CHECK_ONLY" = true ]; then
+	if [ -f "$INSTALL_ROOT/current-version" ]; then
+		INSTALLED_VERSION=$(cat "$INSTALL_ROOT/current-version")
+	else
+		INSTALLED_VERSION="not installed"
+	fi
+	echo "Installed Runtime: $INSTALLED_VERSION"
+	echo "Latest Runtime:    $VERSION"
+	if [ "$INSTALLED_VERSION" = "$VERSION" ]; then
+		echo "Runtime is up to date."
+	else
+		echo "Runtime update available. Rerun this installer without --check."
+	fi
+	exit 0
+fi
 case "$VERSION" in
 *.*.*) ;;
 *)
@@ -154,6 +228,11 @@ if [ ! -x "$SOURCE_DIR/bin/sshxx-daemon" ] ||
 	echo "Release archive is incomplete: $ASSET" >&2
 	exit 1
 fi
+if [ "$MANAGED" = true ] &&
+	{ [ ! -x "$SOURCE_DIR/scripts/install.sh" ] || [ ! -x "$SOURCE_DIR/scripts/service.sh" ]; }; then
+	echo "Release v$VERSION predates managed installation support; install the latest v0.8.0+ Runtime." >&2
+	exit 1
+fi
 
 VERSION_DIR="$INSTALL_ROOT/versions/$VERSION"
 mkdir -p "$INSTALL_ROOT/versions" "$INSTALL_ROOT/bin" "$BIN_DIR"
@@ -165,6 +244,11 @@ elif [ ! -x "$VERSION_DIR/bin/sshxx-daemon" ] ||
 	[ ! -f "$VERSION_DIR/build/spa.html" ]; then
 	echo "Existing installation is incomplete: $VERSION_DIR" >&2
 	echo "Move it aside and rerun the installer." >&2
+	exit 1
+fi
+if [ "$MANAGED" = true ] &&
+	{ [ ! -x "$VERSION_DIR/scripts/install.sh" ] || [ ! -x "$VERSION_DIR/scripts/service.sh" ]; }; then
+	echo "Installed Runtime v$VERSION does not support managed services." >&2
 	exit 1
 fi
 printf '%s\n' "$VERSION" >"$INSTALL_ROOT/current-version"
@@ -194,6 +278,10 @@ sshxx-server)
 	cd "$ROOT/versions/$VERSION"
 	exec ./bin/sshxx-server "$@"
 	;;
+sshxx-service)
+	export SSHXX_INSTALL_ROOT=$ROOT
+	exec "$ROOT/versions/$VERSION/scripts/service.sh" "$@"
+	;;
 *)
 	echo "Unsupported sshxx command: $COMMAND" >&2
 	exit 1
@@ -205,6 +293,9 @@ chmod 755 "$INSTALL_ROOT/bin/sshxx-launcher"
 ln -sfn sshxx-launcher "$INSTALL_ROOT/bin/sshxx-daemon"
 ln -sfn sshxx-launcher "$INSTALL_ROOT/bin/sshxx-terminal-host"
 ln -sfn sshxx-launcher "$INSTALL_ROOT/bin/sshxx-server"
+if [ -x "$VERSION_DIR/scripts/service.sh" ]; then
+	ln -sfn sshxx-launcher "$INSTALL_ROOT/bin/sshxx-service"
+fi
 link_command() {
 	source=$1
 	destination=$2
@@ -220,6 +311,9 @@ link_command() {
 link_command "$INSTALL_ROOT/bin/sshxx-daemon" "$BIN_DIR/sshxx-daemon"
 link_command "$INSTALL_ROOT/bin/sshxx-terminal-host" "$BIN_DIR/sshxx-terminal-host"
 link_command "$INSTALL_ROOT/bin/sshxx-server" "$BIN_DIR/sshxx-server"
+if [ -x "$VERSION_DIR/scripts/service.sh" ]; then
+	link_command "$INSTALL_ROOT/bin/sshxx-service" "$BIN_DIR/sshxx-service"
+fi
 
 echo "Installed sshxx v$VERSION in $VERSION_DIR"
 echo "Commands are available in $BIN_DIR"
@@ -228,9 +322,24 @@ case ":$PATH:" in
 *) echo "Add $BIN_DIR to PATH before opening a new terminal." ;;
 esac
 
+if [ "$MANAGED" = true ]; then
+	SSHXX_INSTALL_ROOT=$INSTALL_ROOT SSHXX_BIN_DIR=$BIN_DIR \
+		"$VERSION_DIR/scripts/service.sh" install \
+		--workspace "$WORKSPACE" --scope "$SCOPE" \
+		--listen "$LISTEN" --port "$PORT" --bin-dir "$BIN_DIR"
+	echo "Verify the managed Runtime with: sshxx-service status"
+	exit 0
+fi
+
 if [ "$RUN_AFTER_INSTALL" != true ]; then
-	echo "Run a minimal local workspace with:"
-	echo "  curl -fsSL https://raw.githubusercontent.com/$REPOSITORY/main/scripts/install.sh | sh -s -- --run"
+	echo "Next, start the Runtime in two terminals:"
+	echo "  1. sshxx-server --listen 127.0.0.1"
+	echo "  2. cd <workspace-directory>"
+	echo "     sshxx-daemon --server http://127.0.0.1:8051"
+	echo "The daemon starts sshxx-terminal-host automatically and prints the session URL."
+	if [ -x "$VERSION_DIR/scripts/service.sh" ]; then
+		echo "For managed auto-start instead, rerun with --managed."
+	fi
 	exit 0
 fi
 

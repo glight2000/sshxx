@@ -47,6 +47,7 @@
   import CircleButtons from "./CircleButtons.svelte";
   import InlineTitle from "./InlineTitle.svelte";
   import { settings } from "$lib/settings";
+  import { TerminalWriteQueue } from "$lib/terminalWriteQueue";
   import { parseOsc7Location } from "$lib/terminalLocation";
   import { TypeAheadAddon } from "$lib/typeahead";
   import { installXtermMouseCoordinateAdapter } from "$lib/xtermMouseCoordinates";
@@ -96,7 +97,7 @@
   export let linkedNotes: CanvasRelationItem[] = [];
   export let linkedHighlight = false;
   export let paragraphDropActive = false;
-  export let write: (data: string, replay?: boolean) => void; // bound function prop
+  export let write: (data: string, replay?: boolean) => Promise<void>; // bound function prop
   export let sendText: (data: string, execute?: boolean) => void;
 
   export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
@@ -152,6 +153,9 @@
   let imageDragging = false;
   let suppressAttention = 0;
   let suppressInput = 0;
+  let queuedWriteCharacters = 0;
+  let queuedWriteChunks = 0;
+  $: catchingUp = queuedWriteCharacters >= 256 << 10 || queuedWriteChunks >= 8;
   let workingDirectory = ".";
   let workingDirectoryHost = "";
   let initialWorkingDirectoryHost = "";
@@ -301,64 +305,31 @@
     uploadImage(file);
   }
 
-  type PendingWrite = {
-    parts: string[];
-    length: number;
-    replay: boolean;
-  };
-  const pendingWrites: PendingWrite[] = [];
-  const maxCombinedWriteBytes = 256 << 10;
-  let writeInProgress = false;
-
-  function flushPendingWrites() {
-    if (!term || writeInProgress || pendingWrites.length === 0) return;
-    const next = pendingWrites.shift()!;
-    let data = next.parts.length === 1 ? next.parts[0] : next.parts.join("");
-    if (!next.replay) data = typeahead.onBeforeProcessData(data);
-    if (!data) {
-      flushPendingWrites();
-      return;
-    }
-
-    writeInProgress = true;
-    if (next.replay) {
+  const writeQueue = new TerminalWriteQueue({
+    transform(data, replay) {
+      return replay ? data : typeahead.onBeforeProcessData(data);
+    },
+    onReplayStart() {
       suppressAttention += 1;
       suppressInput += 1;
       typeahead.beginInputSuppression();
-    }
-    const complete = () => {
-      if (next.replay) {
-        suppressAttention -= 1;
-        suppressInput -= 1;
-        typeahead.endInputSuppression();
-      }
-      writeInProgress = false;
-      flushPendingWrites();
-    };
-    try {
-      // Wait for xterm's public write callback before feeding the next batch.
-      // This keeps full-screen TUIs from overwhelming its internal write queue.
-      term.write(data, complete);
-    } catch (error) {
+    },
+    onReplayEnd() {
+      suppressAttention = Math.max(0, suppressAttention - 1);
+      suppressInput = Math.max(0, suppressInput - 1);
+      typeahead.endInputSuppression();
+    },
+    onStateChange(state) {
+      queuedWriteCharacters = state.queuedCharacters;
+      queuedWriteChunks = state.queuedChunks;
+    },
+    onError(error) {
       console.error("Could not write terminal output.", error);
-      complete();
-    }
-  }
+    },
+  });
 
   write = (data: string, replay = false) => {
-    if (!data) return;
-    const pending = pendingWrites.at(-1);
-    if (
-      pending &&
-      pending.replay === replay &&
-      pending.length + data.length <= maxCombinedWriteBytes
-    ) {
-      pending.parts.push(data);
-      pending.length += data.length;
-    } else {
-      pendingWrites.push({ parts: [data], length: data.length, replay });
-    }
-    flushPendingWrites();
+    return writeQueue.write(data, replay);
   };
 
   $: term?.resize(cols, rows);
@@ -491,6 +462,7 @@
     }
 
     term.resize(cols, rows);
+    writeQueue.setSink((data, complete) => term!.write(data, complete));
     sendText = (data: string, execute = false) => {
       term?.paste(data);
       if (execute) dispatch("data", new Uint8Array([13]));
@@ -516,7 +488,6 @@
     focusObserver.observe(term.element!, { attributeFilter: ["class"] });
 
     loaded = true;
-    flushPendingWrites();
 
     typeahead.reset();
     term.loadAddon(typeahead);
@@ -533,6 +504,7 @@
   });
 
   onDestroy(() => {
+    writeQueue.dispose();
     if (webglRefreshTimer !== null) window.clearTimeout(webglRefreshTimer);
     webglContextLoss?.dispose();
     mouseCoordinateAdapter?.dispose();
@@ -630,6 +602,16 @@
           }
         }}
       />
+      {#if catchingUp}
+        <span
+          class="terminal-catchup"
+          title={`Rendering queued terminal output (${Math.ceil(queuedWriteCharacters / 1024)} KiB)`}
+          aria-label="Rendering queued terminal output"
+        >
+          <span aria-hidden="true"></span>
+          Catching up
+        </span>
+      {/if}
     </div>
     <div class="relative flex h-full flex-1 items-center justify-end pr-2">
       <button
@@ -822,6 +804,21 @@
   .terminal-titlebar > * {
     position: relative;
     z-index: 1;
+  }
+
+  .terminal-catchup {
+    @apply inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-100/80;
+  }
+
+  .terminal-catchup > span {
+    @apply h-1.5 w-1.5 rounded-full bg-amber-300;
+    animation: terminal-catchup-pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes terminal-catchup-pulse {
+    50% {
+      opacity: 0.3;
+    }
   }
 
   .terminal-titlebar.terminal-attention::before {

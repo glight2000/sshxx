@@ -27,6 +27,37 @@ use crate::ServerState;
 const IMAGE_UPLOAD_CHUNK_BYTES: usize = 64 << 10;
 const IMAGE_UPLOAD_MAX_BYTES: u64 = 20 << 20;
 const FILE_REQUEST_MAX_BYTES: usize = 12 << 20;
+const TERMINAL_RENDER_ACK_CAPABILITY: &str = "terminal-render-ack-v1";
+
+fn spawn_chunk_forwarder(
+    session: Arc<Session>,
+    id: Sid,
+    chunknum: u64,
+    chunks_tx: mpsc::Sender<(Sid, u32, bool, u64, Vec<Bytes>)>,
+    mut rendered_rx: Option<mpsc::Receiver<()>>,
+) {
+    tokio::spawn(async move {
+        let stream = session.subscribe_chunks(id, chunknum);
+        tokio::pin!(stream);
+        while let Some((replay, seqnum, chunks)) = stream.next().await {
+            let Some(page_id) = session.shell_page(id) else {
+                break;
+            };
+            if chunks_tx
+                .send((id, page_id, replay, seqnum, chunks))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            if let Some(receiver) = rendered_rx.as_mut() {
+                if receiver.recv().await.is_none() {
+                    break;
+                }
+            }
+        }
+    });
+}
 
 fn create_shell(message: NewShell) -> ServerMessage {
     ServerMessage::CreateShell(Box::new(message))
@@ -207,14 +238,20 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
 
     let update_tx = session.update_tx(); // start listening for updates before any state reads
     let mut broadcast_stream = session.subscribe_broadcast();
+    send(
+        socket,
+        WsServer::Capabilities(vec![TERMINAL_RENDER_ACK_CAPABILITY.into()]),
+    )
+    .await?;
     send(socket, WsServer::Users(session.list_users())).await?;
     for (id, page_id, editor) in session.list_note_editors() {
         send(socket, WsServer::NoteEditing(id, page_id, Some(editor))).await?;
     }
 
     let mut subscribed = HashSet::new(); // prevent duplicate subscriptions
-                                         // Filesystem responses are returned only to the WebSocket that requested
-                                         // them, even though the daemon-to-server transport is session-scoped.
+    let mut render_acks = HashMap::<Sid, mpsc::Sender<()>>::new();
+    // Filesystem responses are returned only to the WebSocket that requested
+    // them, even though the daemon-to-server transport is session-scoped.
     let mut pending_file_requests = HashMap::<String, Instant>::new();
     let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u32, bool, u64, Vec<Bytes>)>(1);
 
@@ -1381,21 +1418,31 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     continue;
                 }
                 subscribed.insert(id);
-                let session = Arc::clone(&session);
-                let chunks_tx = chunks_tx.clone();
-                tokio::spawn(async move {
-                    let stream = session.subscribe_chunks(id, chunknum);
-                    tokio::pin!(stream);
-                    while let Some((replay, seqnum, chunks)) = stream.next().await {
-                        if chunks_tx
-                            .send((id, page_id, replay, seqnum, chunks))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                });
+                spawn_chunk_forwarder(Arc::clone(&session), id, chunknum, chunks_tx.clone(), None);
+            }
+            WsClient::SubscribeFlowControlled(id, page_id, chunknum) => {
+                if let Err(err) = session.check_shell_page(id, page_id) {
+                    send(socket, WsServer::Error(err.to_string())).await?;
+                    continue;
+                }
+                if subscribed.contains(&id) {
+                    continue;
+                }
+                subscribed.insert(id);
+                let (rendered_tx, rendered_rx) = mpsc::channel(1);
+                render_acks.insert(id, rendered_tx);
+                spawn_chunk_forwarder(
+                    Arc::clone(&session),
+                    id,
+                    chunknum,
+                    chunks_tx.clone(),
+                    Some(rendered_rx),
+                );
+            }
+            WsClient::RenderedChunks(id) => {
+                if let Some(sender) = render_acks.get(&id) {
+                    sender.try_send(()).ok();
+                }
             }
             WsClient::Chat(msg) => {
                 session.send_chat(user_id, &msg)?;

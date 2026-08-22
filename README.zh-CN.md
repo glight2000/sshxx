@@ -56,21 +56,99 @@ README 只保留项目级介绍。完整功能和全量截图请查看
 
 ## 安装并运行
 
-Release 安装器会下载匹配平台的 Linux/macOS 运行时包，校验 SHA-256，安装三个必需可执行文件和 Web 客户端，然后启动本地 server 与 daemon：
+**Runtime（运行时）**是自建后端包，包含 `sshxx-server`、`sshxx-daemon`、
+`sshxx-terminal-host`、构建后的 Web 客户端，以及许可证和 README。桌面版
+`sshxx-client` 是独立的可选浏览端，不会由 Runtime 安装脚本一并安装。
+
+| 方式           | 适用场景             | 进程生命周期                              |
+| -------------- | -------------------- | ----------------------------------------- |
+| 前台快速体验   | 初次使用、评估和调试 | 用户在两个终端中手动启动 server 和 daemon |
+| 服务化托管安装 | 长期稳定使用         | 平台服务管理器启动三个相互独立的任务      |
+
+### 前台快速体验
+
+第 1 步——下载安装最新 Runtime：
+
+Linux 和 macOS：
 
 ```shell
-curl -fsSL https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.sh | sh -s -- --run
+curl -fsSL https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH" # 仅在 ~/.local/bin 尚未加入 PATH 时需要
 ```
 
 Windows PowerShell（x64）：
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.ps1))) -Run
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.ps1)))
 ```
 
-daemon 会输出会话 URL，本地状态保存在执行命令时所在的目录。去掉 `--run`/`-Run`
-即可只安装而不启动。本地桌面客户端是
-[Releases 页面](https://github.com/glight2000/sshxx/releases)中的可选下载；完整的包内容、平台、签名和运维说明见
+第 2 步——在第一个终端启动 server：
+
+```shell
+sshxx-server --listen 127.0.0.1
+```
+
+再选择一个长期保存数据的工作目录，在第二个终端启动 daemon：
+
+```shell
+mkdir -p "$HOME/sshxx-workspace" && cd "$HOME/sshxx-workspace"
+sshxx-daemon --server http://127.0.0.1:8051
+```
+
+PowerShell 中先执行 `New-Item -ItemType Directory -Force ~/sshxx-workspace` 和
+`Set-Location ~/sshxx-workspace`，再运行相同的 daemon 命令。daemon 会自动发现或启动
+`sshxx-terminal-host`，无需单独启动 host。当 `http://127.0.0.1:8051`
+能返回页面、daemon 输出会话 URL，且打开该 URL 后连接指示器变为在线，即表示启动成功。还可在同一工作目录执行
+`sshxx-daemon terminal-host status` 检查 host。
+
+检查更新时，对同一个安装器在 Linux/macOS 添加 `--check`，在 Windows 添加
+`-Check`。更新 Runtime 和 Web 时重新执行第 1 步，再重启前台 server 和 daemon。兼容的 terminal-host 会继续运行；活动终端为空后，执行
+`sshxx-daemon terminal-host restart` 启用已安装的 host。
+
+### 适合长期使用的服务化安装
+
+服务化脚本会下载 Runtime、注册三个独立任务、启动并验证，同时在普通更新中保留 terminal-host。Linux 使用 systemd，macOS 使用 launchd；Windows 使用三个当前用户的任务计划程序任务，避免用
+`LocalSystem` 身份启动用户 Shell。
+
+Linux/macOS 用户级服务（用户登录时启动）：
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.sh | sh -s -- --managed
+```
+
+Linux/macOS 如需系统启动时运行，改用
+`--scope system`；脚本只在注册系统服务定义时请求 `sudo`。Windows
+PowerShell（当前用户登录时启动）：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.ps1))) -Managed
+```
+
+统一管理和验证命令：
+
+```shell
+sshxx-service status
+sshxx-service logs
+sshxx-service check-update
+sshxx-service update
+sshxx-service uninstall
+```
+
+卸载默认删除服务和 Runtime，但保留 `~/sshxx-workspace`。如需同时删除工作区，使用
+`uninstall --purge-data`（PowerShell：`uninstall -PurgeData`）。存在活动终端时默认拒绝卸载，只有显式传入
+`--force`/`-Force` 才允许中断。
+
+### 安装并运行可选桌面客户端
+
+从
+[Releases 页面](https://github.com/glight2000/sshxx/releases)下载当前系统对应的
+`sshxx-client`：Linux 选择 AppImage/DEB/RPM，macOS 选择 DMG，Windows 选择 MSI 或安装 EXE。AppImage 执行
+`chmod +x` 后直接运行；DEB 使用 `sudo apt install ./<file>.deb`；RPM 使用
+`sudo dnf install ./<file>.rpm`；macOS 从 DMG 将应用复制到 Applications；Windows 运行其中一种安装程序即可。启动
+`sshxx-client`，粘贴 daemon 输出的会话 URL，然后点击
+**Connect**。桌面客户端仍然依赖正在运行的 Runtime；也可以不安装桌面客户端，直接在浏览器打开同一个 URL。
+
+Runtime 更新包含 Web，但不会更新打包桌面客户端；桌面客户端需要另行安装最新平台包。完整的安装、升级、卸载、host 生命周期、包内容、平台、签名和验证说明见
 **[安装与发布](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases)**。
 
 ## 状态与信任边界

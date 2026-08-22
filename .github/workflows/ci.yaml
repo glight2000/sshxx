@@ -30,6 +30,9 @@ jobs:
 
       - run: cargo fmt --all -- --check
 
+      - name: Check Unix management scripts
+        run: shellcheck scripts/install.sh scripts/service.sh
+
   rust:
     name: Rust lint and test
     runs-on: ubuntu-latest
@@ -77,6 +80,10 @@ jobs:
         run: |
           cargo test -p sshxx-server --lib --bin sshxx-server
           cargo check -p sshxx-server --all-targets
+
+      - name: Parse Windows management scripts
+        shell: pwsh
+        run: ./scripts/service.ps1 help
 
   web:
     name: Web lint, check, and build

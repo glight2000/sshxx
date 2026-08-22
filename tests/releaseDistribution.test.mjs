@@ -5,6 +5,8 @@ import test from "node:test";
 const releaseWorkflow = readFileSync(".github/workflows/release.yaml", "utf8");
 const unixInstaller = readFileSync("scripts/install.sh", "utf8");
 const windowsInstaller = readFileSync("scripts/install.ps1", "utf8");
+const unixServiceManager = readFileSync("scripts/service.sh", "utf8");
+const windowsServiceManager = readFileSync("scripts/service.ps1", "utf8");
 
 const runtimeTargets = [
   "x86_64-unknown-linux-gnu",
@@ -34,6 +36,11 @@ test("release workflow builds complete runtime archives for supported targets", 
   }
   assert.match(releaseWorkflow, /cp -R build/);
   assert.match(releaseWorkflow, /Copy-Item -Recurse "build"/);
+  assert.match(releaseWorkflow, /scripts\/install\.sh scripts\/service\.sh/);
+  assert.match(
+    releaseWorkflow,
+    /"scripts\/install\.ps1", "scripts\/service\.ps1"/,
+  );
 });
 
 test("release stays draft until checksums and attestations are complete", () => {
@@ -57,4 +64,27 @@ test("installers verify checksums and require every runtime component", () => {
   }
   assert.match(unixInstaller, /while \[ -L "\$SCRIPT_PATH" \]/);
   assert.match(unixInstaller, /ln -sfn sshxx-launcher/);
+  assert.match(unixInstaller, /sshxx-service/);
+  assert.match(windowsInstaller, /sshxx-service\.cmd/);
+});
+
+test("managed installers preserve the independent terminal-host lifecycle", () => {
+  assert.match(unixServiceManager, /systemctl --user/);
+  assert.match(unixServiceManager, /Library\/LaunchAgents/);
+  assert.match(unixServiceManager, /Library\/LaunchDaemons/);
+  assert.match(unixServiceManager, /terminal-host remains running/);
+  assert.match(unixServiceManager, /terminal-host was not restarted/);
+  assert.doesNotMatch(
+    unixServiceManager,
+    /linux_control restart[^\n]*terminal-host/,
+  );
+
+  assert.match(windowsServiceManager, /Register-ScheduledTask/);
+  assert.match(windowsServiceManager, /terminal-host remains running/);
+  assert.match(windowsServiceManager, /-PurgeData/);
+  assert.match(windowsServiceManager, /Unregister-ScheduledTask/);
+  assert.match(
+    windowsServiceManager,
+    /"daemon" \{\s+Wait-Host \$Configuration\s+Wait-Web \$Configuration/,
+  );
 });

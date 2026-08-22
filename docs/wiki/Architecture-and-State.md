@@ -42,6 +42,13 @@ to spawn it inside the daemon unit's cgroup. If the executable itself is
 missing, startup fails with an actionable error instead of falling back to
 in-process PTY ownership.
 
+Managed Runtime installation preserves the same three-process boundary on every
+platform: separate systemd units on Linux, separate launchd jobs on macOS, and
+separate current-user Task Scheduler jobs on Windows. Windows uses login tasks
+instead of `LocalSystem` services so interactive shells and filesystem access
+retain the installing user's security context. `sshxx-service stop`, `restart`,
+and `update` affect server and daemon but never restart terminal-host.
+
 Daemon and host releases negotiate a versioned local protocol. Installing or
 restarting a compatible daemon never restarts the currently running host. A new
 host executable may be installed on disk while the old process continues to own
@@ -57,9 +64,9 @@ local shells, nested SSH connections, full-screen applications, and agents such
 as Codex or Claude Code. `restart --force` is an explicit destructive
 acknowledgement and disconnects all of them.
 
-For a systemd deployment, first run the status command as the service account.
-Only when it reports no terminals should an operator restart the independent
-host unit and then the daemon unit:
+For a systemd system deployment, first run the status command as the service
+account. Only when it reports no terminals should an operator restart the
+independent host unit and then the daemon unit:
 
 ```shell
 sudo -u app sshxx-daemon terminal-host status
@@ -119,9 +126,11 @@ session name; a random-name deployment necessarily receives a new URL.
 - Dropping a moving selection on the pager sends one bounded, writer-authorized
   cross-page operation containing IDs and final coordinates. The server
   validates every source item and the destination before mutating any
-  collection. Explicit note/file/terminal relationships may span pages after
-  such a move; ordinary input, editing, and filesystem messages still use the
-  owning component or terminal page ID.
+  collection. The initiating viewer locally centers and, when necessary, zooms
+  the destination page to reveal the whole moved group; this viewport change is
+  not synchronized. Explicit note/file/terminal relationships may span pages
+  after such a move; ordinary input, editing, filesystem messages, and terminal
+  output batches use the component's current page ID.
 - Global search runs locally over the shared all-page snapshot. The query is not
   synchronized; choosing a result changes only that viewer's page and viewport.
 - Undo/redo stacks for note and file editing belong to the active viewer. The
@@ -167,6 +176,15 @@ suffix rather than silently overwritten.
 | Server ↔ Redis                 | Redis protocol using the configured URL                                                                                         | Redis contains compressed session snapshots and coordination keys. Keep it private; use authentication and TLS when it crosses a trusted host/network boundary.                                          |
 | Daemon ↔ SSH host              | System OpenSSH and SFTP                                                                                                         | OpenSSH host-key, agent, key-file, and authentication policies apply. Filesystem access has the SSH account's privileges.                                                                                |
 | Daemon ↔ terminal host         | Versioned length-prefixed protobuf over an owner-only Unix socket or Windows named pipe, authenticated by a 256-bit local token | Local-only bridge for raw PTY bytes and control operations. Dropping the connection never closes a terminal; an explicit close operation does.                                                           |
+
+Terminal output delivery uses capability-negotiated renderer backpressure.
+Compatible viewers receive at most 256 KiB per terminal batch; the server does
+not send that terminal's next batch until xterm's public write callback confirms
+that the current batch was rendered. The viewer further writes in 64 KiB chunks
+with an event-loop yield between chunks. Inactive-page terminals acknowledge
+after their bounded browser history accepts the data. Older viewers retain the
+legacy subscription behavior, while batch size and current-page labeling remain
+safe on the server side.
 
 The server cannot decrypt terminal contents, filesystem payloads, pasted image
 chunks, or active editor contents without the URL-fragment session key. It can

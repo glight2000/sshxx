@@ -71,6 +71,7 @@
     type CanvasItemKind,
   } from "./canvasSelection";
   import { canvasPanButton, canvasSelectionButton } from "./canvasMouseButtons";
+  import { canvasPageMoveView } from "./canvasPageMove";
   import {
     GRID_SIZE,
     gridAlignedRect,
@@ -100,6 +101,7 @@
   const TERM_INITIAL_HEIGHT = 523;
   const NOTE_INITIAL_WIDTH = 384;
   const NOTE_INITIAL_HEIGHT = 224;
+  const TERMINAL_RENDER_ACK_CAPABILITY = "terminal-render-ack-v1";
   let fileExplorerModulePromise: Promise<
     typeof import("./ui/FileExplorer.svelte")
   > | null = null;
@@ -205,6 +207,7 @@
   > = {};
   let serverVersion = "unknown";
   let daemonVersion = "unknown";
+  let terminalRenderFlowControl = false;
 
   function canvasItemFromTarget(target: EventTarget | null) {
     if (!(target instanceof Element)) return null;
@@ -581,7 +584,10 @@
   }
 
   /** Bound "write" method for each terminal. */
-  const writers: Record<number, (data: string, replay?: boolean) => void> = {};
+  const writers: Record<
+    number,
+    (data: string, replay?: boolean) => Promise<void>
+  > = {};
   const terminalTextSenders: Record<
     number,
     (data: string, execute?: boolean) => void
@@ -604,7 +610,7 @@
   const terminalHistory = new TerminalHistory(2 * 1024 * 1024);
   const replayedWriters: Record<
     number,
-    (data: string, replay?: boolean) => void
+    (data: string, replay?: boolean) => Promise<void>
   > = {};
   // Transient collaboration state: synchronized, but never persisted.
   let userId = 0;
@@ -667,15 +673,15 @@
     return terminalHistory.read(id);
   }
 
-  function writeTerminalData(id: number, data: string, replay: boolean) {
+  async function writeTerminalData(id: number, data: string, replay: boolean) {
     appendTerminalHistory(id, data);
     const writer = writers[id];
     if (!writer) return;
     if (replayedWriters[id] !== writer) {
       replayedWriters[id] = writer;
-      writer(readTerminalHistory(id), true);
+      await writer(readTerminalHistory(id), true);
     } else {
-      writer(data, replay);
+      await writer(data, replay);
     }
   }
 
@@ -892,6 +898,36 @@
     if (!terminalMoves.length && !noteMoves.length && !fileMoves.length)
       return false;
 
+    const movedRects: CanvasItemRect[] = [
+      ...terminalMoves.map(([id, x, y]) => {
+        const state = shells.find(([itemId]) => itemId === id)?.[1];
+        return {
+          x,
+          y,
+          width: state?.width || TERM_INITIAL_WIDTH,
+          height: state?.height || TERM_INITIAL_HEIGHT,
+        };
+      }),
+      ...noteMoves.map(([id, x, y]) => {
+        const state = notes.find(([itemId]) => itemId === id)?.[1];
+        return {
+          x,
+          y,
+          width: state?.width || NOTE_INITIAL_WIDTH,
+          height: state?.height || NOTE_INITIAL_HEIGHT,
+        };
+      }),
+      ...fileMoves.map(([id, x, y]) => {
+        const state = fileWindows.find(([itemId]) => itemId === id)?.[1];
+        return {
+          x,
+          y,
+          width: state?.width || 860,
+          height: state?.height || 560,
+        };
+      }),
+    ];
+
     if (document.activeElement instanceof HTMLElement)
       document.activeElement.blur();
     srocket?.send({
@@ -942,6 +978,17 @@
     selectedCanvasItems = selected;
     canvasDropPageId = null;
     canvasDropPreviewOffsets = {};
+    const targetView = pageViews[targetPageId] ?? {
+      center: [0, 0],
+      zoom: INITIAL_ZOOM,
+    };
+    const revealedView = canvasPageMoveView(
+      movedRects,
+      fabricEl?.clientWidth || window.innerWidth,
+      fabricEl?.clientHeight || window.innerHeight,
+      targetView.zoom,
+    );
+    if (revealedView) pageViews[targetPageId] = revealedView;
     switchPage(targetPageId, true);
     return true;
   }
@@ -1095,6 +1142,10 @@
           });
           exitReason = null;
           failureStage = null;
+        } else if (message.capabilities) {
+          terminalRenderFlowControl = message.capabilities.includes(
+            TERMINAL_RENDER_ACK_CAPABILITY,
+          );
         } else if (message.invalidAuth) {
           reportConnectionIssue(
             "The URL is not correct: the end-to-end encryption key is invalid.",
@@ -1124,7 +1175,10 @@
               seqnum += data.length;
               plaintextChunks.push(decoder.decode(buf));
             }
-            writeTerminalData(id, plaintextChunks.join(""), replay);
+            await writeTerminalData(id, plaintextChunks.join(""), replay);
+            if (terminalRenderFlowControl) {
+              srocket?.send({ renderedChunks: [id] });
+            }
           });
         } else if (message.users) {
           sessionReady = true;
@@ -1176,9 +1230,18 @@
               chunknums[id] ??= 0;
               locks[id] ??= createLock();
               subscriptions.add(id);
-              srocket?.send({
-                subscribe: [id, winsize.pageId ?? 1, chunknums[id]],
-              });
+              const subscription: WsClient = terminalRenderFlowControl
+                ? {
+                    subscribeFlowControlled: [
+                      id,
+                      winsize.pageId ?? 1,
+                      chunknums[id],
+                    ],
+                  }
+                : {
+                    subscribe: [id, winsize.pageId ?? 1, chunknums[id]],
+                  };
+              srocket?.send(subscription);
             }
           }
         } else if (message.notes) {
@@ -1307,6 +1370,7 @@
         noteEditors = {};
         serverLatencies = [];
         shellLatencies = [];
+        terminalRenderFlowControl = false;
         fileRequests?.rejectAll(
           "Connection closed before the filesystem request completed.",
         );
@@ -2466,7 +2530,7 @@
       const writer = writers[id];
       if (writer && replayedWriters[id] !== writer) {
         replayedWriters[id] = writer;
-        writer(readTerminalHistory(id), true);
+        void writer(readTerminalHistory(id), true);
       }
     }
   });

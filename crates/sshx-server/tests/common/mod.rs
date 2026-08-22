@@ -188,6 +188,7 @@ impl ClientSocket {
                         self.server_version = server_version;
                         self.daemon_version = daemon_version;
                     }
+                    WsServer::Capabilities(_) => {}
                     WsServer::InvalidAuth() => panic!("invalid authentication"),
                     WsServer::Users(users) => self.users = BTreeMap::from_iter(users),
                     WsServer::UserDiff(id, maybe_user) => {

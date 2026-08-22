@@ -132,6 +132,7 @@ export type WsUser = {
 /** Server message type, see the Rust version. */
 export type WsServer = {
   hello?: [Uid, string, string, string];
+  capabilities?: string[];
   invalidAuth?: [];
   users?: [Uid, WsUser][];
   userDiff?: [Uid, WsUser | null];
@@ -269,6 +270,8 @@ export type WsClient = {
   ];
   fileRequest?: [Sid, number, string, bigint, bigint, Uint8Array];
   subscribe?: [Sid, number, number];
+  subscribeFlowControlled?: [Sid, number, number];
+  renderedChunks?: [Sid];
   chat?: string;
   ping?: bigint;
 };

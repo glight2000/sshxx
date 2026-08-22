@@ -69,25 +69,112 @@ preserves the URL. Without one, the replacement receives a new random URL.
 
 ## Install and run
 
-The release installer downloads the matching Linux/macOS runtime archive,
-verifies its SHA-256 checksum, installs all three required executables plus the
-Web client, and starts a local server and daemon:
+The **Runtime** is the self-hosted backend bundle. It contains `sshxx-server`,
+`sshxx-daemon`, `sshxx-terminal-host`, and the built Web client, plus the
+license and READMEs. The desktop `sshxx-client` is a separate optional viewer
+and is not installed by the Runtime script.
+
+| Mode                   | Best for                             | Process lifetime                                      |
+| ---------------------- | ------------------------------------ | ----------------------------------------------------- |
+| Foreground quick trial | First use, evaluation, and debugging | You start server and daemon in two terminals          |
+| Managed installation   | Stable long-term use                 | Native platform manager starts three independent jobs |
+
+### Foreground quick trial
+
+Step 1 — download and install the latest Runtime:
+
+Linux and macOS:
 
 ```shell
-curl -fsSL https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.sh | sh -s -- --run
+curl -fsSL https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH" # only if ~/.local/bin is not already on PATH
 ```
 
 Windows PowerShell (x64):
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.ps1))) -Run
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.ps1)))
 ```
 
-The daemon prints the session URL and stores its local state in the directory
-where the command was started. Omit `--run`/`-Run` to install without starting
-the local stack. Desktop installers are optional downloads on the
-[Releases page](https://github.com/glight2000/sshxx/releases); complete package,
-platform, signing, and operator details are in
+Step 2 — start the server in one terminal:
+
+```shell
+sshxx-server --listen 127.0.0.1
+```
+
+Then choose a persistent workspace directory and start the daemon in a second
+terminal:
+
+```shell
+mkdir -p "$HOME/sshxx-workspace" && cd "$HOME/sshxx-workspace"
+sshxx-daemon --server http://127.0.0.1:8051
+```
+
+On PowerShell, use `New-Item -ItemType Directory -Force ~/sshxx-workspace` and
+`Set-Location ~/sshxx-workspace` before the same daemon command. The daemon
+discovers or starts `sshxx-terminal-host`; do not start the host separately.
+Installation is successful when the server returns a page at
+`http://127.0.0.1:8051`, the daemon prints a session URL, and that URL opens
+with the connection indicator online. `sshxx-daemon terminal-host status`
+provides an additional host check and must be run from the same workspace
+directory.
+
+Check for an update with the same installer plus `--check` on Linux/macOS or
+`-Check` on Windows. To update Runtime and Web, rerun step 1 and restart the
+foreground server and daemon. The compatible terminal-host process remains
+alive; when it has no terminals, activate the installed host with
+`sshxx-daemon terminal-host restart`.
+
+### Managed installation for long-term use
+
+The managed installer downloads Runtime, registers three independent jobs,
+starts them, and leaves the terminal host untouched during ordinary updates.
+Linux uses systemd, macOS uses launchd, and Windows uses three per-user Task
+Scheduler jobs so shells never run as `LocalSystem`.
+
+Linux/macOS user scope (starts when the user logs in):
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.sh | sh -s -- --managed
+```
+
+Use `--scope system` instead for a Linux/macOS system-boot service; the script
+requests `sudo` only while registering system definitions. Windows PowerShell
+(current-user login startup):
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/glight2000/sshxx/main/scripts/install.ps1))) -Managed
+```
+
+Manage and verify it with:
+
+```shell
+sshxx-service status
+sshxx-service logs
+sshxx-service check-update
+sshxx-service update
+sshxx-service uninstall
+```
+
+Uninstall removes services and Runtime but preserves `~/sshxx-workspace` by
+default. `uninstall --purge-data` (PowerShell: `uninstall -PurgeData`) also
+removes workspace data. Uninstall refuses to interrupt active terminals unless
+`--force`/`-Force` is explicitly supplied.
+
+### Install and run the optional desktop client
+
+Download the current `sshxx-client` package for your OS from the
+[Releases page](https://github.com/glight2000/sshxx/releases): AppImage/DEB/RPM
+on Linux, DMG on macOS, or MSI/setup EXE on Windows. Run an AppImage after
+`chmod +x`, install a DEB with `sudo apt install ./<file>.deb` or an RPM with
+`sudo dnf install ./<file>.rpm`, copy the macOS app from its DMG to
+Applications, or run one Windows installer. Launch `sshxx-client`, paste the
+session URL printed by the daemon, and select **Connect**. The desktop client
+still requires a running Runtime; alternatively, open the same URL directly in a
+browser. Runtime updates include Web but do not update the packaged desktop
+client; install its newest platform package separately. Complete installation,
+update, uninstall, host-lifecycle, package, platform, signing, and verification
+details are in
 **[Installation and Releases](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases)**.
 
 ## State and trust boundaries

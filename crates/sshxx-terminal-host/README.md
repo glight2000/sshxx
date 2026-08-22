@@ -98,8 +98,9 @@ cargo run -p sshxx-daemon -- terminal-host restart
 ```
 
 `stop` and `restart` refuse while terminals are active. Adding `--force` is an
-explicit destructive acknowledgement. A systemd deployment uses a separate
-`sshxx-terminal-host.service`; routine daemon restarts must not restart it.
+explicit destructive acknowledgement. Managed installations use a separate
+systemd unit, launchd job, or Windows Task Scheduler job for terminal-host;
+routine daemon/server restarts and `sshxx-service update` must not restart it.
 
 `portable-pty` provides the Unix PTY and Windows ConPTY implementations. Linux
 is covered by lifecycle integration tests. Windows named-pipe and ConPTY

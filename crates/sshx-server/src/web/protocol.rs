@@ -257,6 +257,9 @@ pub enum WsServer {
     /// Initial message with user ID, session name, server version, and daemon
     /// version.
     Hello(Uid, String, String, String),
+    /// Optional protocol capabilities understood by this server. Older Web
+    /// clients safely ignore message fields they do not use.
+    Capabilities(Vec<String>),
     /// The user's authentication was invalid.
     InvalidAuth(),
     /// A snapshot of all current users in the session.
@@ -393,6 +396,10 @@ pub enum WsClient {
     FileRequest(Sid, u32, String, u64, u64, Bytes),
     /// Subscribe to a shell, starting at a given chunk index.
     Subscribe(Sid, u32, u64),
+    /// Subscribe with one rendered batch in flight at a time.
+    SubscribeFlowControlled(Sid, u32, u64),
+    /// Confirm that the latest flow-controlled batch reached the renderer.
+    RenderedChunks(Sid),
     /// Send a a chat message to the room.
     Chat(String),
     /// Send a ping to the server, for latency measurement.

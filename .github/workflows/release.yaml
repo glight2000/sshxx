@@ -139,10 +139,12 @@ jobs:
         shell: bash
         run: |
           root="sshxx-runtime-${{ steps.artifact.outputs.version }}-${{ matrix.target }}"
-          mkdir -p "dist/$root/bin"
+          mkdir -p "dist/$root/bin" "dist/$root/scripts"
           cp "target/${{ matrix.target }}/release/sshxx-daemon" "dist/$root/bin/"
           cp "target/${{ matrix.target }}/release/sshxx-server" "dist/$root/bin/"
           cp "target/${{ matrix.target }}/release/sshxx-terminal-host" "dist/$root/bin/"
+          cp scripts/install.sh scripts/service.sh "dist/$root/scripts/"
+          chmod 755 "dist/$root/scripts/install.sh" "dist/$root/scripts/service.sh"
           cp -R build "dist/$root/build"
           cp LICENSE README.md README.zh-CN.md "dist/$root/"
           tar -C dist -czf "${{ steps.artifact.outputs.path }}" "$root"
@@ -154,9 +156,11 @@ jobs:
           $root = "sshxx-runtime-${{ steps.artifact.outputs.version }}-${{ matrix.target }}"
           $rootPath = Join-Path "dist" $root
           New-Item -ItemType Directory -Force -Path (Join-Path $rootPath "bin") | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $rootPath "scripts") | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/sshxx-daemon.exe" (Join-Path $rootPath "bin")
           Copy-Item "target/${{ matrix.target }}/release/sshxx-server.exe" (Join-Path $rootPath "bin")
           Copy-Item "target/${{ matrix.target }}/release/sshxx-terminal-host.exe" (Join-Path $rootPath "bin")
+          Copy-Item "scripts/install.ps1", "scripts/service.ps1" (Join-Path $rootPath "scripts")
           Copy-Item -Recurse "build" (Join-Path $rootPath "build")
           Copy-Item "LICENSE", "README.md", "README.zh-CN.md" $rootPath
           Compress-Archive -Path $rootPath -DestinationPath "${{ steps.artifact.outputs.path }}"

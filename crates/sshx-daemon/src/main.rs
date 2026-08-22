@@ -14,6 +14,9 @@ use sshxx_terminal_host::client::Client as TerminalHostClient;
 use tokio::signal;
 use tracing::{error, warn};
 
+#[cfg(unix)]
+use tokio::signal::unix::{signal as unix_signal, SignalKind};
+
 /// A self-hosted, persistent, collaborative terminal daemon.
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -283,7 +286,7 @@ async fn start(args: Args) -> Result<()> {
         print_greeting(&shell, &controller);
     }
 
-    let exit_signal = signal::ctrl_c();
+    let exit_signal = wait_for_shutdown();
     tokio::pin!(exit_signal);
     tokio::select! {
         _ = controller.run() => unreachable!(),
@@ -291,6 +294,22 @@ async fn start(args: Args) -> Result<()> {
     };
     controller.close().await?;
 
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown() -> Result<()> {
+    let mut sigterm = unix_signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = signal::ctrl_c() => result?,
+        _ = sigterm.recv() => (),
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown() -> Result<()> {
+    signal::ctrl_c().await?;
     Ok(())
 }
 

@@ -219,6 +219,83 @@ async fn test_ws_basic() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_flow_control_waits_for_terminal_render_ack() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
+    let name = controller.name().to_owned();
+    let key = controller.encryption_key().to_owned();
+    tokio::spawn(async move { controller.run().await });
+
+    let mut client = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
+    client.flush().await;
+    client.send(WsClient::Create(0, 0, 1)).await;
+    client.flush().await;
+
+    let session = server.state().lookup(&name).context("missing session")?;
+    let encrypt = Encrypt::new(&key);
+    let chunk = vec![b'x'; 64 << 10];
+    for index in 0..6u64 {
+        let sequence = index * chunk.len() as u64;
+        session.add_data(
+            Sid(1),
+            encrypt.segment(0x100000000 | 1, sequence, &chunk).into(),
+            sequence,
+        )?;
+    }
+
+    client
+        .send(WsClient::SubscribeFlowControlled(Sid(1), 1, 0))
+        .await;
+    client.flush().await;
+    assert_eq!(client.read(Sid(1)).len(), 4 * chunk.len());
+    assert_eq!(client.chunk_replays, [(Sid(1), true)]);
+
+    // Without a renderer acknowledgement the remaining batch stays at the
+    // server instead of growing an unbounded browser/xterm queue.
+    client.flush().await;
+    assert_eq!(client.read(Sid(1)).len(), 4 * chunk.len());
+
+    client.send(WsClient::CreatePage("Moved".into())).await;
+    client.flush().await;
+    let target_page_id = client.pages.last().context("missing target page")?.id;
+    client
+        .send(WsClient::MoveCanvasItems(
+            1,
+            target_page_id,
+            vec![(Sid(1), 120, 240)],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await;
+    client.flush().await;
+    assert_eq!(client.shells.get(&Sid(1)).unwrap().page_id, target_page_id);
+
+    client.send(WsClient::RenderedChunks(Sid(1))).await;
+    client.flush().await;
+    assert_eq!(client.read(Sid(1)).len(), 6 * chunk.len());
+    assert_eq!(client.chunk_replays.last(), Some(&(Sid(1), true)));
+
+    client.send(WsClient::RenderedChunks(Sid(1))).await;
+    let live_sequence = 6 * chunk.len() as u64;
+    session.add_data(
+        Sid(1),
+        encrypt
+            .segment(0x100000000 | 1, live_sequence, b"live")
+            .into(),
+        live_sequence,
+    )?;
+    for _ in 0..20 {
+        client.flush().await;
+        if client.read(Sid(1)).ends_with("live") {
+            break;
+        }
+    }
+    assert!(client.read(Sid(1)).ends_with("live"));
+    assert_eq!(client.chunk_replays.last(), Some(&(Sid(1), false)));
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn test_open_terminal_here_uses_requested_local_directory() -> Result<()> {

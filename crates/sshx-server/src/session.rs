@@ -39,6 +39,7 @@ use validation::{
 
 /// Store a rolling buffer with at most this quantity of output, per shell.
 const SHELL_STORED_BYTES: u64 = 1 << 21; // 2 MiB
+const SHELL_SEND_BATCH_BYTES: usize = 256 << 10;
 
 /// Static metadata for this session.
 #[derive(Debug, Clone)]
@@ -325,6 +326,17 @@ impl Session {
     /// Return the SSH profile identity associated with a terminal, if it is remote.
     pub fn shell_ssh_profile_id(&self, id: Sid) -> Option<String> {
         self.shell_ssh_profiles.read().get(&id).cloned()
+    }
+
+    /// Return the terminal's current canvas page for page-aware output
+    /// delivery. This must be resolved for every batch because terminals can
+    /// move without replacing their long-lived output subscription.
+    pub fn shell_page(&self, id: Sid) -> Option<u32> {
+        self.source
+            .borrow()
+            .iter()
+            .find(|(shell_id, _)| *shell_id == id)
+            .map(|(_, shell)| shell.page_id)
     }
 
     /// Return current note editors for initial WebSocket state.
@@ -819,7 +831,7 @@ impl Session {
             while !self.shutdown.is_terminated() {
                 // We absolutely cannot hold `shells` across an await point,
                 // since that would cause deadlocks.
-                let (seqnum, chunks, notified) = {
+                let (seqnum, chunks, notified, caught_up) = {
                     let shells = self.shells.read();
                     let shell = match shells.get(&id) {
                         Some(shell) if !shell.closed => shell,
@@ -833,14 +845,35 @@ impl Session {
                     if chunknum < current_chunks {
                         let start = chunknum.saturating_sub(shell.chunk_offset) as usize;
                         seqnum += shell.data[..start].iter().map(|x| x.len() as u64).sum::<u64>();
-                        chunks = shell.data[start..].to_vec();
-                        chunknum = current_chunks;
+                        let mut end = start;
+                        let mut batch_bytes = 0usize;
+                        while end < shell.data.len() {
+                            let chunk_bytes = shell.data[end].len();
+                            if end > start
+                                && batch_bytes.saturating_add(chunk_bytes)
+                                    > SHELL_SEND_BATCH_BYTES
+                            {
+                                break;
+                            }
+                            batch_bytes = batch_bytes.saturating_add(chunk_bytes);
+                            end += 1;
+                        }
+                        chunks = shell.data[start..end].to_vec();
+                        chunknum = shell.chunk_offset + end as u64;
                     }
-                    (seqnum, chunks, notified)
+                    (seqnum, chunks, notified, chunknum >= current_chunks)
                 };
 
                 if !chunks.is_empty() {
                     yield (replay, seqnum, chunks);
+                    if caught_up {
+                        replay = false;
+                    }
+                    // Re-read the current chunk boundary before waiting. A
+                    // renderer acknowledgement can race with new PTY output,
+                    // and notify_waiters intentionally stores no permit when
+                    // this future has not yet been polled.
+                    continue;
                 }
                 replay = false;
                 tokio::select! {
