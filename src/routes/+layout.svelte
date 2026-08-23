@@ -14,6 +14,7 @@
   let systemPrefersDark = browser
     ? window.matchMedia("(prefers-color-scheme: dark)").matches
     : true;
+  const embedded = browser && window.top !== window.self;
   $: resolvedColorMode = resolveColorMode(
     $settings.colorMode,
     systemPrefersDark,
@@ -45,6 +46,13 @@
   });
 </script>
 
-<ToastContainer />
-
-<slot />
+{#if embedded}
+  <main
+    class="grid min-h-screen place-items-center bg-zinc-950 p-8 text-zinc-300"
+  >
+    <p>sshxx cannot run inside an embedded frame.</p>
+  </main>
+{:else}
+  <ToastContainer />
+  <slot />
+{/if}

@@ -7,7 +7,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{any, get_service};
 use axum::Router;
-use http::header::{HeaderValue, CACHE_CONTROL};
+use http::header::{HeaderValue, CACHE_CONTROL, CONTENT_SECURITY_POLICY, X_FRAME_OPTIONS};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::ServerState;
@@ -42,6 +42,15 @@ pub fn app() -> Router<Arc<ServerState>> {
 async fn static_cache_headers(request: Request, next: Next) -> Response {
     let policy = cache_policy(request.uri().path());
     let mut response = next.run(request).await;
+    if policy.is_some() {
+        response.headers_mut().insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("frame-ancestors 'none'"),
+        );
+        response
+            .headers_mut()
+            .insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    }
     if policy.is_some() && !response.status().is_success() {
         response
             .headers_mut()

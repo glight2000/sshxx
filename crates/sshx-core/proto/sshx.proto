@@ -167,6 +167,7 @@ message WorkspaceState {
   repeated WorkspaceNote notes = 3;
   repeated WorkspacePage pages = 4;
   repeated WorkspaceFileWindow file_windows = 5;
+  repeated WorkspaceCustomWindow custom_windows = 6;
 }
 
 message WorkspaceShell {
@@ -231,6 +232,22 @@ message WorkspaceFileWindow {
   string background = 21;
 }
 
+// Shared custom HTML/JavaScript component rendered by each browser client.
+message WorkspaceCustomWindow {
+  uint32 id = 1;
+  uint32 page_id = 2;
+  string title = 3;
+  string background = 4;
+  int32 x = 5;
+  int32 y = 6;
+  uint32 width = 7;
+  uint32 height = 8;
+  string source = 9;
+  bool show_preview = 10;
+  string url = 11;
+  bool use_url = 12;
+}
+
 // Authentication behavior for an OpenSSH connection profile.
 enum SshAuthMethod {
   SSH_AUTH_DEFAULT = 0;
@@ -283,6 +300,7 @@ message SerializedSession {
   repeated SshProfile ssh_profiles = 10;
   repeated SerializedFileWindow file_windows = 11;
   repeated string daemon_capabilities = 12;
+  repeated SerializedCustomWindow custom_windows = 13;
 }
 
 message SerializedShell {
@@ -347,4 +365,19 @@ message SerializedFileWindow {
   uint32 sidebar_width = 19;
   uint32 tree_revision = 20;
   string background = 21;
+}
+
+message SerializedCustomWindow {
+  uint32 id = 1;
+  uint32 page_id = 2;
+  string title = 3;
+  string background = 4;
+  int32 x = 5;
+  int32 y = 6;
+  uint32 width = 7;
+  uint32 height = 8;
+  string source = 9;
+  bool show_preview = 10;
+  string url = 11;
+  bool use_url = 12;
 }

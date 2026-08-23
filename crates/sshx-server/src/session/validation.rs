@@ -8,7 +8,9 @@ use sshx_core::{
     Sid,
 };
 
-use crate::web::protocol::{WsFileWindow, WsNote, WsSshAuthMethod, WsSshProfile, WsWinsize};
+use crate::web::protocol::{
+    WsCustomWindow, WsFileWindow, WsNote, WsSshAuthMethod, WsSshProfile, WsWinsize,
+};
 
 pub(super) fn validate_title(title: &str) -> Result<()> {
     if title.len() > 100 || title.chars().any(char::is_control) {
@@ -62,6 +64,52 @@ pub(super) fn validate_file_editor_total(windows: &[(Sid, WsFileWindow)]) -> Res
         > 48 << 20
     {
         bail!("shared file editor buffers exceed the session limit");
+    }
+    Ok(())
+}
+
+pub(super) fn validate_custom_window(window: &WsCustomWindow) -> Result<()> {
+    // The 40-unit client grid uses a 4-unit inset on both window edges. These
+    // limits therefore span exactly two horizontal and three vertical cells.
+    const MIN_WIDTH: u16 = 2 * 40 - 2 * 4;
+    const MIN_HEIGHT: u16 = 3 * 40 - 2 * 4;
+    validate_title(&window.title)?;
+    validate_color(&window.background)?;
+    if window.url.len() > 4_096 || window.url.chars().any(char::is_control) {
+        bail!("custom component URL is invalid");
+    }
+    if window.use_url && window.show_preview {
+        let remainder = window
+            .url
+            .strip_prefix("https://")
+            .or_else(|| window.url.strip_prefix("http://"));
+        let authority = remainder
+            .unwrap_or_default()
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default();
+        if authority.is_empty() {
+            bail!("custom component URL must be an absolute HTTP(S) URL");
+        }
+    }
+    if !(MIN_WIDTH..=4_000).contains(&window.width)
+        || !(MIN_HEIGHT..=4_000).contains(&window.height)
+        || window.source.len() > 256 << 10
+        || window.source.contains('\0')
+    {
+        bail!("custom component state is invalid");
+    }
+    Ok(())
+}
+
+pub(super) fn validate_custom_source_total(windows: &[(Sid, WsCustomWindow)]) -> Result<()> {
+    if windows
+        .iter()
+        .map(|(_, window)| window.source.len())
+        .sum::<usize>()
+        > 4 << 20
+    {
+        bail!("custom component sources exceed the session limit");
     }
     Ok(())
 }
@@ -338,7 +386,8 @@ pub(super) fn proto_profile_from_ws(profile: WsSshProfile) -> SshProfile {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_terminal_window_size;
+    use super::{validate_custom_window, validate_terminal_window_size};
+    use crate::web::protocol::WsCustomWindow;
 
     #[test]
     fn validates_terminal_geometry_boundaries() {
@@ -348,5 +397,62 @@ mod tests {
         assert!(validate_terminal_window_size(239, 160).is_err());
         assert!(validate_terminal_window_size(240, 159).is_err());
         assert!(validate_terminal_window_size(0, 160).is_err());
+    }
+
+    #[test]
+    fn validates_two_by_three_grid_custom_component_minimum() {
+        let window = WsCustomWindow {
+            page_id: 1,
+            title: "Widget".into(),
+            background: "#18181b".into(),
+            x: 4,
+            y: 4,
+            width: 72,
+            height: 112,
+            source: "<p>Widget</p>".into(),
+            show_preview: false,
+            url: String::new(),
+            use_url: false,
+        };
+        assert!(validate_custom_window(&window).is_ok());
+        assert!(validate_custom_window(&WsCustomWindow {
+            width: 71,
+            ..window.clone()
+        })
+        .is_err());
+        assert!(validate_custom_window(&WsCustomWindow {
+            height: 111,
+            ..window
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn validates_custom_component_url_mode() {
+        let window = WsCustomWindow {
+            page_id: 1,
+            title: "Status".into(),
+            background: "#18181b".into(),
+            x: 4,
+            y: 4,
+            width: 320,
+            height: 240,
+            source: String::new(),
+            show_preview: true,
+            url: "https://status.example.test/dashboard".into(),
+            use_url: true,
+        };
+        assert!(validate_custom_window(&window).is_ok());
+        assert!(validate_custom_window(&WsCustomWindow {
+            show_preview: false,
+            url: "https://".into(),
+            ..window.clone()
+        })
+        .is_ok());
+        assert!(validate_custom_window(&WsCustomWindow {
+            url: "javascript:alert(1)".into(),
+            ..window
+        })
+        .is_err());
     }
 }

@@ -24,6 +24,11 @@ export type CanvasRect = {
   height: number;
 };
 
+/** Outer window size spanning whole grid cells with both visual insets. */
+export function gridSpanSize(cells: number) {
+  return Math.max(1, Math.round(cells) * GRID_SIZE - 2 * GRID_EDGE_GAP);
+}
+
 /** Align all four edges of a new item to the same inset grid convention. */
 export function gridAlignedRect(candidate: CanvasRect): CanvasRect {
   const x = gridLeadingEdge(candidate.x);

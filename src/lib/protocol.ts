@@ -64,6 +64,21 @@ export type WsFileWindow = {
   treeRevision: number;
 };
 
+/** Shared custom HTML/JavaScript component state. */
+export type WsCustomWindow = {
+  pageId: number;
+  title: string;
+  background: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  source: string;
+  showPreview: boolean;
+  url: string;
+  useUrl: boolean;
+};
+
 /** A named canvas page shared by every viewer. */
 export type WsPage = {
   id: number;
@@ -141,6 +156,7 @@ export type WsServer = {
   shells?: [Sid, WsWinsize][];
   notes?: [Sid, WsNote][];
   fileWindows?: [Sid, WsFileWindow][];
+  customWindows?: [Sid, WsCustomWindow][];
   pages?: WsPage[];
   sshProfiles?: WsSshProfile[];
   noteEditing?: [Sid, number, Uid | null];
@@ -239,6 +255,14 @@ export type WsClient = {
     [Sid, number, number][],
     [Sid, number, number][],
   ];
+  moveCanvasItemsWithCustoms?: [
+    number,
+    number,
+    [Sid, number, number][],
+    [Sid, number, number][],
+    [Sid, number, number][],
+    [Sid, number, number][],
+  ];
   createNote?: [number, number, number];
   createNoteSized?: [number, number, number, number, number];
   closeNote?: [Sid, number];
@@ -258,6 +282,9 @@ export type WsClient = {
   ];
   closeFileWindow?: [Sid, number];
   updateFileWindow?: [Sid, number, WsFileWindow | null];
+  createCustomWindow?: [number, number, number, number, number];
+  closeCustomWindow?: [Sid, number];
+  updateCustomWindow?: [Sid, number, WsCustomWindow | null];
   createPage?: string;
   renamePage?: [number, string];
   upsertSshProfile?: WsSshProfile;

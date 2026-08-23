@@ -101,6 +101,22 @@ async fn test_basic_restore() -> Result<()> {
     ))
     .await;
     s.flush().await;
+    s.send(WsClient::CreateCustomWindow(420, 480, 720, 520, page_id))
+        .await;
+    s.flush().await;
+    let mut custom_window = s.custom_windows.get(&Sid(4)).unwrap().clone();
+    custom_window.title = "Status widget".into();
+    custom_window.source = "<h1>Status</h1><script>window.ready = true</script>".into();
+    custom_window.show_preview = true;
+    custom_window.url = "https://status.example.test/dashboard".into();
+    custom_window.use_url = true;
+    s.send(WsClient::UpdateCustomWindow(
+        Sid(4),
+        page_id,
+        Some(custom_window.clone()),
+    ))
+    .await;
+    s.flush().await;
     assert!(s.shells.contains_key(&Sid(1)));
 
     // Replace the shell with its snapshot.
@@ -118,6 +134,7 @@ async fn test_basic_restore() -> Result<()> {
     assert_eq!(s.shells.get(&Sid(1)).unwrap(), &new_size);
     assert_eq!(s.notes.get(&Sid(2)).unwrap(), &note);
     assert_eq!(s.file_windows.get(&Sid(3)), Some(&file_window));
+    assert_eq!(s.custom_windows.get(&Sid(4)), Some(&custom_window));
     assert_eq!(s.pages.last().unwrap().name, "Work");
     assert_eq!(s.daemon_version, env!("CARGO_PKG_VERSION"));
 

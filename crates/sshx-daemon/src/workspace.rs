@@ -157,6 +157,7 @@ mod tests {
                 sidebar_width: 360,
                 tree_revision: 4,
             }],
+            custom_windows: Vec::new(),
             pages: vec![
                 WorkspacePage {
                     id: 1,

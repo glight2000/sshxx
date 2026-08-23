@@ -10,7 +10,8 @@ use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 use sshx_core::{
     proto::{
         server_update::ServerMessage, NewShell, SequenceNumbers, SshProfile, SshProfileCollection,
-        WorkspaceFileWindow, WorkspaceNote, WorkspacePage, WorkspaceShell, WorkspaceState,
+        WorkspaceCustomWindow, WorkspaceFileWindow, WorkspaceNote, WorkspacePage, WorkspaceShell,
+        WorkspaceState,
     },
     IdCounter, Sid, Uid, SSH_PROFILE_FORMAT_VERSION, WORKSPACE_FORMAT_VERSION,
 };
@@ -22,7 +23,7 @@ use tracing::{debug, warn};
 
 use crate::utils::Shutdown;
 use crate::web::protocol::{
-    WsFileWindow, WsNote, WsPage, WsServer, WsSshProfile, WsUser, WsWinsize,
+    WsCustomWindow, WsFileWindow, WsNote, WsPage, WsServer, WsSshProfile, WsUser, WsWinsize,
 };
 
 mod snapshot;
@@ -30,16 +31,38 @@ mod validation;
 
 use validation::{
     normalize_linked_shell_ids, normalize_note_canvas_links, normalize_note_paragraphs,
-    proto_profile_from_ws, validate_color, validate_file_editor_total, validate_file_window,
-    validate_linked_file_window_ids, validate_linked_note_ids, validate_linked_shell_ids,
-    validate_note_content, validate_opacity, validate_optional_ssh_profile_id, validate_page_name,
-    validate_paragraphs, validate_ssh_profile, validate_terminal_window_size, validate_theme,
-    validate_title, ws_profile_from_proto,
+    proto_profile_from_ws, validate_color, validate_custom_source_total, validate_custom_window,
+    validate_file_editor_total, validate_file_window, validate_linked_file_window_ids,
+    validate_linked_note_ids, validate_linked_shell_ids, validate_note_content, validate_opacity,
+    validate_optional_ssh_profile_id, validate_page_name, validate_paragraphs,
+    validate_ssh_profile, validate_terminal_window_size, validate_theme, validate_title,
+    ws_profile_from_proto,
 };
 
 /// Store a rolling buffer with at most this quantity of output, per shell.
 const SHELL_STORED_BYTES: u64 = 1 << 21; // 2 MiB
 const SHELL_SEND_BATCH_BYTES: usize = 256 << 10;
+const DEFAULT_CUSTOM_SOURCE: &str = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { margin: 0; padding: 24px; background: #18181b; color: #f4f4f5; font: 14px system-ui; }
+      .card { padding: 18px; border: 1px solid #3f3f46; border-radius: 12px; background: #27272a; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <strong>Custom component</strong>
+      <p id="output">Rendered by this browser.</p>
+    </div>
+    <script>
+      document.querySelector('#output').textContent = `Rendered at ${new Date().toLocaleTimeString()}`;
+    </script>
+  </body>
+</html>
+"#;
 
 /// Static metadata for this session.
 #[derive(Debug, Clone)]
@@ -90,6 +113,9 @@ pub struct Session {
 
     /// Watch channel source for shared filesystem browser layouts.
     file_windows: watch::Sender<Vec<(Sid, WsFileWindow)>>,
+
+    /// Watch channel source for shared custom component layouts and source.
+    custom_windows: watch::Sender<Vec<(Sid, WsCustomWindow)>>,
 
     /// Watch channel source for the ordered list of named canvas pages.
     pages: watch::Sender<Vec<WsPage>>,
@@ -163,6 +189,7 @@ impl Session {
             shell_ssh_profiles: RwLock::new(HashMap::new()),
             notes: watch::channel(Vec::new()).0,
             file_windows: watch::channel(Vec::new()).0,
+            custom_windows: watch::channel(Vec::new()).0,
             pages: watch::channel(vec![WsPage {
                 id: 1,
                 name: "Page 1".into(),
@@ -223,6 +250,13 @@ impl Session {
     /// Receive every shared filesystem browser layout update.
     pub fn subscribe_file_windows(&self) -> impl Stream<Item = Vec<(Sid, WsFileWindow)>> + Unpin {
         WatchStream::new(self.file_windows.subscribe())
+    }
+
+    /// Receive every shared custom component update.
+    pub fn subscribe_custom_windows(
+        &self,
+    ) -> impl Stream<Item = Vec<(Sid, WsCustomWindow)>> + Unpin {
+        WatchStream::new(self.custom_windows.subscribe())
     }
 
     /// Receive a notification every time the named pages change.
@@ -445,6 +479,25 @@ impl Session {
                     tree_revision: window.tree_revision,
                 })
                 .collect(),
+            custom_windows: self
+                .custom_windows
+                .borrow()
+                .iter()
+                .map(|(id, window)| WorkspaceCustomWindow {
+                    id: id.0,
+                    page_id: window.page_id,
+                    title: window.title.clone(),
+                    background: window.background.clone(),
+                    x: window.x,
+                    y: window.y,
+                    width: window.width.into(),
+                    height: window.height.into(),
+                    source: window.source.clone(),
+                    show_preview: window.show_preview,
+                    url: window.url.clone(),
+                    use_url: window.use_url,
+                })
+                .collect(),
             pages: self
                 .pages
                 .borrow()
@@ -468,6 +521,7 @@ impl Session {
         if workspace.shells.len() > 100
             || workspace.notes.len() > 100
             || workspace.file_windows.len() > 100
+            || workspace.custom_windows.len() > 100
             || workspace.pages.len() > 50
         {
             bail!("workspace contains too many items");
@@ -676,6 +730,46 @@ impl Session {
             file_windows.push((Sid(window.id), state));
         }
         validate_file_editor_total(&file_windows)?;
+        let mut custom_windows = Vec::with_capacity(workspace.custom_windows.len());
+        for window in workspace.custom_windows {
+            if window.id == 0 || !ids.insert(window.id) {
+                bail!("workspace contains an invalid or duplicate item ID");
+            }
+            let state = WsCustomWindow {
+                page_id: if window.page_id == 0 {
+                    1
+                } else {
+                    window.page_id
+                },
+                title: window.title,
+                background: if window.background.is_empty() {
+                    "#18181b".into()
+                } else {
+                    window.background
+                },
+                x: window.x,
+                y: window.y,
+                width: window
+                    .width
+                    .try_into()
+                    .context("custom component width overflow")?,
+                height: window
+                    .height
+                    .try_into()
+                    .context("custom component height overflow")?,
+                source: window.source,
+                show_preview: window.show_preview,
+                url: window.url,
+                use_url: window.use_url,
+            };
+            validate_custom_window(&state)?;
+            if !page_ids.contains(&state.page_id) {
+                bail!("custom component references a missing page");
+            }
+            max_id = max_id.max(window.id);
+            custom_windows.push((Sid(window.id), state));
+        }
+        validate_custom_source_total(&custom_windows)?;
         normalize_note_canvas_links(&mut notes, &file_windows);
 
         let next_id = max_id
@@ -686,6 +780,7 @@ impl Session {
         self.source.send_replace(source);
         self.notes.send_replace(notes);
         self.file_windows.send_replace(file_windows);
+        self.custom_windows.send_replace(custom_windows);
         self.pages.send_replace(pages);
         *self.pending_restored_shells.lock() = requests
             .iter()
@@ -708,6 +803,11 @@ impl Session {
     /// Number of shared filesystem browser windows in the session.
     pub fn file_window_count(&self) -> usize {
         self.file_windows.borrow().len()
+    }
+
+    /// Number of shared custom components in the session.
+    pub fn custom_window_count(&self) -> usize {
+        self.custom_windows.borrow().len()
     }
 
     /// Create a named canvas page and return its stable identifier.
@@ -821,6 +921,20 @@ impl Session {
             Some((_, window)) if window.page_id == page_id => Ok(()),
             Some(_) => bail!("file browser does not belong to the active page"),
             None => bail!("file browser with id={id} does not exist"),
+        }
+    }
+
+    /// Ensure a custom component exists on the page claimed by an event.
+    pub fn check_custom_window_page(&self, id: Sid, page_id: u32) -> Result<()> {
+        match self
+            .custom_windows
+            .borrow()
+            .iter()
+            .find(|(window_id, _)| *window_id == id)
+        {
+            Some((_, window)) if window.page_id == page_id => Ok(()),
+            Some(_) => bail!("custom component does not belong to the active page"),
+            None => bail!("custom component with id={id} does not exist"),
         }
     }
 
@@ -1084,6 +1198,7 @@ impl Session {
         terminals: Vec<(Sid, i32, i32)>,
         notes: Vec<(Sid, i32, i32)>,
         file_windows: Vec<(Sid, i32, i32)>,
+        custom_windows: Vec<(Sid, i32, i32)>,
     ) -> Result<()> {
         if source_page_id == target_page_id {
             bail!("canvas items are already on the target page");
@@ -1091,8 +1206,8 @@ impl Session {
         if !self.page_exists(target_page_id) {
             bail!("cannot move canvas items to a missing page");
         }
-        let item_count = terminals.len() + notes.len() + file_windows.len();
-        if item_count == 0 || item_count > 300 {
+        let item_count = terminals.len() + notes.len() + file_windows.len() + custom_windows.len();
+        if item_count == 0 || item_count > 400 {
             bail!("canvas page move contains an invalid number of items");
         }
 
@@ -1105,9 +1220,14 @@ impl Session {
             .iter()
             .map(|(id, _, _)| *id)
             .collect::<HashSet<_>>();
+        let custom_window_ids = custom_windows
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<HashSet<_>>();
         if terminal_ids.len() != terminals.len()
             || note_ids.len() != notes.len()
             || file_window_ids.len() != file_windows.len()
+            || custom_window_ids.len() != custom_windows.len()
         {
             bail!("canvas page move contains duplicate items");
         }
@@ -1120,6 +1240,9 @@ impl Session {
         for id in &file_window_ids {
             self.check_file_window_page(*id, source_page_id)?;
         }
+        for id in &custom_window_ids {
+            self.check_custom_window_page(*id, source_page_id)?;
+        }
 
         let terminal_positions = terminals
             .into_iter()
@@ -1130,6 +1253,10 @@ impl Session {
             .map(|(id, x, y)| (id, (x, y)))
             .collect::<HashMap<_, _>>();
         let file_positions = file_windows
+            .into_iter()
+            .map(|(id, x, y)| (id, (x, y)))
+            .collect::<HashMap<_, _>>();
+        let custom_positions = custom_windows
             .into_iter()
             .map(|(id, x, y)| (id, (x, y)))
             .collect::<HashMap<_, _>>();
@@ -1155,6 +1282,15 @@ impl Session {
         self.file_windows.send_modify(|items| {
             for (id, state) in items {
                 if let Some(&(x, y)) = file_positions.get(id) {
+                    state.x = x;
+                    state.y = y;
+                    state.page_id = target_page_id;
+                }
+            }
+        });
+        self.custom_windows.send_modify(|items| {
+            for (id, state) in items {
+                if let Some(&(x, y)) = custom_positions.get(id) {
                     state.x = x;
                     state.y = y;
                     state.page_id = target_page_id;
@@ -1400,6 +1536,100 @@ impl Session {
         });
         if !found {
             bail!("cannot update file browser with id={id}");
+        }
+        self.workspace_changed();
+        Ok(())
+    }
+
+    /// Add a shared browser-rendered HTML/JavaScript component.
+    pub fn add_custom_window(
+        &self,
+        id: Sid,
+        position: (i32, i32),
+        size: (u16, u16),
+        page_id: u32,
+    ) -> Result<()> {
+        if !self.page_exists(page_id) {
+            bail!("cannot add custom component to missing page");
+        }
+        if self.custom_windows.borrow().len() >= 100 {
+            bail!("you can only create up to 100 custom components");
+        }
+        if self
+            .custom_windows
+            .borrow()
+            .iter()
+            .map(|(_, window)| window.source.len())
+            .sum::<usize>()
+            .saturating_add(DEFAULT_CUSTOM_SOURCE.len())
+            > 4 << 20
+        {
+            bail!("custom component sources exceed the session limit");
+        }
+        let window = WsCustomWindow {
+            page_id,
+            title: "Custom component".into(),
+            background: "#18181b".into(),
+            x: position.0,
+            y: position.1,
+            width: size.0,
+            height: size.1,
+            source: DEFAULT_CUSTOM_SOURCE.into(),
+            show_preview: false,
+            url: String::new(),
+            use_url: false,
+        };
+        validate_custom_window(&window)?;
+        self.custom_windows
+            .send_modify(|windows| windows.push((id, window)));
+        self.workspace_changed();
+        Ok(())
+    }
+
+    /// Close a shared custom component.
+    pub fn close_custom_window(&self, id: Sid, page_id: u32) -> Result<()> {
+        self.check_custom_window_page(id, page_id)?;
+        self.custom_windows
+            .send_modify(|windows| windows.retain(|(window_id, _)| *window_id != id));
+        self.workspace_changed();
+        Ok(())
+    }
+
+    /// Update a shared custom component or bring it to the stacking front.
+    pub fn update_custom_window(
+        &self,
+        id: Sid,
+        page_id: u32,
+        window: Option<WsCustomWindow>,
+    ) -> Result<()> {
+        self.check_custom_window_page(id, page_id)?;
+        if let Some(next) = &window {
+            validate_custom_window(next)?;
+            if next.page_id != page_id {
+                bail!("custom component update cannot move between pages");
+            }
+            let projected = self
+                .custom_windows
+                .borrow()
+                .iter()
+                .filter(|(window_id, _)| *window_id != id)
+                .map(|(_, state)| state.source.len())
+                .sum::<usize>()
+                .saturating_add(next.source.len());
+            if projected > 4 << 20 {
+                bail!("custom component sources exceed the session limit");
+            }
+        }
+        let mut found = false;
+        self.custom_windows.send_modify(|windows| {
+            if let Some(index) = windows.iter().position(|(window_id, _)| *window_id == id) {
+                let (_, old_window) = windows.remove(index);
+                windows.push((id, window.unwrap_or(old_window)));
+                found = true;
+            }
+        });
+        if !found {
+            bail!("cannot update custom component with id={id}");
         }
         self.workspace_changed();
         Ok(())

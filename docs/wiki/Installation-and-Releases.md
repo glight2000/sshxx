@@ -359,8 +359,8 @@ checks, but do not replace trusted platform code signing.
 2. Create and push an annotated SemVer tag matching that version:
 
    ```shell
-   git tag -a v0.9.0 -m "sshxx v0.9.0"
-   git push origin v0.9.0
+   git tag -a v0.10.0 -m "sshxx v0.10.0"
+   git push origin v0.10.0
    ```
 
 3. The workflow validates the tag, creates a draft Release, builds every runtime

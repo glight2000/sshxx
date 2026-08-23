@@ -10,6 +10,7 @@ import {
   GRID_SIZE,
   gridAlignedRect,
   gridLeadingEdge,
+  gridSpanSize,
   gridTrailingEdge,
 } from "../src/lib/grid.ts";
 
@@ -22,6 +23,11 @@ test("leading and trailing anchors use exact one-tenth grid offsets", () => {
   assert.equal(GRID_EDGE_GAP / GRID_SIZE, 0.1);
   assert.equal(gridLeadingEdge(rawLeading) - nearestLeading, GRID_EDGE_GAP);
   assert.equal(nearestTrailing - gridTrailingEdge(rawTrailing), GRID_EDGE_GAP);
+});
+
+test("grid-spanning window sizes retain both visual edge insets", () => {
+  assert.equal(gridSpanSize(2), 2 * GRID_SIZE - 2 * GRID_EDGE_GAP);
+  assert.equal(gridSpanSize(3), 3 * GRID_SIZE - 2 * GRID_EDGE_GAP);
 });
 
 test("new item aligns both edges to the inset canvas grid", () => {

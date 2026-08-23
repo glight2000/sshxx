@@ -6,6 +6,7 @@
   export let suffix = "";
   export let disabled = false;
   export let ariaLabel = "Window title";
+  export let fitContent = false;
 
   const dispatch = createEventDispatcher<{
     change: string;
@@ -38,6 +39,7 @@
 <div
   role="presentation"
   class="inline-title min-w-0 flex-1 cursor-default select-none"
+  class:fit-content={fitContent}
   title={disabled ? value || fallback : "Double-click to rename"}
   on:dblclick|stopPropagation={beginEditing}
 >
@@ -70,6 +72,10 @@
 
 <style lang="postcss">
   @reference "../../app.css";
+  .inline-title.fit-content {
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
   .title-input {
     @apply h-7 w-full cursor-text select-text rounded border border-indigo-400/60 bg-zinc-950/90 px-2 text-center text-sm text-zinc-100 outline-none ring-2 ring-indigo-500/25;
   }

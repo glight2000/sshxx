@@ -21,6 +21,7 @@
   import { isNativeApp } from "./runtime";
   import type {
     WsClient,
+    WsCustomWindow,
     FileTreeEntry,
     WsFileWindow,
     WsNote,
@@ -72,10 +73,12 @@
   } from "./canvasSelection";
   import { canvasPanButton, canvasSelectionButton } from "./canvasMouseButtons";
   import { canvasPageMoveView } from "./canvasPageMove";
+  import { resizeCanvasWindow } from "./canvasWindowGeometry";
   import {
     GRID_SIZE,
     gridAlignedRect,
     gridLeadingEdge,
+    gridSpanSize,
     gridTrailingEdge,
   } from "./grid";
   import { settings } from "./settings";
@@ -101,15 +104,27 @@
   const TERM_INITIAL_HEIGHT = 523;
   const NOTE_INITIAL_WIDTH = 384;
   const NOTE_INITIAL_HEIGHT = 224;
+  const CUSTOM_INITIAL_WIDTH = 720;
+  const CUSTOM_INITIAL_HEIGHT = 520;
+  const CUSTOM_MIN_WIDTH = gridSpanSize(2);
+  const CUSTOM_MIN_HEIGHT = gridSpanSize(3);
   const TERMINAL_RENDER_ACK_CAPABILITY = "terminal-render-ack-v1";
   const TERMINAL_GENERATION_CAPABILITY = "terminal-generation-v1";
   const SYSTEM_ACTION_CAPABILITY = "system-action-v1";
+  const CUSTOM_COMPONENT_CAPABILITY = "custom-component-v1";
   let fileExplorerModulePromise: Promise<
     typeof import("./ui/FileExplorer.svelte")
   > | null = null;
 
   function loadFileExplorer() {
     return (fileExplorerModulePromise ??= import("./ui/FileExplorer.svelte"));
+  }
+  let customComponentModulePromise: Promise<
+    typeof import("./ui/CustomComponent.svelte")
+  > | null = null;
+  function loadCustomComponent() {
+    return (customComponentModulePromise ??=
+      import("./ui/CustomComponent.svelte"));
   }
   const snapLeadingEdge = (value: number) =>
     $settings.snapToGrid ? gridLeadingEdge(value) : value;
@@ -215,7 +230,7 @@
   function canvasItemFromTarget(target: EventTarget | null) {
     if (!(target instanceof Element)) return null;
     const element = target.closest<HTMLElement>(
-      "[data-canvas-terminal], [data-canvas-note-wrapper], [data-canvas-file-window]",
+      "[data-canvas-terminal], [data-canvas-note-wrapper], [data-canvas-file-window], [data-canvas-custom-window]",
     );
     if (!element) return null;
     if (element.dataset.canvasTerminal)
@@ -224,6 +239,11 @@
       return canvasItemKey("note", Number(element.dataset.canvasNoteWrapper));
     if (element.dataset.canvasFileWindow)
       return canvasItemKey("file", Number(element.dataset.canvasFileWindow));
+    if (element.dataset.canvasCustomWindow)
+      return canvasItemKey(
+        "custom",
+        Number(element.dataset.canvasCustomWindow),
+      );
     return null;
   }
 
@@ -237,7 +257,12 @@
       return notes.some(
         ([noteId, note]) => noteId === id && note.pageId === activePageId,
       );
-    return fileWindows.some(
+    if (kind === "file")
+      return fileWindows.some(
+        ([windowId, window]) =>
+          windowId === id && window.pageId === activePageId,
+      );
+    return customWindows.some(
       ([windowId, window]) => windowId === id && window.pageId === activePageId,
     );
   }
@@ -250,7 +275,8 @@
     const { kind, id } = parseCanvasItemKey(key);
     if (kind === "terminal") return termWrappers[id];
     if (kind === "note") return noteWrappers[id];
-    return fileWrappers[id];
+    if (kind === "file") return fileWrappers[id];
+    return customWrappers[id];
   }
 
   function beginMarqueeSelection(event: MouseEvent) {
@@ -271,6 +297,7 @@
     focusedTerminalId = null;
     focusedNoteId = null;
     focusedFileWindowId = null;
+    focusedCustomWindowId = null;
     focused = [];
     selectionMarquee = {
       startX: event.clientX,
@@ -323,6 +350,9 @@
       ...fileWindows
         .filter(([, window]) => window.pageId === activePageId)
         .map(([windowId]) => canvasItemKey("file", windowId)),
+      ...customWindows
+        .filter(([, window]) => window.pageId === activePageId)
+        .map(([windowId]) => canvasItemKey("custom", windowId)),
     ];
     selectedCanvasItems = candidates.filter((key) => {
       const wrapper = canvasItemWrapper(key);
@@ -355,7 +385,9 @@
       activeElement instanceof HTMLElement &&
       (activeElement.classList.contains("xterm-helper-textarea") ||
         activeElement.closest(".term-container") !== null ||
-        activeElement.closest("[data-canvas-note]") !== null)
+        activeElement.closest("[data-canvas-note]") !== null ||
+        activeElement.closest(".file-window") !== null ||
+        activeElement.closest(".custom-window") !== null)
     );
   }
 
@@ -370,6 +402,9 @@
       ...fileWindows
         .filter(([, fileWindow]) => fileWindow.pageId === activePageId)
         .map(([windowId]) => `file:${windowId}`),
+      ...customWindows
+        .filter(([, customWindow]) => customWindow.pageId === activePageId)
+        .map(([windowId]) => `custom:${windowId}`),
     ].filter((key) => fullscreenItems[key]);
   }
 
@@ -544,6 +579,7 @@
   let fileRequests: FileRequestClient | null = null;
   let srocket: Srocket<WsServer, WsClient> | null = null;
   let systemActionsAvailable = false;
+  let customComponentsAvailable = false;
   let pendingSystemActionId: string | null = null;
   let systemActionTimer: number | null = null;
 
@@ -646,6 +682,7 @@
   const termElements: Record<number, HTMLDivElement> = {};
   const noteWrappers: Record<number, HTMLElement> = {};
   const fileWrappers: Record<number, HTMLDivElement> = {};
+  const customWrappers: Record<number, HTMLDivElement> = {};
   const chunknums: Record<number, number> = {};
   const locks: Record<number, any> = {};
   const terminalHistory = new TerminalHistory(2 * 1024 * 1024);
@@ -665,6 +702,7 @@
   let shells: [number, WsWinsize][] = [];
   let notes: [number, WsNote][] = [];
   let fileWindows: [number, WsFileWindow][] = [];
+  let customWindows: [number, WsCustomWindow][] = [];
   let fileEditorBuffers: Record<
     number,
     { path: string; stream: bigint; content: string }
@@ -687,6 +725,7 @@
   let focusedTerminalId: number | null = null;
   let focusedNoteId: number | null = null;
   let focusedFileWindowId: number | null = null;
+  let focusedCustomWindowId: number | null = null;
   type ParagraphDropTarget = {
     kind: "terminal" | "note" | "file";
     id: number;
@@ -808,9 +847,21 @@
   let resizingFileStartState: WsFileWindow;
   let resizingFileState: WsFileWindow;
   let resizingFileDirection: ResizeDirection = "se";
+  let movingCustom = -1;
+  let movingCustomOrigin = [0, 0];
+  let movingCustomStartClient = [0, 0];
+  let movingCustomDidMove = false;
+  let movingCustomStartState: WsCustomWindow;
+  let movingCustomState: WsCustomWindow;
+  let resizingCustom = -1;
+  let resizingCustomStartPointer = [0, 0];
+  let resizingCustomStartState: WsCustomWindow;
+  let resizingCustomState: WsCustomWindow;
+  let resizingCustomDirection: ResizeDirection = "se";
   let terminalFloating: Record<number, boolean> = {};
   let noteFloating: Record<number, boolean> = {};
   let fileFloating: Record<number, boolean> = {};
+  let customFloating: Record<number, boolean> = {};
 
   type CanvasGroupMove = {
     leadKey: CanvasItemKey;
@@ -825,9 +876,22 @@
   let groupTerminalStates: Record<number, WsWinsize> = {};
   let groupNoteStates: Record<number, WsNote> = {};
   let groupFileStates: Record<number, WsFileWindow> = {};
+  let groupCustomStates: Record<number, WsCustomWindow> = {};
   let groupTerminalStartStates: Record<number, WsWinsize> = {};
   let groupNoteStartStates: Record<number, WsNote> = {};
   let groupFileStartStates: Record<number, WsFileWindow> = {};
+  let groupCustomStartStates: Record<number, WsCustomWindow> = {};
+  $: canvasPointerGestureActive =
+    moving !== -1 ||
+    resizing !== -1 ||
+    movingNote !== -1 ||
+    resizingNote !== -1 ||
+    movingFile !== -1 ||
+    resizingFile !== -1 ||
+    movingCustom !== -1 ||
+    resizingCustom !== -1 ||
+    canvasGroupMove !== null ||
+    selectionMarquee !== null;
 
   function startCanvasGroupMove(
     kind: CanvasItemKind,
@@ -853,7 +917,9 @@
         ? shells.find(([itemId]) => itemId === id)?.[1]
         : kind === "note"
           ? notes.find(([itemId]) => itemId === id)?.[1]
-          : fileWindows.find(([itemId]) => itemId === id)?.[1];
+          : kind === "file"
+            ? fileWindows.find(([itemId]) => itemId === id)?.[1]
+            : customWindows.find(([itemId]) => itemId === id)?.[1];
     if (!lead) return false;
 
     canvasGroupMove = {
@@ -897,7 +963,9 @@
           ? [canvasItemKey("note", movingNote)]
           : movingFile !== -1 && movingFileDidMove
             ? [canvasItemKey("file", movingFile)]
-            : [];
+            : movingCustom !== -1 && movingCustomDidMove
+              ? [canvasItemKey("custom", movingCustom)]
+              : [];
     const target = pageElement.getBoundingClientRect();
     const targetCenter = [
       target.left + target.width / 2,
@@ -924,7 +992,9 @@
         ? termElements[id]?.querySelector<HTMLElement>(".xterm-helper-textarea")
         : kind === "note"
           ? noteWrappers[id]?.querySelector<HTMLElement>("[data-canvas-note]")
-          : fileWrappers[id]?.querySelector<HTMLElement>(".file-window");
+          : kind === "file"
+            ? fileWrappers[id]?.querySelector<HTMLElement>(".file-window")
+            : customWrappers[id]?.querySelector<HTMLElement>(".custom-window");
     focusTarget?.focus({ preventScroll: true });
   }
 
@@ -975,7 +1045,25 @@
         ];
         return [id, x, y];
       });
-    if (!terminalMoves.length && !noteMoves.length && !fileMoves.length)
+    const customMoves = customWindows
+      .filter(
+        ([id, state]) =>
+          state.pageId === sourcePageId &&
+          keySet.has(canvasItemKey("custom", id)),
+      )
+      .map(([id, state]): [number, number, number] => {
+        const [x, y] = positionOverrides.get(canvasItemKey("custom", id)) ?? [
+          state.x,
+          state.y,
+        ];
+        return [id, x, y];
+      });
+    if (
+      !terminalMoves.length &&
+      !noteMoves.length &&
+      !fileMoves.length &&
+      !customMoves.length
+    )
       return false;
 
     const movedRects: CanvasItemRect[] = [
@@ -1006,17 +1094,27 @@
           height: state?.height || 560,
         };
       }),
+      ...customMoves.map(([id, x, y]) => {
+        const state = customWindows.find(([itemId]) => itemId === id)?.[1];
+        return {
+          x,
+          y,
+          width: state?.width || CUSTOM_INITIAL_WIDTH,
+          height: state?.height || CUSTOM_INITIAL_HEIGHT,
+        };
+      }),
     ];
 
     if (document.activeElement instanceof HTMLElement)
       document.activeElement.blur();
     srocket?.send({
-      moveCanvasItems: [
+      moveCanvasItemsWithCustoms: [
         sourcePageId,
         targetPageId,
         terminalMoves,
         noteMoves,
         fileMoves,
+        customMoves,
       ],
     });
     const terminalPositions = new Map(
@@ -1027,6 +1125,9 @@
     );
     const filePositions = new Map(
       fileMoves.map(([id, x, y]) => [id, [x, y] as const]),
+    );
+    const customPositions = new Map(
+      customMoves.map(([id, x, y]) => [id, [x, y] as const]),
     );
     shells = shells.map(([id, state]) => {
       const position = terminalPositions.get(id);
@@ -1048,6 +1149,15 @@
     });
     fileWindows = fileWindows.map(([id, state]) => {
       const position = filePositions.get(id);
+      return position
+        ? [
+            id,
+            { ...state, x: position[0], y: position[1], pageId: targetPageId },
+          ]
+        : [id, state];
+    });
+    customWindows = customWindows.map(([id, state]) => {
+      const position = customPositions.get(id);
       return position
         ? [
             id,
@@ -1104,6 +1214,11 @@
       groupFileStartStates = Object.fromEntries(
         fileWindows.filter(([id]) => selected.has(canvasItemKey("file", id))),
       );
+      groupCustomStartStates = Object.fromEntries(
+        customWindows.filter(([id]) =>
+          selected.has(canvasItemKey("custom", id)),
+        ),
+      );
     }
     canvasGroupMove = { ...canvasGroupMove, offset: [dx, dy], moved: true };
     groupTerminalStates = Object.fromEntries(
@@ -1120,6 +1235,12 @@
     );
     groupFileStates = Object.fromEntries(
       Object.entries(groupFileStartStates).map(([itemId, state]) => [
+        Number(itemId),
+        { ...state, x: state.x + dx, y: state.y + dy },
+      ]),
+    );
+    groupCustomStates = Object.fromEntries(
+      Object.entries(groupCustomStartStates).map(([itemId, state]) => [
         Number(itemId),
         { ...state, x: state.x + dx, y: state.y + dy },
       ]),
@@ -1144,6 +1265,8 @@
         overrides.set(canvasItemKey("note", Number(id)), [state.x, state.y]);
       for (const [id, state] of Object.entries(groupFileStartStates))
         overrides.set(canvasItemKey("file", Number(id)), [state.x, state.y]);
+      for (const [id, state] of Object.entries(groupCustomStartStates))
+        overrides.set(canvasItemKey("custom", Number(id)), [state.x, state.y]);
       moveCanvasItemsToPage(move.selectedKeys, canvasDropPageId, overrides);
       // The cross-page operation has already committed the original positions.
     } else {
@@ -1156,6 +1279,10 @@
         id,
         groupFileStates[id] ?? state,
       ]);
+      customWindows = customWindows.map(([id, state]) => [
+        id,
+        groupCustomStates[id] ?? state,
+      ]);
       for (const [id, state] of Object.entries(groupTerminalStates)) {
         srocket?.send({ move: [Number(id), state.pageId, state] });
       }
@@ -1167,14 +1294,21 @@
           updateFileWindow: [Number(id), state.pageId, state],
         });
       }
+      for (const [id, state] of Object.entries(groupCustomStates)) {
+        srocket?.send({
+          updateCustomWindow: [Number(id), state.pageId, state],
+        });
+      }
     }
     canvasGroupMove = null;
     groupTerminalStates = {};
     groupNoteStates = {};
     groupFileStates = {};
+    groupCustomStates = {};
     groupTerminalStartStates = {};
     groupNoteStartStates = {};
     groupFileStartStates = {};
+    groupCustomStartStates = {};
     canvasDropPageId = null;
     canvasDropPreviewOffsets = {};
   }
@@ -1232,6 +1366,9 @@
           );
           systemActionsAvailable = message.capabilities.includes(
             SYSTEM_ACTION_CAPABILITY,
+          );
+          customComponentsAvailable = message.capabilities.includes(
+            CUSTOM_COMPONENT_CAPABILITY,
           );
         } else if (message.invalidAuth) {
           reportConnectionIssue(
@@ -1398,6 +1535,19 @@
           for (const [windowId, window] of fileWindows) {
             void synchronizeFileEditorBuffer(windowId, window);
           }
+        } else if (message.customWindows) {
+          customWindows = message.customWindows.map(([windowId, window]) => [
+            windowId,
+            {
+              ...window,
+              pageId: window.pageId ?? 1,
+              title: window.title || "Custom component",
+              background: window.background || "#18181b",
+              width: window.width || CUSTOM_INITIAL_WIDTH,
+              height: window.height || CUSTOM_INITIAL_HEIGHT,
+              source: window.source || "",
+            },
+          ]);
         } else if (message.pages) {
           pages = message.pages.length
             ? message.pages
@@ -1488,6 +1638,7 @@
         terminalRenderFlowControl = false;
         terminalGenerationProtocol = false;
         systemActionsAvailable = false;
+        customComponentsAvailable = false;
         fileRequests?.rejectAll(
           "Connection closed before the filesystem request completed.",
         );
@@ -1811,6 +1962,9 @@
       ...fileWindows
         .filter(([, window]) => window.pageId === pageId)
         .map(([, { x, y, width, height }]) => ({ x, y, width, height })),
+      ...customWindows
+        .filter(([, window]) => window.pageId === pageId)
+        .map(([, { x, y, width, height }]) => ({ x, y, width, height })),
     ];
   }
 
@@ -1928,6 +2082,27 @@
     if (!position) touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
+  function handleCreateCustom(position?: [number, number]) {
+    if (!customComponentsAvailable) {
+      makeToast({
+        kind: "error",
+        message:
+          "Custom components require a compatible sshxx-daemon and server.",
+      });
+      return;
+    }
+    if (hasWriteAccess === false || customWindows.length >= 100) return;
+    const { x, y, width, height } = canvasRectAt(
+      position,
+      CUSTOM_INITIAL_WIDTH,
+      CUSTOM_INITIAL_HEIGHT,
+    );
+    srocket?.send({
+      createCustomWindow: [x, y, width, height, activePageId],
+    });
+    if (!position) touchZoom.moveTo([x, y], INITIAL_ZOOM);
+  }
+
   async function requestFileOperation(
     shellId: number,
     pageId: number,
@@ -1938,7 +2113,7 @@
   }
 
   function toggleFullscreen(
-    kind: "terminal" | "note" | "file",
+    kind: "terminal" | "note" | "file" | "custom",
     itemId: number,
   ) {
     const key = `${kind}:${itemId}`;
@@ -2118,6 +2293,25 @@
     srocket?.send({ updateFileWindow: [id, pageId, null] });
   }
 
+  function updateCustomWindowSharedState(
+    id: number,
+    pageId: number,
+    update: Partial<WsCustomWindow>,
+  ) {
+    const current = customWindows.find(([windowId]) => windowId === id)?.[1];
+    if (!current || current.pageId !== pageId) return;
+    const next = { ...current, ...update };
+    customWindows = customWindows.map(([windowId, window]) =>
+      windowId === id ? [windowId, next] : [windowId, window],
+    );
+    srocket?.send({ updateCustomWindow: [id, pageId, next] });
+  }
+
+  function bringCustomWindowToFront(id: number, pageId: number) {
+    if (customWindows.at(-1)?.[0] === id) return;
+    srocket?.send({ updateCustomWindow: [id, pageId, null] });
+  }
+
   function openFileWindow(
     shellId: number,
     pageId: number,
@@ -2233,13 +2427,33 @@
       title: noteTitle(noteId, note),
       content: note.text,
     })),
+    ...fileWindows.map(([windowId, window]): CanvasSearchItem => ({
+      id: windowId,
+      kind: "file",
+      pageId: window.pageId,
+      pageName: pageName(window.pageId),
+      title: fileWindowTitle(windowId, window),
+      content: `${window.currentPath} ${window.editorPath}`,
+    })),
+    ...customWindows.map(([windowId, window]): CanvasSearchItem => ({
+      id: windowId,
+      kind: "custom",
+      pageId: window.pageId,
+      pageName: pageName(window.pageId),
+      title: window.title || `Custom ${windowId}`,
+      content: window.source,
+    })),
   ];
 
   async function selectCanvasItem(item: CanvasSearchItem) {
     const entry =
       item.kind === "terminal"
         ? shells.find(([id]) => id === item.id)
-        : notes.find(([id]) => id === item.id);
+        : item.kind === "note"
+          ? notes.find(([id]) => id === item.id)
+          : item.kind === "file"
+            ? fileWindows.find(([id]) => id === item.id)
+            : customWindows.find(([id]) => id === item.id);
     if (!entry) return;
     searchOpen = false;
     switchPage(item.pageId);
@@ -2248,14 +2462,19 @@
     await touchZoom.moveTo([state.x, state.y], INITIAL_ZOOM);
     if (item.kind === "terminal") {
       srocket?.send({ move: [item.id, item.pageId, null] });
-    } else {
+    } else if (item.kind === "note") {
       srocket?.send({ updateNote: [item.id, item.pageId, null] });
+    } else if (item.kind === "file") {
+      srocket?.send({ updateFileWindow: [item.id, item.pageId, null] });
+    } else {
+      srocket?.send({ updateCustomWindow: [item.id, item.pageId, null] });
     }
-    const textarea =
+    const focusTarget =
       item.kind === "terminal"
         ? termElements[item.id]?.querySelector("textarea")
-        : noteWrappers[item.id]?.querySelector("textarea");
-    if (textarea instanceof HTMLTextAreaElement) textarea.focus();
+        : canvasItemWrapper(canvasItemKey(item.kind, item.id));
+    if (focusTarget instanceof HTMLElement)
+      focusTarget.focus({ preventScroll: true });
   }
 
   function navigateToTerminal(shellId: number) {
@@ -2721,6 +2940,23 @@
         updateCanvasPageDropTarget(event, true);
       }
 
+      if (movingCustom !== -1) {
+        const distance = Math.hypot(
+          event.clientX - movingCustomStartClient[0],
+          event.clientY - movingCustomStartClient[1],
+        );
+        if (!movingCustomDidMove && distance < 3) return;
+        movingCustomDidMove = true;
+        pendingCanvasTitleFocus = null;
+        const [x, y] = normalizePosition(event);
+        movingCustomState = {
+          ...movingCustomState,
+          x: snapLeadingEdge(Math.round(x - movingCustomOrigin[0])),
+          y: snapLeadingEdge(Math.round(y - movingCustomOrigin[1])),
+        };
+        updateCanvasPageDropTarget(event, true);
+      }
+
       if (resizing !== -1) {
         const [x, y] = normalizePosition(event);
         const dx = x - resizingStartPointer[0];
@@ -2776,89 +3012,59 @@
       }
 
       if (resizingNote !== -1) {
-        const [x, y] = normalizePosition(event);
-        const dx = x - resizingNoteStartPointer[0];
-        const dy = y - resizingNoteStartPointer[1];
-        const startRight =
-          resizingNoteStartState.x + resizingNoteStartState.width;
-        const startBottom =
-          resizingNoteStartState.y + resizingNoteStartState.height;
-        let left = resizesWest(resizingNoteDirection)
-          ? snapLeadingEdge(resizingNoteStartState.x + dx)
-          : resizingNoteStartState.x;
-        let top = resizesNorth(resizingNoteDirection)
-          ? snapLeadingEdge(resizingNoteStartState.y + dy)
-          : resizingNoteStartState.y;
-        let right = resizesEast(resizingNoteDirection)
-          ? snapTrailingEdge(startRight + dx)
-          : startRight;
-        let bottom = resizesSouth(resizingNoteDirection)
-          ? snapTrailingEdge(startBottom + dy)
-          : startBottom;
-        if (right - left < 240) {
-          if (resizesWest(resizingNoteDirection)) left = right - 240;
-          else right = left + 240;
-        }
-        if (bottom - top < 160) {
-          if (resizesNorth(resizingNoteDirection)) top = bottom - 160;
-          else bottom = top + 160;
-        }
         resizingNoteState = {
           ...resizingNoteState,
-          x: Math.round(left),
-          y: Math.round(top),
-          width: Math.round(right - left),
-          height: Math.round(bottom - top),
+          ...resizeCanvasWindow({
+            start: resizingNoteStartState,
+            startPointer: resizingNoteStartPointer as [number, number],
+            pointer: normalizePosition(event),
+            direction: resizingNoteDirection,
+            minWidth: 240,
+            minHeight: 160,
+            snapLeading: snapLeadingEdge,
+            snapTrailing: snapTrailingEdge,
+          }),
         };
       }
 
       if (resizingFile !== -1) {
-        const [x, y] = normalizePosition(event);
-        const dx = x - resizingFileStartPointer[0];
-        const dy = y - resizingFileStartPointer[1];
-        const startRight =
-          resizingFileStartState.x + resizingFileStartState.width;
-        const startBottom =
-          resizingFileStartState.y + resizingFileStartState.height;
-        let left = resizesWest(resizingFileDirection)
-          ? snapLeadingEdge(resizingFileStartState.x + dx)
-          : resizingFileStartState.x;
-        let top = resizesNorth(resizingFileDirection)
-          ? snapLeadingEdge(resizingFileStartState.y + dy)
-          : resizingFileStartState.y;
-        let right = resizesEast(resizingFileDirection)
-          ? snapTrailingEdge(startRight + dx)
-          : startRight;
-        let bottom = resizesSouth(resizingFileDirection)
-          ? snapTrailingEdge(startBottom + dy)
-          : startBottom;
-        if (right - left < 600) {
-          if (resizesWest(resizingFileDirection)) left = right - 600;
-          else right = left + 600;
-        }
-        if (bottom - top < 360) {
-          if (resizesNorth(resizingFileDirection)) top = bottom - 360;
-          else bottom = top + 360;
-        }
-        if (right - left > 4_000) {
-          if (resizesWest(resizingFileDirection)) left = right - 4_000;
-          else right = left + 4_000;
-        }
-        if (bottom - top > 4_000) {
-          if (resizesNorth(resizingFileDirection)) top = bottom - 4_000;
-          else bottom = top + 4_000;
-        }
-        const fileWidth = Math.round(right - left);
+        const geometry = resizeCanvasWindow({
+          start: resizingFileStartState,
+          startPointer: resizingFileStartPointer as [number, number],
+          pointer: normalizePosition(event),
+          direction: resizingFileDirection,
+          minWidth: 600,
+          minHeight: 360,
+          maxWidth: 4_000,
+          maxHeight: 4_000,
+          snapLeading: snapLeadingEdge,
+          snapTrailing: snapTrailingEdge,
+        });
         resizingFileState = {
           ...resizingFileState,
-          x: Math.round(left),
-          y: Math.round(top),
-          width: fileWidth,
-          height: Math.round(bottom - top),
+          ...geometry,
           sidebarWidth: Math.min(
-            resizingFileState.sidebarWidth || Math.round(fileWidth * 0.32),
-            Math.max(200, fileWidth - 320),
+            resizingFileState.sidebarWidth || Math.round(geometry.width * 0.32),
+            Math.max(200, geometry.width - 320),
           ),
+        };
+      }
+
+      if (resizingCustom !== -1) {
+        resizingCustomState = {
+          ...resizingCustomState,
+          ...resizeCanvasWindow({
+            start: resizingCustomStartState,
+            startPointer: resizingCustomStartPointer as [number, number],
+            pointer: normalizePosition(event),
+            direction: resizingCustomDirection,
+            minWidth: CUSTOM_MIN_WIDTH,
+            minHeight: CUSTOM_MIN_HEIGHT,
+            maxWidth: 4_000,
+            maxHeight: 4_000,
+            snapLeading: snapLeadingEdge,
+            snapTrailing: snapTrailingEdge,
+          }),
         };
       }
 
@@ -2940,6 +3146,53 @@
         });
       }
 
+      if (movingCustom !== -1) {
+        const movedId = movingCustom;
+        if (!movingCustomDidMove) {
+          movingCustom = -1;
+          focusCanvasItem(canvasItemKey("custom", movedId));
+        } else if (canvasDropPageId !== null) {
+          const key = canvasItemKey("custom", movedId);
+          const overrides = new Map<CanvasItemKey, [number, number]>([
+            [key, [movingCustomStartState.x, movingCustomStartState.y]],
+          ]);
+          movingCustom = -1;
+          moveCanvasItemsToPage([key], canvasDropPageId, overrides);
+        } else {
+          customWindows = customWindows.map(([id, window]) =>
+            id === movedId ? [id, movingCustomState] : [id, window],
+          );
+          srocket?.send({
+            updateCustomWindow: [
+              movedId,
+              movingCustomState.pageId,
+              movingCustomState,
+            ],
+          });
+          void tick().then(() => {
+            if (movingCustom === movedId) movingCustom = -1;
+          });
+        }
+        movingCustomDidMove = false;
+      }
+
+      if (resizingCustom !== -1) {
+        const resizedId = resizingCustom;
+        customWindows = customWindows.map(([id, window]) =>
+          id === resizedId ? [id, resizingCustomState] : [id, window],
+        );
+        srocket?.send({
+          updateCustomWindow: [
+            resizedId,
+            resizingCustomState.pageId,
+            resizingCustomState,
+          ],
+        });
+        // Match terminal resize finalization: release interaction state in the
+        // same mouseup turn after committing the final geometry.
+        resizingCustom = -1;
+      }
+
       if (movingFile !== -1) {
         const movedId = movingFile;
         if (!movingFileDidMove) {
@@ -2996,7 +3249,8 @@
         canvasGroupMove === null &&
         moving === -1 &&
         movingNote === -1 &&
-        movingFile === -1
+        movingFile === -1 &&
+        movingCustom === -1
       ) {
         canvasDropPageId = null;
         canvasDropPreviewOffsets = {};
@@ -3053,7 +3307,9 @@
         ? resizeCursor(resizingNoteDirection)
         : resizingFile !== -1
           ? resizeCursor(resizingFileDirection)
-          : undefined}
+          : resizingCustom !== -1
+            ? resizeCursor(resizingCustomDirection)
+            : undefined}
   on:wheel={(event) => event.preventDefault()}
 >
   <SessionChrome
@@ -3088,6 +3344,7 @@
     on:deleteSshProfile={(event) =>
       srocket?.send({ deleteSshProfile: event.detail })}
     on:createNote={() => handleCreateNote()}
+    on:createCustom={() => handleCreateCustom()}
     on:toggleChat={() => {
       showChat = !showChat;
       newMessages = false;
@@ -3128,6 +3385,7 @@
     on:deleteSshProfile={(event) =>
       srocket?.send({ deleteSshProfile: event.detail })}
     on:createNote={() => handleCreateNote(canvasContextPosition)}
+    on:createCustom={() => handleCreateCustom(canvasContextPosition)}
     on:search={() => {
       settingsOpen = false;
       searchOpen = true;
@@ -3311,6 +3569,7 @@
                 focusedTerminalId = id;
                 focusedNoteId = null;
                 focusedFileWindowId = null;
+                focusedCustomWindowId = null;
                 focused = [...focused, [id, ws.pageId]];
               }}
               on:blur={() => {
@@ -3537,6 +3796,7 @@
                 focusedNoteId = id;
                 focusedTerminalId = null;
                 focusedFileWindowId = null;
+                focusedCustomWindowId = null;
               }}
               on:blur={() => {
                 if (focusedNoteId === id) focusedNoteId = null;
@@ -3710,6 +3970,7 @@
                   focusedFileWindowId = id;
                   focusedTerminalId = null;
                   focusedNoteId = null;
+                  focusedCustomWindowId = null;
                 }}
                 on:blur={() => {
                   if (focusedFileWindowId === id) focusedFileWindowId = null;
@@ -3754,6 +4015,139 @@
                 resizingFileDirection = detail.direction;
                 bringFileWindowToFront(id, fileWindow.pageId);
                 resizingFile = id;
+              }}
+            />
+          </div>
+        </div>
+      {/each}
+
+      {#each customWindows.filter(([, window]) => window.pageId === activePageId) as [id, customWindow] (id)}
+        {@const displayCustomWindow =
+          groupCustomStates[id] ??
+          (id === movingCustom
+            ? movingCustomState
+            : id === resizingCustom
+              ? resizingCustomState
+              : customWindow)}
+        {@const customKey = canvasItemKey("custom", id)}
+        {@const customDropOffset = canvasDropPreviewOffsets[customKey]}
+        <div class="canvas-world-slot">
+          <div
+            class="canvas-world-item absolute"
+            data-canvas-custom-window={id}
+            class:canvas-active={focusedCustomWindowId === id}
+            class:canvas-selected={selectedCanvasItems.includes(customKey)}
+            class:canvas-page-drop-preview={customDropOffset !== undefined}
+            class:canvas-interacting={groupCustomStates[id] !== undefined ||
+              movingCustom === id ||
+              resizingCustom === id}
+            class:canvas-fullscreen={fullscreenItems[`custom:${id}`]}
+            class:canvas-floating={customFloating[id]}
+            style:--canvas-drop-x={customDropOffset
+              ? `${customDropOffset[0]}px`
+              : "0px"}
+            style:--canvas-drop-y={customDropOffset
+              ? `${customDropOffset[1]}px`
+              : "0px"}
+            transition:fade|local={{ duration: switchingPage ? 0 : 400 }}
+            use:portal={{
+              active: fullscreenItems[`custom:${id}`] ?? false,
+              target: fullscreenLayer,
+            }}
+            use:slide={{
+              x: displayCustomWindow.x,
+              y: displayCustomWindow.y,
+              immediate:
+                groupCustomStates[id] !== undefined ||
+                id === movingCustom ||
+                id === resizingCustom,
+            }}
+            bind:this={customWrappers[id]}
+          >
+            {#await loadCustomComponent()}
+              <div
+                class="flex h-full w-full items-center justify-center rounded-xl border border-zinc-700 bg-zinc-950 text-sm text-zinc-500"
+                style:width={`${displayCustomWindow.width}px`}
+                style:height={`${displayCustomWindow.height}px`}
+              >
+                Loading component…
+              </div>
+            {:then customComponentModule}
+              <svelte:component
+                this={customComponentModule.default}
+                customWindow={displayCustomWindow}
+                fullscreen={fullscreenItems[`custom:${id}`] ?? false}
+                interactionLocked={canvasPointerGestureActive}
+                {hasWriteAccess}
+                on:close={() =>
+                  hasWriteAccess &&
+                  srocket?.send({
+                    closeCustomWindow: [id, customWindow.pageId],
+                  })}
+                on:toggleFullscreen={() => toggleFullscreen("custom", id)}
+                on:floatingChange={(event) =>
+                  (customFloating = {
+                    ...customFloating,
+                    [id]: event.detail,
+                  })}
+                on:update={(event) =>
+                  updateCustomWindowSharedState(
+                    id,
+                    displayCustomWindow.pageId,
+                    event.detail,
+                  )}
+                on:focus={() => {
+                  clearCanvasSelection();
+                  focusedCustomWindowId = id;
+                  focusedTerminalId = null;
+                  focusedNoteId = null;
+                  focusedFileWindowId = null;
+                }}
+                on:blur={() => {
+                  if (focusedCustomWindowId === id)
+                    focusedCustomWindowId = null;
+                }}
+                on:bringToFront={() =>
+                  bringCustomWindowToFront(id, customWindow.pageId)}
+                on:startMove={({ detail: event }) => {
+                  if (!hasWriteAccess || fullscreenItems[`custom:${id}`])
+                    return;
+                  if (startCanvasGroupMove("custom", id, event)) return;
+                  const [x, y] = normalizePosition(event);
+                  movingCustomOrigin = [
+                    x - displayCustomWindow.x,
+                    y - displayCustomWindow.y,
+                  ];
+                  movingCustomStartClient = [event.clientX, event.clientY];
+                  movingCustomDidMove = false;
+                  movingCustomStartState = displayCustomWindow;
+                  movingCustomState = displayCustomWindow;
+                  movingCustom = id;
+                }}
+              />
+            {:catch error}
+              <div
+                class="flex h-full w-full items-center justify-center rounded-xl border border-red-900/70 bg-zinc-950 p-6 text-center text-sm text-red-300"
+                style:width={`${displayCustomWindow.width}px`}
+                style:height={`${displayCustomWindow.height}px`}
+                role="alert"
+              >
+                Could not load the custom component: {error instanceof Error
+                  ? error.message
+                  : String(error)}
+              </div>
+            {/await}
+            <ResizeHandles
+              disabled={!hasWriteAccess || fullscreenItems[`custom:${id}`]}
+              on:start={({ detail }) => {
+                pendingCanvasSelection = null;
+                clearCanvasSelection();
+                resizingCustomStartPointer = normalizePosition(detail.event);
+                resizingCustomStartState = displayCustomWindow;
+                resizingCustomState = displayCustomWindow;
+                resizingCustomDirection = detail.direction;
+                bringCustomWindowToFront(id, customWindow.pageId);
+                resizingCustom = id;
               }}
             />
           </div>
@@ -3821,9 +4215,18 @@
     border-color: rgb(254 240 138 / 1);
     animation: canvas-selection-pulse 1.15s ease-in-out infinite;
   }
+  :global(
+    [data-canvas-custom-window].canvas-selected
+      > .custom-window
+      > .custom-window-border
+  ) {
+    border-color: rgb(254 240 138 / 1);
+    animation: canvas-selection-pulse 1.15s ease-in-out infinite;
+  }
   :global([data-canvas-terminal] > .term-container),
   :global([data-canvas-note-wrapper] > .note-container),
-  :global([data-canvas-file-window] > .file-window) {
+  :global([data-canvas-file-window] > .file-window),
+  :global([data-canvas-custom-window] > .custom-window) {
     transition:
       transform 190ms ease-out,
       opacity 150ms ease-out;
@@ -3832,7 +4235,10 @@
   :global(
     [data-canvas-note-wrapper].canvas-page-drop-preview > .note-container
   ),
-  :global([data-canvas-file-window].canvas-page-drop-preview > .file-window) {
+  :global([data-canvas-file-window].canvas-page-drop-preview > .file-window),
+  :global(
+    [data-canvas-custom-window].canvas-page-drop-preview > .custom-window
+  ) {
     pointer-events: none;
     opacity: 0.06;
     transform: translate(var(--canvas-drop-x, 0px), var(--canvas-drop-y, 0px))
@@ -3876,14 +4282,22 @@
   @media (prefers-reduced-motion: reduce) {
     :global([data-canvas-terminal].canvas-selected > .term-container),
     :global([data-canvas-note-wrapper].canvas-selected > .note-container),
-    :global([data-canvas-file-window].canvas-selected > .file-window) {
+    :global([data-canvas-file-window].canvas-selected > .file-window),
+    :global(
+      [data-canvas-custom-window].canvas-selected
+        > .custom-window
+        > .custom-window-border
+    ) {
       animation: none;
     }
     :global([data-canvas-terminal].canvas-page-drop-preview > .term-container),
     :global(
       [data-canvas-note-wrapper].canvas-page-drop-preview > .note-container
     ),
-    :global([data-canvas-file-window].canvas-page-drop-preview > .file-window) {
+    :global([data-canvas-file-window].canvas-page-drop-preview > .file-window),
+    :global(
+      [data-canvas-custom-window].canvas-page-drop-preview > .custom-window
+    ) {
       opacity: 0.3;
       transform: none;
       transition: none;

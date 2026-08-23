@@ -13,7 +13,8 @@ use sshx_daemon::encrypt::Encrypt;
 use sshx_server::{
     state::ServerState,
     web::protocol::{
-        WsClient, WsFileWindow, WsNote, WsPage, WsServer, WsTerminalChunks, WsUser, WsWinsize,
+        WsClient, WsCustomWindow, WsFileWindow, WsNote, WsPage, WsServer, WsTerminalChunks, WsUser,
+        WsWinsize,
     },
     Server, ServerOptions,
 };
@@ -101,6 +102,7 @@ pub struct ClientSocket {
     pub shells: BTreeMap<Sid, WsWinsize>,
     pub notes: BTreeMap<Sid, WsNote>,
     pub file_windows: BTreeMap<Sid, WsFileWindow>,
+    pub custom_windows: BTreeMap<Sid, WsCustomWindow>,
     pub pages: Vec<WsPage>,
     pub note_editors: BTreeMap<Sid, (u32, Uid)>,
     pub data: HashMap<Sid, String>,
@@ -127,6 +129,7 @@ impl ClientSocket {
             shells: BTreeMap::new(),
             notes: BTreeMap::new(),
             file_windows: BTreeMap::new(),
+            custom_windows: BTreeMap::new(),
             pages: Vec::new(),
             note_editors: BTreeMap::new(),
             data: HashMap::new(),
@@ -205,6 +208,9 @@ impl ClientSocket {
                     WsServer::Notes(notes) => self.notes = BTreeMap::from_iter(notes),
                     WsServer::FileWindows(windows) => {
                         self.file_windows = BTreeMap::from_iter(windows)
+                    }
+                    WsServer::CustomWindows(windows) => {
+                        self.custom_windows = BTreeMap::from_iter(windows)
                     }
                     WsServer::Pages(pages) => self.pages = pages,
                     WsServer::SshProfiles(_) => {}

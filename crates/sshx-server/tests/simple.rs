@@ -35,6 +35,18 @@ async fn test_web_get() -> Result<()> {
 
     let resp = reqwest::get(server.endpoint()).await?;
     assert!(!resp.status().is_server_error());
+    assert_eq!(
+        resp.headers()
+            .get(reqwest::header::CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok()),
+        Some("frame-ancestors 'none'")
+    );
+    assert_eq!(
+        resp.headers()
+            .get(reqwest::header::X_FRAME_OPTIONS)
+            .and_then(|value| value.to_str().ok()),
+        Some("DENY")
+    );
 
     let missing_chunk = reqwest::get(format!(
         "{}/_app/immutable/chunks/missing-deployment-chunk.js",
@@ -157,6 +169,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             sidebar_width: 360,
             tree_revision: 4,
         }],
+        custom_windows: Vec::new(),
         pages: vec![
             WorkspacePage {
                 id: 1,
@@ -209,6 +222,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
         vec![(sshx_core::Sid(7), 120, 240)],
         vec![(sshx_core::Sid(8), 360, 480)],
         vec![(sshx_core::Sid(9), 480, 600)],
+        Vec::new(),
     )?;
     let moved = session.workspace_state();
     assert_eq!(moved.shells[0].page_id, 1);
@@ -221,6 +235,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             1,
             99,
             vec![(sshx_core::Sid(7), 0, 0)],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )

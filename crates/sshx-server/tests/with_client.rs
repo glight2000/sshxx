@@ -12,6 +12,121 @@ use crate::common::*;
 pub mod common;
 
 #[tokio::test]
+async fn test_custom_component_sync_validation_and_page_move() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
+    let name = controller.name().to_owned();
+    let key = controller.encryption_key().to_owned();
+    tokio::spawn(async move { controller.run().await });
+
+    let endpoint = server.ws_endpoint(&name);
+    let mut writer = ClientSocket::connect(&endpoint, &key, None).await?;
+    let mut viewer = ClientSocket::connect(&endpoint, &key, None).await?;
+    writer.flush().await;
+    viewer.flush().await;
+
+    writer.send(WsClient::CreatePage("Widgets".into())).await;
+    writer.flush().await;
+    let target_page = writer.pages.last().unwrap().id;
+    writer
+        .send(WsClient::CreateCustomWindow(120, 240, 720, 520, 1))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+
+    let mut component = writer.custom_windows.get(&Sid(1)).unwrap().clone();
+    component.title = "Build status".into();
+    component.source = "<button onclick=\"fetch('/health')\">Check</button>".into();
+    component.show_preview = true;
+    component.url = "https://status.example.test/dashboard".into();
+    component.use_url = true;
+    writer
+        .send(WsClient::UpdateCustomWindow(
+            Sid(1),
+            1,
+            Some(component.clone()),
+        ))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert_eq!(viewer.custom_windows.get(&Sid(1)), Some(&component));
+
+    writer
+        .send(WsClient::MoveCanvasItemsWithCustoms(
+            1,
+            target_page,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![(Sid(1), 360, 480)],
+        ))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    let moved = viewer.custom_windows.get(&Sid(1)).unwrap();
+    assert_eq!((moved.page_id, moved.x, moved.y), (target_page, 360, 480));
+    assert!(
+        server
+            .state()
+            .lookup(&name)
+            .unwrap()
+            .workspace_state()
+            .custom_windows[0]
+            .show_preview
+    );
+    assert!(
+        server
+            .state()
+            .lookup(&name)
+            .unwrap()
+            .workspace_state()
+            .custom_windows[0]
+            .use_url
+    );
+    assert_eq!(
+        server
+            .state()
+            .lookup(&name)
+            .unwrap()
+            .workspace_state()
+            .custom_windows[0]
+            .url,
+        component.url
+    );
+    assert_eq!(
+        server
+            .state()
+            .lookup(&name)
+            .unwrap()
+            .workspace_state()
+            .custom_windows[0]
+            .source,
+        component.source
+    );
+
+    let errors = writer.errors.len();
+    let mut invalid = moved.clone();
+    invalid.source = "x".repeat((256 << 10) + 1);
+    writer
+        .send(WsClient::UpdateCustomWindow(
+            Sid(1),
+            target_page,
+            Some(invalid),
+        ))
+        .await;
+    writer.flush().await;
+    assert_eq!(writer.errors.len(), errors + 1);
+
+    writer
+        .send(WsClient::CloseCustomWindow(Sid(1), target_page))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert!(viewer.custom_windows.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_handshake() -> Result<()> {
     let server = TestServer::new().await;
     let controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;

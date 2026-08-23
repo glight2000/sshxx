@@ -1,7 +1,7 @@
 <script lang="ts" context="module">
   export type CanvasSearchItem = {
     id: number;
-    kind: "terminal" | "note";
+    kind: "terminal" | "note" | "file" | "custom";
     pageId: number;
     pageName: string;
     title: string;
@@ -11,7 +11,13 @@
 
 <script lang="ts">
   import { createEventDispatcher, tick } from "svelte";
-  import { FileTextIcon, SearchIcon, TerminalIcon } from "svelte-feather-icons";
+  import {
+    CodeIcon,
+    FileIcon,
+    FileTextIcon,
+    SearchIcon,
+    TerminalIcon,
+  } from "svelte-feather-icons";
 
   export let open: boolean;
   export let items: CanvasSearchItem[];
@@ -80,7 +86,7 @@
           bind:this={input}
           bind:value={query}
           on:keydown={handleKeydown}
-          placeholder="Find terminals and notes across all pages…"
+          placeholder="Find canvas components across all pages…"
           class="w-full rounded-md border border-zinc-700 bg-zinc-950 py-2 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500/50"
         />
       </div>
@@ -97,8 +103,12 @@
           >
             {#if item.kind === "terminal"}
               <TerminalIcon class="h-4 w-4 shrink-0" />
-            {:else}
+            {:else if item.kind === "note"}
               <FileTextIcon class="h-4 w-4 shrink-0 text-amber-300" />
+            {:else if item.kind === "file"}
+              <FileIcon class="h-4 w-4 shrink-0 text-sky-300" />
+            {:else}
+              <CodeIcon class="h-4 w-4 shrink-0 text-violet-300" />
             {/if}
             <span class="min-w-0 flex-1">
               <span class="block truncate">{item.title}</span>
@@ -110,7 +120,7 @@
           </button>
         {:else}
           <p class="px-3 py-6 text-center text-sm text-zinc-500">
-            No matching terminals or notes
+            No matching canvas components
           </p>
         {/each}
       </div>

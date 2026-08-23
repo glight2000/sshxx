@@ -31,6 +31,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 /// Interval to automatically reestablish connections.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
 const SYSTEM_ACTION_CAPABILITY: &str = "system-action-v1";
+const CUSTOM_COMPONENT_CAPABILITY: &str = "custom-component-v1";
 
 /// Returns the host portion of an HTTP(S) origin without adding a URL parser
 /// dependency to the daemon. Tonic performs the full URI validation when it
@@ -260,7 +261,10 @@ impl Controller {
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             workspace: workspace_state.clone(),
             ssh_profiles: ssh_profile_state,
-            capabilities: vec![SYSTEM_ACTION_CAPABILITY.into()],
+            capabilities: vec![
+                SYSTEM_ACTION_CAPABILITY.into(),
+                CUSTOM_COMPONENT_CAPABILITY.into(),
+            ],
         };
         let mut resp = client.open(req).await?.into_inner();
         resp.url = resp.url + "#" + &encryption_key;
@@ -276,6 +280,7 @@ impl Controller {
                 shells: Vec::new(),
                 notes: Vec::new(),
                 file_windows: Vec::new(),
+                custom_windows: Vec::new(),
                 pages: vec![WorkspacePage {
                     id: 1,
                     name: "Page 1".into(),
@@ -401,7 +406,10 @@ impl Controller {
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             workspace,
             ssh_profiles,
-            capabilities: vec![SYSTEM_ACTION_CAPABILITY.into()],
+            capabilities: vec![
+                SYSTEM_ACTION_CAPABILITY.into(),
+                CUSTOM_COMPONENT_CAPABILITY.into(),
+            ],
         };
         let mut client = Self::connect(&self.origin).await?;
         let response = client.open(request).await?.into_inner();

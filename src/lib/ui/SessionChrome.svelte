@@ -44,6 +44,7 @@
     saveSshProfile: WsSshProfile;
     deleteSshProfile: string;
     createNote: void;
+    createCustom: void;
     toggleChat: void;
     openSettings: void;
     toggleSearch: void;
@@ -76,6 +77,7 @@
     on:saveSshProfile={(event) => dispatch("saveSshProfile", event.detail)}
     on:deleteSshProfile={(event) => dispatch("deleteSshProfile", event.detail)}
     on:createNote={() => dispatch("createNote")}
+    on:createCustom={() => dispatch("createCustom")}
     on:chat={() => dispatch("toggleChat")}
     on:settings={() => dispatch("openSettings")}
     on:search={() => dispatch("toggleSearch")}

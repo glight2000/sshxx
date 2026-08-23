@@ -623,31 +623,34 @@
       </CircleButtons>
     </div>
     <div
-      class="flex h-full w-0 flex-grow-[4] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap px-2 text-center text-sm font-medium text-zinc-300"
+      class="terminal-title-region flex h-full w-0 flex-grow-[4] items-center justify-center overflow-hidden whitespace-nowrap px-2 text-center text-sm font-medium text-zinc-300"
     >
-      {#if titleActivity}
-        <span
-          class="terminal-title-activity"
-          aria-hidden="true"
-          title="Terminal activity">{titleActivity}</span
-        >
-      {/if}
-      <InlineTitle
-        value={title}
-        fallback={currentTitle}
-        disabled={!hasWriteAccess}
-        ariaLabel="Terminal title"
-        on:change={(event) => updateAppearance({ title: event.detail })}
-        on:editingChange={(event) => {
-          titleEditing = event.detail;
-          if (event.detail) {
-            attention = false;
-            dispatch("focus");
-          } else {
-            dispatch("blur");
-          }
-        }}
-      />
+      <div class="terminal-title-group">
+        {#if titleActivity}
+          <span
+            class="terminal-title-activity"
+            aria-hidden="true"
+            title="Terminal activity">{titleActivity}</span
+          >
+        {/if}
+        <InlineTitle
+          value={title}
+          fallback={currentTitle}
+          fitContent
+          disabled={!hasWriteAccess}
+          ariaLabel="Terminal title"
+          on:change={(event) => updateAppearance({ title: event.detail })}
+          on:editingChange={(event) => {
+            titleEditing = event.detail;
+            if (event.detail) {
+              attention = false;
+              dispatch("focus");
+            } else {
+              dispatch("blur");
+            }
+          }}
+        />
+      </div>
       {#if catchingUp}
         <span
           class="terminal-catchup"
@@ -853,7 +856,11 @@
   }
 
   .terminal-catchup {
-    @apply inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-100/80;
+    @apply absolute right-0 inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-100/80;
+  }
+
+  .terminal-title-group {
+    @apply flex min-w-0 max-w-full items-center justify-center gap-1.5;
   }
 
   .terminal-title-activity {

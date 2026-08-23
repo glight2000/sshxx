@@ -182,6 +182,38 @@ pub struct WsFileWindow {
     pub tree_revision: u32,
 }
 
+/// Shared custom HTML/JavaScript component state.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WsCustomWindow {
+    /// Canvas page containing the component.
+    pub page_id: u32,
+    /// User-visible component title.
+    pub title: String,
+    /// Component shell background color.
+    #[serde(default)]
+    pub background: String,
+    /// Top-left horizontal canvas coordinate.
+    pub x: i32,
+    /// Top-left vertical canvas coordinate.
+    pub y: i32,
+    /// Canvas width.
+    pub width: u16,
+    /// Canvas height.
+    pub height: u16,
+    /// HTML document and inline JavaScript rendered by browser clients.
+    pub source: String,
+    /// Whether every viewer currently shows the rendered preview.
+    #[serde(default)]
+    pub show_preview: bool,
+    /// Absolute HTTP(S) page rendered instead of source when URL mode is active.
+    #[serde(default)]
+    pub url: String,
+    /// Whether preview renders `url` rather than the HTML/JavaScript source.
+    #[serde(default)]
+    pub use_url: bool,
+}
+
 /// A named page in the shared workspace.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -300,6 +332,8 @@ pub enum WsServer {
     Notes(Vec<(Sid, WsNote)>),
     /// Shared filesystem browser window layouts.
     FileWindows(Vec<(Sid, WsFileWindow)>),
+    /// Shared custom HTML/JavaScript component layouts.
+    CustomWindows(Vec<(Sid, WsCustomWindow)>),
     /// Snapshot of named canvas pages.
     Pages(Vec<WsPage>),
     /// Snapshot of reusable SSH connection profiles.
@@ -392,6 +426,15 @@ pub enum WsClient {
         Vec<(Sid, i32, i32)>,
         Vec<(Sid, i32, i32)>,
     ),
+    /// Atomically move every supported canvas component between pages.
+    MoveCanvasItemsWithCustoms(
+        u32,
+        u32,
+        Vec<(Sid, i32, i32)>,
+        Vec<(Sid, i32, i32)>,
+        Vec<(Sid, i32, i32)>,
+        Vec<(Sid, i32, i32)>,
+    ),
     /// Create a note at a canvas position.
     CreateNote(i32, i32, u32),
     /// Create a note with an explicit initial canvas size.
@@ -412,6 +455,12 @@ pub enum WsClient {
     CloseFileWindow(Sid, u32),
     /// Update a filesystem browser, or bring it to the top when absent.
     UpdateFileWindow(Sid, u32, Option<WsFileWindow>),
+    /// Create a shared custom HTML/JavaScript component.
+    CreateCustomWindow(i32, i32, u16, u16, u32),
+    /// Close a shared custom component.
+    CloseCustomWindow(Sid, u32),
+    /// Update a custom component, or bring it to the top when absent.
+    UpdateCustomWindow(Sid, u32, Option<WsCustomWindow>),
     /// Create a named canvas page.
     CreatePage(String),
     /// Rename an existing canvas page.

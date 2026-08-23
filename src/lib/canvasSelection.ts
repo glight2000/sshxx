@@ -1,4 +1,4 @@
-export type CanvasItemKind = "terminal" | "note" | "file";
+export type CanvasItemKind = "terminal" | "note" | "file" | "custom";
 export type CanvasItemKey = `${CanvasItemKind}:${number}`;
 
 export type ClientRect = {

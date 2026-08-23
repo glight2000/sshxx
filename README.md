@@ -31,9 +31,10 @@ license, then extends the project for a different set of personal workflows.
 | Area                 | What sshxx provides                                                                          |
 | -------------------- | -------------------------------------------------------------------------------------------- |
 | Persistent terminals | Local and OpenSSH shells owned by an independent local host, not a browser or daemon process |
-| Shared canvas        | Page-aware terminals, notes, file windows, layout, links, and live presence                  |
+| Shared canvas        | Page-aware terminals, notes, file windows, custom components, layout, and live presence      |
 | Structured notes     | Multiline paragraphs, block selection/reordering, structured copy, links, and delivery       |
 | Files beside shells  | Synchronized folder navigation, previews, CodeMirror editing, uploads, and file operations   |
+| Custom components    | Shared HTML/JavaScript or URL content with an editor and isolated per-viewer preview         |
 | Viewer choice        | One Svelte interface for the Web and Tauri-based packaged client                             |
 | Local control        | Browser-local page, viewport, full-screen, theme, focus, and undo/redo state                 |
 

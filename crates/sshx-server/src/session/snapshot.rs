@@ -6,19 +6,19 @@ use anyhow::{ensure, Context, Result};
 use prost::Message;
 use sshx_core::{
     proto::{
-        SerializedFileWindow, SerializedNote, SerializedPage, SerializedSession, SerializedShell,
-        SshProfileCollection,
+        SerializedCustomWindow, SerializedFileWindow, SerializedNote, SerializedPage,
+        SerializedSession, SerializedShell, SshProfileCollection,
     },
     Sid, Uid, SSH_PROFILE_FORMAT_VERSION,
 };
 
 use super::validation::{
     normalize_linked_shell_ids, normalize_note_canvas_links, normalize_note_paragraphs,
-    validate_file_editor_total, validate_file_window, validate_note_content, validate_page_name,
-    validate_terminal_window_size,
+    validate_custom_source_total, validate_custom_window, validate_file_editor_total,
+    validate_file_window, validate_note_content, validate_page_name, validate_terminal_window_size,
 };
 use super::{Metadata, Session, State};
-use crate::web::protocol::{WsFileWindow, WsNote, WsPage, WsWinsize};
+use crate::web::protocol::{WsCustomWindow, WsFileWindow, WsNote, WsPage, WsWinsize};
 
 /// Persist at most this many bytes of output in storage, per shell.
 const SHELL_SNAPSHOT_BYTES: u64 = 1 << 15; // 32 KiB
@@ -145,6 +145,25 @@ impl Session {
                     editor_dirty: window.editor_dirty,
                     sidebar_width: window.sidebar_width.into(),
                     tree_revision: window.tree_revision,
+                })
+                .collect(),
+            custom_windows: self
+                .custom_windows
+                .borrow()
+                .iter()
+                .map(|(id, window)| SerializedCustomWindow {
+                    id: id.0,
+                    page_id: window.page_id,
+                    title: window.title.clone(),
+                    background: window.background.clone(),
+                    x: window.x,
+                    y: window.y,
+                    width: window.width.into(),
+                    height: window.height.into(),
+                    source: window.source.clone(),
+                    show_preview: window.show_preview,
+                    url: window.url.clone(),
+                    use_url: window.use_url,
                 })
                 .collect(),
         };
@@ -341,9 +360,46 @@ impl Session {
             })
             .collect::<Result<Vec<_>>>()?;
         validate_file_editor_total(&file_windows)?;
+        let custom_windows = message
+            .custom_windows
+            .into_iter()
+            .map(|window| -> Result<(Sid, WsCustomWindow)> {
+                let state = WsCustomWindow {
+                    page_id: window.page_id.max(1),
+                    title: window.title,
+                    background: if window.background.is_empty() {
+                        "#18181b".into()
+                    } else {
+                        window.background
+                    },
+                    x: window.x,
+                    y: window.y,
+                    width: window
+                        .width
+                        .try_into()
+                        .context("custom component width overflow")?,
+                    height: window
+                        .height
+                        .try_into()
+                        .context("custom component height overflow")?,
+                    source: window.source,
+                    show_preview: window.show_preview,
+                    url: window.url,
+                    use_url: window.use_url,
+                };
+                validate_custom_window(&state)?;
+                ensure!(
+                    page_ids.contains(&state.page_id),
+                    "custom component references a missing page"
+                );
+                Ok((Sid(window.id), state))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        validate_custom_source_total(&custom_windows)?;
         normalize_note_canvas_links(&mut restored_notes, &file_windows);
         session.notes.send_replace(restored_notes);
         session.file_windows.send_replace(file_windows);
+        session.custom_windows.send_replace(custom_windows);
         session.pages.send_replace(pages);
         session.restore_ssh_profiles(SshProfileCollection {
             format_version: SSH_PROFILE_FORMAT_VERSION,

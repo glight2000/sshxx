@@ -71,23 +71,24 @@ daemon startup.
 
 ## Pages, canvas navigation, and search
 
-Every page owns an independent set of terminals, notes, and file windows. Window
-geometry, content, and relationships are page-aware and persisted by the daemon.
-A viewer's active page and pan/zoom for each page stay browser-local, so one
-collaborator can navigate without moving everyone else.
+Every page owns an independent set of terminals, notes, file windows, and custom
+components. Window geometry, content, and relationships are page-aware and
+persisted by the daemon. A viewer's active page and pan/zoom for each page stay
+browser-local, so one collaborator can navigate without moving everyone else.
 
 ![All-page terminal and note search with two canvas pages and online collaborators](https://raw.githubusercontent.com/glight2000/sshxx/main/docs/images/sshxx-search-pages.png)
 
-Global search indexes terminals and notes across every page. The list supports
-filtering, pointer selection, arrow-key navigation, and Enter. Choosing a result
-switches only the current viewer to the target page and centers the selected
-window. Search queries and page switching are not synchronized.
+Global search indexes terminals, notes, file windows, and custom components
+across every page. The list supports filtering, pointer selection, arrow-key
+navigation, and Enter. Choosing a result switches only the current viewer to the
+target page and centers the selected window. Search queries and page switching
+are not synchronized.
 
 Canvas navigation uses left-drag on empty space for a local selection marquee,
 right-drag on empty space for pan, unconditional middle-button pan, and a faster
 `Ctrl` + wheel zoom that suppresses browser zoom. Marquee selection is distinct
-from terminal/note/file focus: membership updates continuously with the marquee,
-and focusing a window, clicking empty canvas, or pressing Escape clears the
+from component focus: membership updates continuously with the marquee, and
+focusing a window, clicking empty canvas, or pressing Escape clears the
 selection. Dragging any selected window moves the selected group with one common
 offset, while right-button pan leaves the selection unchanged. Plain wheel input
 is routed to the hovered terminal, note, menu, file tree, directory grid, or
@@ -109,15 +110,15 @@ terminals, and file windows keep their explicit relationships even when they now
 span pages.
 
 The session replaces the browser's native context menu. Right-clicking empty
-canvas space opens the same default-terminal, saved-SSH, note, search, and
-settings actions as the toolbar; terminals and notes created there use the
+canvas space opens the same default-terminal, saved-SSH, note, custom-component,
+search, and settings actions as the toolbar; windows created there use the
 clicked canvas position. Existing component-specific context menus remain in
 place. The menu and its anchor position are viewer-local and never synchronized
 or persisted.
 
 With snapping enabled, moving and eight-direction resizing use the same grid
-anchors and one-tenth-grid visual inset. New terminal, note, and file windows
-are created with matching aligned geometry.
+anchors and one-tenth-grid visual inset. New terminal, note, file, and custom
+windows are created with matching aligned geometry.
 
 Source-derived windows use bounded nearby placement. Duplicated terminals, file
 browsers opened from a terminal, and terminals opened from any file-browser
@@ -125,7 +126,7 @@ action first try the closest free positions around their source. A crowded
 region falls back to a small cascaded overlap instead of placing the new window
 far across the canvas; these actions do not recenter the viewer.
 
-All three canvas window types use the same title and surface-color workflow.
+All canvas window types use the same title and surface-color workflow.
 Double-click a title to edit it in place; Enter or an outside click saves, while
 Escape cancels. A title-bar click focuses the component, while an actual drag
 moves it without changing focus. Titles are no longer duplicated in appearance
@@ -135,6 +136,40 @@ custom color input. A terminal's first swatch restores its theme background, so
 it does not need a separate enable/disable control. Saved titles and backgrounds
 are shared with the session and persisted in the daemon workspace; title-edit
 focus itself remains viewer-local.
+
+## Custom HTML, JavaScript, and URL components
+
+The toolbar and blank-canvas context menu can create a custom component with the
+same title, full-screen, move, resize, snapping, background, selection, and
+cross-page behavior as other canvas windows. Its content view switches between
+HTML/JavaScript and URL modes. HTML uses the existing CodeMirror syntax editor
+and an on-demand Format action; URL mode accepts an absolute HTTP(S) page. The
+adjacent title-bar control switches between content and preview; every switch to
+preview rebuilds the iframe, and the refresh action rebuilds it again without
+leaving preview. A component can be reduced to a two-column by three-row
+background-grid footprint; the usual one-tenth-grid edge insets remain part of
+that geometry.
+
+Custom source or URL, content type, content/preview mode, title, background,
+page, and geometry are synchronized and persisted in the daemon workspace. A
+mode change is reflected by every viewer; each viewer entering preview rebuilds
+its own iframe at least once. The editor cursor and running iframe remain
+browser-local. Preview uses a sandboxed, opaque-origin iframe: scripts, forms,
+media, downloads, and CORS-permitted API calls are available, while access to
+the sshxx parent document, same-origin storage, top-level navigation, nested
+frames, objects, referrer data, and browser device permissions is not granted.
+URL mode rejects the viewer's own origin before loading; the server's anti-frame
+headers and client embedding guard provide a second recursion boundary. A target
+site can still refuse embedding with `X-Frame-Options` or `frame-ancestors`, and
+sites requiring same-origin cookies or storage may not work in the opaque
+sandbox.
+
+This is intentionally client-side rendering. Every viewer that opens preview
+runs the component independently, and switching back to preview runs it again.
+The source view displays this warning permanently. Code that causes external
+side effects must therefore be idempotent or perform its own coordination, and
+shared component source and URLs must never contain credentials, session
+fragment keys, bearer tokens, or other secrets.
 
 ## Structured notes and connected workflows
 

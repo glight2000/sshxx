@@ -30,6 +30,7 @@ const FILE_REQUEST_MAX_BYTES: usize = 12 << 20;
 const TERMINAL_RENDER_ACK_CAPABILITY: &str = "terminal-render-ack-v1";
 const TERMINAL_GENERATION_CAPABILITY: &str = "terminal-generation-v1";
 const SYSTEM_ACTION_CAPABILITY: &str = "system-action-v1";
+const CUSTOM_COMPONENT_CAPABILITY: &str = "custom-component-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalChunkProtocol {
@@ -295,6 +296,13 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     {
         capabilities.push(SYSTEM_ACTION_CAPABILITY.into());
     }
+    if metadata
+        .daemon_capabilities
+        .iter()
+        .any(|capability| capability == CUSTOM_COMPONENT_CAPABILITY)
+    {
+        capabilities.push(CUSTOM_COMPONENT_CAPABILITY.into());
+    }
     send(socket, WsServer::Capabilities(capabilities)).await?;
     send(socket, WsServer::Users(session.list_users())).await?;
     for (id, page_id, editor) in session.list_note_editors() {
@@ -312,6 +320,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     let mut shells_stream = session.subscribe_shells();
     let mut notes_stream = session.subscribe_notes();
     let mut file_windows_stream = session.subscribe_file_windows();
+    let mut custom_windows_stream = session.subscribe_custom_windows();
     let mut pages_stream = session.subscribe_pages();
     let mut ssh_profiles_stream = session.subscribe_ssh_profiles();
     loop {
@@ -342,6 +351,10 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
             }
             Some(file_windows) = file_windows_stream.next() => {
                 send(socket, WsServer::FileWindows(file_windows)).await?;
+                continue;
+            }
+            Some(custom_windows) = custom_windows_stream.next() => {
+                send(socket, WsServer::CustomWindows(custom_windows)).await?;
                 continue;
             }
             Some(pages) = pages_stream.next() => {
@@ -1219,6 +1232,30 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     terminals,
                     notes,
                     file_windows,
+                    Vec::new(),
+                ) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::MoveCanvasItemsWithCustoms(
+                source_page_id,
+                target_page_id,
+                terminals,
+                notes,
+                file_windows,
+                custom_windows,
+            ) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if let Err(error) = session.move_canvas_items(
+                    source_page_id,
+                    target_page_id,
+                    terminals,
+                    notes,
+                    file_windows,
+                    custom_windows,
                 ) {
                     send(socket, WsServer::Error(error.to_string())).await?;
                 }
@@ -1331,6 +1368,49 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     continue;
                 }
                 if let Err(error) = session.update_file_window(id, page_id, window) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::CreateCustomWindow(x, y, width, height, page_id) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if !metadata
+                    .daemon_capabilities
+                    .iter()
+                    .any(|capability| capability == CUSTOM_COMPONENT_CAPABILITY)
+                {
+                    send(
+                        socket,
+                        WsServer::Error(
+                            "The connected daemon does not support custom components.".into(),
+                        ),
+                    )
+                    .await?;
+                    continue;
+                }
+                let id = session.counter().next_sid();
+                if let Err(error) = session.add_custom_window(id, (x, y), (width, height), page_id)
+                {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::CloseCustomWindow(id, page_id) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if let Err(error) = session.close_custom_window(id, page_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::UpdateCustomWindow(id, page_id, window) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if let Err(error) = session.update_custom_window(id, page_id, window) {
                     send(socket, WsServer::Error(error.to_string())).await?;
                 }
             }

@@ -2,6 +2,7 @@
   import { createEventDispatcher } from "svelte";
   import {
     ChevronDownIcon,
+    CodeIcon,
     FileTextIcon,
     MessageSquareIcon,
     SearchIcon,
@@ -30,6 +31,7 @@
     saveSshProfile: WsSshProfile;
     deleteSshProfile: string;
     createNote: void;
+    createCustom: void;
     chat: void;
     search: void;
     settings: void;
@@ -117,6 +119,14 @@
         on:click={() => dispatch("createNote")}
         disabled={!connected || !hasWriteAccess}
         title="Create note"><FileTextIcon strokeWidth={1.5} /></button
+      >
+      <button
+        class="icon-button"
+        on:click={() => dispatch("createCustom")}
+        disabled={!connected || !hasWriteAccess}
+        title="Create custom component"
+        aria-label="Create custom component"
+        ><CodeIcon strokeWidth={1.5} /></button
       >
       <button
         class="icon-button"

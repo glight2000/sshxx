@@ -2,6 +2,7 @@
   import { createEventDispatcher, tick } from "svelte";
   import {
     ChevronRightIcon,
+    CodeIcon,
     FileTextIcon,
     SearchIcon,
     SettingsIcon,
@@ -28,6 +29,7 @@
     saveSshProfile: WsSshProfile;
     deleteSshProfile: string;
     createNote: void;
+    createCustom: void;
     search: void;
     settings: void;
   }>();
@@ -68,7 +70,7 @@
   }
 
   function closeAndDispatch(
-    action: "create" | "createNote" | "search" | "settings",
+    action: "create" | "createNote" | "createCustom" | "search" | "settings",
   ) {
     dispatch("close");
     dispatch(action);
@@ -167,6 +169,15 @@
     >
       <FileTextIcon class="note-icon" />
       <span>New note</span>
+    </button>
+
+    <button
+      role="menuitem"
+      disabled={!connected || !hasWriteAccess}
+      on:click={() => closeAndDispatch("createCustom")}
+    >
+      <CodeIcon />
+      <span>New custom component</span>
     </button>
 
     <div class="divider"></div>
