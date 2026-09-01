@@ -12,9 +12,11 @@
 <script lang="ts">
   import { createEventDispatcher, tick } from "svelte";
   import {
+    ChevronRightIcon,
     CodeIcon,
     FileIcon,
     FileTextIcon,
+    LayersIcon,
     SearchIcon,
     TerminalIcon,
   } from "svelte-feather-icons";
@@ -78,7 +80,7 @@
     on:mousedown|self={() => dispatch("close")}
   >
     <div
-      class="panel absolute top-20 left-1/2 -translate-x-1/2 w-96 max-w-[calc(100vw-2rem)] p-2 shadow-2xl"
+      class="panel absolute top-20 left-1/2 w-[32rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 p-2 shadow-2xl"
     >
       <div class="relative">
         <SearchIcon class="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
@@ -94,7 +96,7 @@
         {#each filtered as item, index (`${item.kind}-${item.id}`)}
           <button
             bind:this={buttons[index]}
-            class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm {index ===
+            class="flex w-full items-center gap-2.5 rounded-md px-3 py-2.5 text-left text-sm {index ===
             selected
               ? 'bg-indigo-700'
               : 'hover:bg-zinc-800'}"
@@ -111,12 +113,25 @@
               <CodeIcon class="h-4 w-4 shrink-0 text-violet-300" />
             {/if}
             <span class="min-w-0 flex-1">
-              <span class="block truncate">{item.title}</span>
-              <span class="block truncate text-xs text-zinc-400"
-                >{item.pageName}</span
+              <span class="block truncate font-medium">{item.title}</span>
+              <span
+                class="mt-0.5 flex min-w-0 items-center gap-1 text-xs {index ===
+                selected
+                  ? 'text-indigo-100/80'
+                  : 'text-zinc-400'}"
+                title={`Page: ${item.pageName}`}
               >
+                <LayersIcon class="h-3 w-3 shrink-0" />
+                <span class="shrink-0">Page</span>
+                <ChevronRightIcon class="h-3 w-3 shrink-0 opacity-60" />
+                <span class="truncate">{item.pageName}</span>
+              </span>
             </span>
-            <span class="text-xs text-zinc-400">#{item.id}</span>
+            <span
+              class="shrink-0 text-xs {index === selected
+                ? 'text-indigo-100/70'
+                : 'text-zinc-500'}">#{item.id}</span
+            >
           </button>
         {:else}
           <p class="px-3 py-6 text-center text-sm text-zinc-500">

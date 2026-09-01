@@ -32,6 +32,7 @@
     startBrowserDownload,
   } from "$lib/fileDownload";
   import { makeToast } from "$lib/toast";
+  import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
   import CanvasRelations, {
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";
@@ -70,6 +71,7 @@
   export let linkedHighlight = false;
   export let paragraphDropState: "none" | "ready" | "blocked" = "none";
   export let fullscreen = false;
+  export let minimized = false;
   export let insertText: (
     text: string,
     position?: TextInsertPosition,
@@ -92,6 +94,7 @@
     editorDirty?: boolean;
     sidebarWidth?: number;
     treeRevision?: number;
+    minimized?: boolean;
   }) => void;
 
   const dispatch = createEventDispatcher<{
@@ -148,6 +151,29 @@
   let mutationBusy = false;
   let downloadBusy = false;
   let headerFloating = false;
+  let observedMinimized = minimized;
+
+  function handleMinimizedChange(value: boolean) {
+    if (observedMinimized === value) return;
+    observedMinimized = value;
+    if (!value) return;
+    resizingSidebar = false;
+    pathEditing = false;
+    uploadOpen = false;
+    createKind = null;
+    renameTarget = null;
+    moveTarget = null;
+    contextMenu = null;
+    if (
+      typeof document !== "undefined" &&
+      document.activeElement instanceof HTMLElement &&
+      sectionElement?.contains(document.activeElement)
+    ) {
+      document.activeElement.blur();
+    }
+  }
+
+  $: handleMinimizedChange(minimized);
   let reportedFloating = false;
   let mounted = false;
   let observedOnline = online;
@@ -1194,9 +1220,14 @@
   class="file-window relative flex flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 shadow-sm shadow-black/20"
   class:linked-highlight={linkedHighlight}
   class:fullscreen
+  class:minimized
   style:--file-window-background={background || "#111113"}
   style:width={fullscreen ? "100%" : `${width}px`}
-  style:height={fullscreen ? "100%" : `${height}px`}
+  style:height={fullscreen
+    ? "100%"
+    : minimized
+      ? `${MINIMIZED_WINDOW_HEIGHT}px`
+      : `${height}px`}
   role="presentation"
   tabindex="-1"
   aria-label="File explorer"
@@ -1222,9 +1253,11 @@
     {title}
     {background}
     {fullscreen}
+    {minimized}
     {hasWriteAccess}
     on:close={() => dispatch("close")}
     on:toggleFullscreen={() => dispatch("toggleFullscreen")}
+    on:minimized={(event) => updateSharedState({ minimized: event.detail })}
     on:bringToFront={() => dispatch("bringToFront")}
     on:startMove={(event) => dispatch("startMove", event.detail)}
     on:reload={loadRoot}
@@ -1478,6 +1511,13 @@
   .file-window.fullscreen {
     display: flex;
     flex-direction: column;
+  }
+  .file-window.minimized > :not(header) {
+    display: none;
+  }
+  .file-window.minimized > :global(header) {
+    height: 100%;
+    border-bottom-color: transparent;
   }
   .file-window {
     background: var(--file-window-background);

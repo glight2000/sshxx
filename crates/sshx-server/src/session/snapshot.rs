@@ -70,6 +70,7 @@ impl Session {
                         theme: winsize.theme,
                         width: winsize.width.into(),
                         height: winsize.height.into(),
+                        minimized: winsize.minimized,
                     };
                     (sid.0, shell)
                 })
@@ -79,6 +80,7 @@ impl Session {
             name: self.metadata().name.clone(),
             write_password_hash: self.metadata().write_password_hash.clone(),
             daemon_version: self.metadata().daemon_version.clone(),
+            terminal_host_version: self.metadata().terminal_host_version.clone(),
             daemon_capabilities: self.metadata().daemon_capabilities.clone(),
             notes: self
                 .notes
@@ -105,6 +107,7 @@ impl Session {
                             background: note.background.clone(),
                             opacity: note.opacity.into(),
                             page_id: note.page_id,
+                            minimized: note.minimized,
                         },
                     )
                 })
@@ -145,6 +148,7 @@ impl Session {
                     editor_dirty: window.editor_dirty,
                     sidebar_width: window.sidebar_width.into(),
                     tree_revision: window.tree_revision,
+                    minimized: window.minimized,
                 })
                 .collect(),
             custom_windows: self
@@ -164,6 +168,7 @@ impl Session {
                     show_preview: window.show_preview,
                     url: window.url.clone(),
                     use_url: window.use_url,
+                    minimized: window.minimized,
                 })
                 .collect(),
         };
@@ -182,6 +187,7 @@ impl Session {
             name: message.name,
             write_password_hash: message.write_password_hash,
             daemon_version: message.daemon_version,
+            terminal_host_version: message.terminal_host_version,
             daemon_capabilities: message.daemon_capabilities,
         };
 
@@ -230,6 +236,7 @@ impl Session {
                 width: shell.width.try_into().context("width overflow")?,
                 height: shell.height.try_into().context("height overflow")?,
                 generation: 0,
+                minimized: shell.minimized,
             };
             ensure!(
                 page_ids.contains(&winsize.page_id),
@@ -290,6 +297,7 @@ impl Session {
                         note.opacity.try_into().context("note opacity overflow")?
                     },
                     page_id,
+                    minimized: note.minimized,
                 };
                 ensure!(
                     page_ids.contains(&note.page_id),
@@ -342,6 +350,7 @@ impl Session {
                             .context("file browser sidebar width overflow")?
                     },
                     tree_revision: window.tree_revision,
+                    minimized: window.minimized,
                 };
                 validate_file_window(&state)?;
                 ensure!(
@@ -386,6 +395,7 @@ impl Session {
                     show_preview: window.show_preview,
                     url: window.url,
                     use_url: window.use_url,
+                    minimized: window.minimized,
                 };
                 validate_custom_window(&state)?;
                 ensure!(

@@ -343,6 +343,14 @@ Each release contains:
 - `SHA256SUMS` covering every downloadable asset.
 - GitHub artifact attestations for the release assets and checksum manifest.
 
+The version in an archive name is the suite Release version, not a promise that
+every bundled executable changed. Client, server, daemon, and terminal-host
+report independent implementation versions and may legitimately differ inside
+one archive. This keeps an unchanged terminal-host stable across ordinary Web,
+client, server, daemon, packaging, and documentation releases. Compatibility is
+determined by versioned protocols rather than equality of component version
+strings.
+
 Runtime targets are Linux x64/arm64, macOS Intel/Apple Silicon, and Windows x64.
 Desktop bundles are produced for Linux x64, macOS Intel/Apple Silicon, and
 Windows x64.
@@ -354,8 +362,10 @@ checks, but do not replace trusted platform code signing.
 
 `.github/workflows/release.yaml` is tag-driven and uses this sequence:
 
-1. Confirm the four module versions are identical and all normal validation has
-   passed on `main`.
+1. Update `release.json` for the suite tag. Independently bump only the client,
+   server, daemon, terminal-host, or internal core packages that actually
+   changed, then run the version-boundary tests and all normal validation on
+   `main`.
 2. Create and push an annotated SemVer tag matching that version:
 
    ```shell

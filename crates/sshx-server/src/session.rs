@@ -79,6 +79,9 @@ pub struct Metadata {
     /// Version of the daemon hosting the terminal processes.
     pub daemon_version: String,
 
+    /// Version reported by the active terminal-host process.
+    pub terminal_host_version: String,
+
     /// Optional protocol capabilities explicitly advertised by the daemon.
     pub daemon_capabilities: Vec<String>,
 }
@@ -424,6 +427,7 @@ impl Session {
                         .get(id)
                         .cloned()
                         .unwrap_or_default(),
+                    minimized: shell.minimized,
                 })
                 .collect(),
             notes: self
@@ -449,6 +453,7 @@ impl Session {
                     background: note.background.clone(),
                     opacity: note.opacity.into(),
                     page_id: note.page_id,
+                    minimized: note.minimized,
                 })
                 .collect(),
             file_windows: self
@@ -477,6 +482,7 @@ impl Session {
                     editor_dirty: window.editor_dirty,
                     sidebar_width: window.sidebar_width.into(),
                     tree_revision: window.tree_revision,
+                    minimized: window.minimized,
                 })
                 .collect(),
             custom_windows: self
@@ -496,6 +502,7 @@ impl Session {
                     show_preview: window.show_preview,
                     url: window.url.clone(),
                     use_url: window.use_url,
+                    minimized: window.minimized,
                 })
                 .collect(),
             pages: self
@@ -583,6 +590,7 @@ impl Session {
                     .height
                     .try_into()
                     .context("terminal height overflow")?,
+                minimized: shell.minimized,
             };
             if winsize.rows == 0 || winsize.cols == 0 {
                 bail!("terminal dimensions must be positive");
@@ -654,6 +662,7 @@ impl Session {
                 background: note.background,
                 opacity: note.opacity.try_into().context("note opacity overflow")?,
                 page_id,
+                minimized: note.minimized,
             };
             validate_note_content(&note_state)?;
             if !(240..=2_000).contains(&note_state.width)
@@ -718,6 +727,7 @@ impl Session {
                         .context("file browser sidebar width overflow")?
                 },
                 tree_revision: window.tree_revision,
+                minimized: window.minimized,
             };
             validate_file_window(&state)?;
             if !page_ids.contains(&state.page_id) {
@@ -761,6 +771,7 @@ impl Session {
                 show_preview: window.show_preview,
                 url: window.url,
                 use_url: window.use_url,
+                minimized: window.minimized,
             };
             validate_custom_window(&state)?;
             if !page_ids.contains(&state.page_id) {
@@ -1340,6 +1351,7 @@ impl Session {
                     background: "#3f3f46".into(),
                     opacity: 80,
                     page_id,
+                    minimized: false,
                 },
             ));
         });
@@ -1462,6 +1474,7 @@ impl Session {
             editor_dirty: false,
             sidebar_width: 332,
             tree_revision: 0,
+            minimized: false,
         };
         validate_file_window(&window)?;
         self.file_windows.send_modify(|windows| {
@@ -1578,6 +1591,7 @@ impl Session {
             show_preview: false,
             url: String::new(),
             use_url: false,
+            minimized: false,
         };
         validate_custom_window(&window)?;
         self.custom_windows
@@ -1871,6 +1885,31 @@ impl Session {
         Ok(())
     }
 
+    /// Broadcast a transient custom-component click without replaying the
+    /// embedded page's action in another browser.
+    pub fn send_custom_click(
+        &self,
+        user_id: Uid,
+        id: Sid,
+        page_id: u32,
+        x: u16,
+        y: u16,
+    ) -> Result<()> {
+        self.check_custom_window_page(id, page_id)?;
+        let windows = self.custom_windows.borrow();
+        let (_, window) = windows
+            .iter()
+            .find(|(window_id, _)| *window_id == id)
+            .context("custom component disappeared during click validation")?;
+        if u32::from(x) > u32::from(window.width) || u32::from(y) > u32::from(window.height) {
+            bail!("custom component click is outside the component");
+        }
+        self.broadcast
+            .send(WsServer::CustomClick(user_id, id, page_id, x, y))
+            .ok();
+        Ok(())
+    }
+
     /// Send a measurement of the shell latency.
     pub fn send_latency_measurement(&self, latency: u64) {
         self.broadcast.send(WsServer::ShellLatency(latency)).ok();
@@ -1975,6 +2014,7 @@ mod tests {
             name: "test".into(),
             write_password_hash: None,
             daemon_version: "test".into(),
+            terminal_host_version: "test-host".into(),
             daemon_capabilities: Vec::new(),
         })
     }

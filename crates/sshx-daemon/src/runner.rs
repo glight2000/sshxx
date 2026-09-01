@@ -76,6 +76,27 @@ pub enum ShellData {
 }
 
 impl Runner {
+    /// Return the version negotiated with the active terminal-host process.
+    /// Legacy embedded and test runners do not have an independent host.
+    pub(crate) async fn terminal_host_version(&self) -> String {
+        let Self::HostedShell { host, .. } = self else {
+            return String::new();
+        };
+        match TerminalHostClient::connect(
+            &host.endpoint,
+            host.authentication_token.clone(),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await
+        {
+            Ok(client) => client.host_version().to_owned(),
+            Err(error) => {
+                warn!(?error, "could not read the active terminal-host version");
+                String::new()
+            }
+        }
+    }
+
     /// Asynchronous task to run a single shell with process I/O.
     pub(crate) async fn run(
         &self,

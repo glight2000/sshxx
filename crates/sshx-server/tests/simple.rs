@@ -19,6 +19,7 @@ async fn test_rpc() -> Result<()> {
         name: String::new(),
         write_password_hash: None,
         daemon_version: "test-daemon".into(),
+        terminal_host_version: "test-host".into(),
         workspace: None,
         ssh_profiles: None,
         capabilities: Vec::new(),
@@ -78,6 +79,7 @@ async fn test_fixed_session_name() -> Result<()> {
             name: String::new(),
             write_password_hash: None,
             daemon_version: "test-daemon".into(),
+            terminal_host_version: "test-host".into(),
             workspace: None,
             ssh_profiles: None,
             capabilities: Vec::new(),
@@ -96,6 +98,7 @@ async fn test_fixed_session_name() -> Result<()> {
             name: String::new(),
             write_password_hash: None,
             daemon_version: "restarted-daemon".into(),
+            terminal_host_version: "restarted-host".into(),
             workspace: None,
             ssh_profiles: None,
             capabilities: Vec::new(),
@@ -106,6 +109,10 @@ async fn test_fixed_session_name() -> Result<()> {
         &original_session,
         &replacement_session
     ));
+    let mut socket = ClientSocket::connect(&server.ws_endpoint("dev"), "localdevkey", None).await?;
+    socket.flush().await;
+    assert_eq!(socket.daemon_version, "restarted-daemon");
+    assert_eq!(socket.terminal_host_version, "restarted-host");
     Ok(())
 }
 
@@ -129,6 +136,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             page_id: 2,
             theme: "Dracula".into(),
             ssh_profile_id: String::new(),
+            minimized: true,
         }],
         notes: vec![WorkspaceNote {
             id: 8,
@@ -145,6 +153,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             background: "#445566".into(),
             opacity: 75,
             page_id: 2,
+            minimized: true,
         }],
         file_windows: vec![WorkspaceFileWindow {
             id: 9,
@@ -168,6 +177,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             editor_dirty: true,
             sidebar_width: 360,
             tree_revision: 4,
+            minimized: true,
         }],
         custom_windows: Vec::new(),
         pages: vec![
@@ -188,6 +198,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             name: String::new(),
             write_password_hash: None,
             daemon_version: "test-daemon".into(),
+            terminal_host_version: "test-host".into(),
             workspace: Some(workspace.clone()),
             ssh_profiles: None,
             capabilities: Vec::new(),
@@ -268,6 +279,7 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
             name: String::new(),
             write_password_hash: None,
             daemon_version: "test-daemon".into(),
+            terminal_host_version: "test-host".into(),
             workspace: None,
             ssh_profiles: Some(SshProfileCollection {
                 format_version: sshx_core::SSH_PROFILE_FORMAT_VERSION,
@@ -303,6 +315,7 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
             name: String::new(),
             write_password_hash: None,
             daemon_version: "restored-daemon".into(),
+            terminal_host_version: "restored-host".into(),
             workspace: Some(session.workspace_state()),
             ssh_profiles: Some(SshProfileCollection {
                 format_version: sshx_core::SSH_PROFILE_FORMAT_VERSION,

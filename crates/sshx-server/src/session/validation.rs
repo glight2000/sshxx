@@ -413,6 +413,7 @@ mod tests {
             show_preview: false,
             url: String::new(),
             use_url: false,
+            minimized: false,
         };
         assert!(validate_custom_window(&window).is_ok());
         assert!(validate_custom_window(&WsCustomWindow {
@@ -441,6 +442,7 @@ mod tests {
             show_preview: true,
             url: "https://status.example.test/dashboard".into(),
             use_url: true,
+            minimized: false,
         };
         assert!(validate_custom_window(&window).is_ok());
         assert!(validate_custom_window(&WsCustomWindow {

@@ -10,6 +10,12 @@
 
   import type { WsCustomWindow } from "$lib/protocol";
   import { resolveCustomComponentUrl } from "$lib/customComponentUrl";
+  import {
+    CUSTOM_COMPONENT_POINTER_BRIDGE,
+    customComponentRequestedUrl,
+    mapCustomComponentPointer,
+  } from "$lib/customComponentPointer";
+  import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
   import BackgroundPicker from "./BackgroundPicker.svelte";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
@@ -31,10 +37,18 @@
     update: Partial<
       Pick<
         WsCustomWindow,
-        "title" | "background" | "source" | "showPreview" | "url" | "useUrl"
+        | "title"
+        | "background"
+        | "source"
+        | "showPreview"
+        | "url"
+        | "useUrl"
+        | "minimized"
       >
     >;
     floatingChange: boolean;
+    pointer: { x: number; y: number; clicked: boolean };
+    error: string;
   }>();
 
   let mode: "source" | "preview" = customWindow.showPreview
@@ -49,8 +63,10 @@
   let observedUrl = customWindow.url;
   let renderRevision = 0;
   let settingsOpen = false;
+  let root: HTMLElement;
   let settingsButton: HTMLButtonElement;
   let settingsPanel: HTMLDivElement;
+  let previewFrame: HTMLIFrameElement;
   let sourceTimer: number | undefined;
   let urlTimer: number | undefined;
   let formatting = false;
@@ -86,6 +102,17 @@
     if (settingsOpen === open) return;
     settingsOpen = open;
     dispatch("floatingChange", open);
+  }
+
+  $: if (customWindow.minimized) {
+    if (settingsOpen) setSettingsOpen(false);
+    if (
+      browser &&
+      document.activeElement instanceof HTMLElement &&
+      root?.contains(document.activeElement)
+    ) {
+      document.activeElement.blur();
+    }
   }
 
   function closeSettingsOnOutsideClick(event: MouseEvent) {
@@ -167,8 +194,45 @@
     const policy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src * data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src * data: blob:; img-src * data: blob:; media-src * data: blob:; style-src * 'unsafe-inline'; font-src * data:; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'">`;
     const head = source.match(/<head(?:\s[^>]*)?>/i);
     return head
-      ? `${source.slice(0, head.index! + head[0].length)}${policy}${source.slice(head.index! + head[0].length)}`
-      : `${policy}${source}`;
+      ? `${source.slice(0, head.index! + head[0].length)}${policy}${CUSTOM_COMPONENT_POINTER_BRIDGE}${source.slice(head.index! + head[0].length)}`
+      : `${policy}${CUSTOM_COMPONENT_POINTER_BRIDGE}${source}`;
+  }
+
+  function handlePreviewMessage(event: MessageEvent) {
+    if (event.source !== previewFrame?.contentWindow) return;
+    const requestedUrl = customComponentRequestedUrl(event.data);
+    if (requestedUrl !== null) {
+      if (!hasWriteAccess) {
+        dispatch("error", "Write access is required to change the shared URL.");
+        return;
+      }
+      if (requestedUrl.length > 4_096) {
+        dispatch("error", "The custom component URL is too long.");
+        return;
+      }
+      const resolved = resolveCustomComponentUrl(
+        requestedUrl,
+        window.location.href,
+      );
+      if (resolved.error) {
+        dispatch("error", resolved.error);
+        return;
+      }
+      dispatch("update", {
+        url: resolved.url,
+        useUrl: true,
+        showPreview: true,
+      });
+      return;
+    }
+    const pointer = mapCustomComponentPointer(
+      event.data,
+      previewFrame.clientWidth,
+      previewFrame.clientHeight,
+      customWindow.width,
+      customWindow.height,
+    );
+    if (pointer) dispatch("pointer", pointer);
   }
 
   async function formatSource() {
@@ -198,15 +262,22 @@
   });
 </script>
 
-<svelte:window on:mousedown|capture={closeSettingsOnOutsideClick} />
+<svelte:window
+  on:mousedown|capture={closeSettingsOnOutsideClick}
+  on:message={handlePreviewMessage}
+/>
 
 <section
+  bind:this={root}
   role="presentation"
   aria-label={customWindow.title || "Custom component"}
   class="custom-window flex overflow-visible rounded-xl border border-transparent shadow-lg shadow-black/20"
   class:fullscreen
+  class:minimized={customWindow.minimized}
   style:width={`${customWindow.width}px`}
-  style:height={`${customWindow.height}px`}
+  style:height={customWindow.minimized
+    ? `${MINIMIZED_WINDOW_HEIGHT}px`
+    : `${customWindow.height}px`}
   style:background={customWindow.background || "#18181b"}
   tabindex="-1"
   on:focusin={() => dispatch("focus")}
@@ -234,8 +305,20 @@
           on:mousedown={(event) => event.button === 0 && dispatch("close")}
         />
         <CircleButton
+          kind="yellow"
+          active={customWindow.minimized}
+          disabled={!hasWriteAccess}
+          ariaLabel={customWindow.minimized
+            ? "Restore custom component"
+            : "Minimize custom component"}
+          on:mousedown={(event) =>
+            event.button === 0 &&
+            dispatch("update", { minimized: !customWindow.minimized })}
+        />
+        <CircleButton
           kind="purple"
           active={fullscreen}
+          disabled={customWindow.minimized}
           ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
           on:mousedown={(event) =>
             event.button === 0 && dispatch("toggleFullscreen")}
@@ -340,11 +423,14 @@
           {#if useUrl}
             The URL is shared, but every client loads it independently. Do not
             include credentials or bearer tokens. The target site may refuse to
-            be embedded.
+            be embedded. A cooperating page can request shared navigation with
+            an <code>sshxx-custom-set-url-v1</code> parent message.
           {:else}
             HTML and JavaScript run independently in every client that opens the
             preview. Avoid non-idempotent actions and never place secrets in
-            this shared source.
+            this shared source. A user-action button can call
+            <code>window.sshxx.setUrl("https://…")</code> to update, reload, and persist
+            the shared URL.
           {/if}
         </div>
         {#if useUrl}
@@ -386,6 +472,7 @@
         {#key renderRevision}
           {#if useUrl}
             <iframe
+              bind:this={previewFrame}
               class="h-full w-full border-0 bg-white"
               class:pointer-events-none={interactionLocked}
               title={customWindow.title || "Custom component preview"}
@@ -396,6 +483,7 @@
             ></iframe>
           {:else}
             <iframe
+              bind:this={previewFrame}
               class="h-full w-full border-0 bg-white"
               class:pointer-events-none={interactionLocked}
               title={customWindow.title || "Custom component preview"}
@@ -420,6 +508,14 @@
   }
   .custom-window.fullscreen {
     @apply h-full w-full;
+  }
+  .custom-window.minimized > :not(header):not(.custom-window-border) {
+    display: none;
+  }
+  .custom-window.minimized > header {
+    height: 100%;
+    border-bottom-color: transparent;
+    border-radius: inherit;
   }
   .custom-window:focus-within {
     box-shadow: 0 0 0 1px rgb(129 140 248 / 0.45);

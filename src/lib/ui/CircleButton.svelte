@@ -50,7 +50,11 @@
     ].cls}"
   >
     <svelte:component
-      this={kind === "purple" && active ? Minimize2Icon : details[kind].icon}
+      this={kind === "purple" && active
+        ? Minimize2Icon
+        : kind === "yellow" && active
+          ? PlusIcon
+          : details[kind].icon}
       class="block h-2.5 w-2.5"
       strokeWidth={2.5}
     />

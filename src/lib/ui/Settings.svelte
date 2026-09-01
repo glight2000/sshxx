@@ -14,6 +14,7 @@
   export let open: boolean;
   export let serverVersion: string;
   export let daemonVersion: string;
+  export let terminalHostVersion: string;
   export let hasWriteAccess: boolean | undefined;
   export let systemActionsAvailable: boolean;
   export let systemActionPending: boolean;
@@ -250,6 +251,7 @@
       <span>sshxx-client v{__APP_VERSION__}</span>
       <span>sshxx-server v{serverVersion}</span>
       <span>sshxx-daemon v{daemonVersion}</span>
+      <span>sshxx-terminal-host v{terminalHostVersion}</span>
     </div>
     <a
       class="underline decoration-zinc-600 underline-offset-2 hover:text-zinc-300"

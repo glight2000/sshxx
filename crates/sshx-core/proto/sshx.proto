@@ -58,6 +58,7 @@ message OpenRequest {
   optional WorkspaceState workspace = 6;  // Locally persisted workspace to restore.
   optional SshProfileCollection ssh_profiles = 7; // Locally persisted SSH connection profiles.
   repeated string capabilities = 8;        // Optional daemon protocol capabilities.
+  string terminal_host_version = 9;        // Version reported by the active terminal-host process.
 }
 
 // Details of a newly-created sshxx session.
@@ -184,6 +185,7 @@ message WorkspaceShell {
   uint32 width = 11;
   uint32 height = 12;
   string ssh_profile_id = 13; // SSH connection used by this terminal, empty for local shells.
+  bool minimized = 14;
 }
 
 message WorkspaceNote {
@@ -201,6 +203,7 @@ message WorkspaceNote {
   repeated uint32 linked_note_ids = 12;
   repeated uint32 linked_file_window_ids = 13;
   string title = 14;
+  bool minimized = 15;
 }
 
 message WorkspacePage {
@@ -230,6 +233,7 @@ message WorkspaceFileWindow {
   uint32 sidebar_width = 19; // Shared file-tree pane width in canvas pixels.
   uint32 tree_revision = 20; // Change token after filesystem mutations.
   string background = 21;
+  bool minimized = 22;
 }
 
 // Shared custom HTML/JavaScript component rendered by each browser client.
@@ -246,6 +250,7 @@ message WorkspaceCustomWindow {
   bool show_preview = 10;
   string url = 11;
   bool use_url = 12;
+  bool minimized = 13;
 }
 
 // Authentication behavior for an OpenSSH connection profile.
@@ -301,6 +306,7 @@ message SerializedSession {
   repeated SerializedFileWindow file_windows = 11;
   repeated string daemon_capabilities = 12;
   repeated SerializedCustomWindow custom_windows = 13;
+  string terminal_host_version = 14;
 }
 
 message SerializedShell {
@@ -320,6 +326,7 @@ message SerializedShell {
   string theme = 14;
   uint32 width = 15;
   uint32 height = 16;
+  bool minimized = 17;
 }
 
 message SerializedNote {
@@ -336,6 +343,7 @@ message SerializedNote {
   repeated uint32 linked_note_ids = 11;
   repeated uint32 linked_file_window_ids = 12;
   string title = 13;
+  bool minimized = 14;
 }
 
 message SerializedPage {
@@ -365,6 +373,7 @@ message SerializedFileWindow {
   uint32 sidebar_width = 19;
   uint32 tree_revision = 20;
   string background = 21;
+  bool minimized = 22;
 }
 
 message SerializedCustomWindow {
@@ -380,4 +389,5 @@ message SerializedCustomWindow {
   bool show_preview = 10;
   string url = 11;
   bool use_url = 12;
+  bool minimized = 13;
 }

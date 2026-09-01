@@ -18,18 +18,37 @@ type WriteChunk = {
 
 export type TerminalWriteQueueOptions = {
   chunkCharacters?: number;
+  writeTimeoutMs?: number;
   schedule?: (callback: () => void) => number;
   cancel?: (handle: number) => void;
+  scheduleTimeout?: (callback: () => void, timeoutMs: number) => number;
+  cancelTimeout?: (handle: number) => void;
   transform?: (data: string, replay: boolean) => string;
   onReplayStart?: () => void;
   onReplayEnd?: () => void;
   onStateChange?: (state: TerminalWriteQueueState) => void;
   onError?: (error: unknown) => void;
+  onWriteTimeout?: (error: TerminalWriteTimeoutError) => void;
 };
 
 type TerminalWriteSink = (data: string, complete: () => void) => void;
 
 const DEFAULT_CHUNK_CHARACTERS = 64 << 10;
+export const DEFAULT_TERMINAL_WRITE_TIMEOUT_MS = 15_000;
+
+export class TerminalWriteTimeoutError extends Error {
+  readonly timeoutMs: number;
+  readonly chunkCharacters: number;
+
+  constructor(timeoutMs: number, chunkCharacters: number) {
+    super(
+      `Terminal renderer did not complete a ${chunkCharacters}-character write within ${timeoutMs} ms.`,
+    );
+    this.name = "TerminalWriteTimeoutError";
+    this.timeoutMs = timeoutMs;
+    this.chunkCharacters = chunkCharacters;
+  }
+}
 
 /**
  * Feed xterm in bounded chunks and wait for its public write callback before
@@ -38,21 +57,30 @@ const DEFAULT_CHUNK_CHARACTERS = 64 << 10;
  */
 export class TerminalWriteQueue {
   readonly #chunkCharacters: number;
+  readonly #writeTimeoutMs: number;
   readonly #schedule: (callback: () => void) => number;
   readonly #cancel: (handle: number) => void;
+  readonly #scheduleTimeout: (
+    callback: () => void,
+    timeoutMs: number,
+  ) => number;
+  readonly #cancelTimeout: (handle: number) => void;
   readonly #transform: (data: string, replay: boolean) => string;
   readonly #onReplayStart: () => void;
   readonly #onReplayEnd: () => void;
   readonly #onStateChange: (state: TerminalWriteQueueState) => void;
   readonly #onError: (error: unknown) => void;
+  readonly #onWriteTimeout: (error: TerminalWriteTimeoutError) => void;
 
   #sink: TerminalWriteSink | null = null;
   #chunks: WriteChunk[] = [];
   #activeChunk: WriteChunk | null = null;
   #writing = false;
   #scheduled: number | null = null;
+  #writeTimeout: number | null = null;
   #queuedCharacters = 0;
   #disposed = false;
+  #failed = false;
 
   constructor(options: TerminalWriteQueueOptions = {}) {
     this.#chunkCharacters = options.chunkCharacters ?? DEFAULT_CHUNK_CHARACTERS;
@@ -61,16 +89,29 @@ export class TerminalWriteQueue {
       this.#chunkCharacters <= 0
     )
       throw new Error("Terminal write chunk size must be a positive integer.");
+    this.#writeTimeoutMs =
+      options.writeTimeoutMs ?? DEFAULT_TERMINAL_WRITE_TIMEOUT_MS;
+    if (
+      !Number.isSafeInteger(this.#writeTimeoutMs) ||
+      this.#writeTimeoutMs <= 0
+    )
+      throw new Error("Terminal write timeout must be a positive integer.");
     this.#schedule =
       options.schedule ??
       ((callback) => window.requestAnimationFrame(callback));
     this.#cancel =
       options.cancel ?? ((handle) => window.cancelAnimationFrame(handle));
+    this.#scheduleTimeout =
+      options.scheduleTimeout ??
+      ((callback, timeoutMs) => window.setTimeout(callback, timeoutMs));
+    this.#cancelTimeout =
+      options.cancelTimeout ?? ((handle) => window.clearTimeout(handle));
     this.#transform = options.transform ?? ((data) => data);
     this.#onReplayStart = options.onReplayStart ?? (() => undefined);
     this.#onReplayEnd = options.onReplayEnd ?? (() => undefined);
     this.#onStateChange = options.onStateChange ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
+    this.#onWriteTimeout = options.onWriteTimeout ?? (() => undefined);
   }
 
   setSink(sink: TerminalWriteSink) {
@@ -80,7 +121,7 @@ export class TerminalWriteQueue {
   }
 
   write(data: string, replay = false): Promise<void> {
-    if (!data || this.#disposed) return Promise.resolve();
+    if (!data || this.#disposed || this.#failed) return Promise.resolve();
     const pieces = splitTerminalWrite(data, this.#chunkCharacters);
     return new Promise<void>((resolve) => {
       const group: WriteGroup = {
@@ -103,6 +144,8 @@ export class TerminalWriteQueue {
     this.#disposed = true;
     if (this.#scheduled !== null) this.#cancel(this.#scheduled);
     this.#scheduled = null;
+    if (this.#writeTimeout !== null) this.#cancelTimeout(this.#writeTimeout);
+    this.#writeTimeout = null;
 
     const groups = new Set(this.#chunks.map((chunk) => chunk.group));
     if (this.#activeChunk) groups.add(this.#activeChunk.group);
@@ -146,16 +189,39 @@ export class TerminalWriteQueue {
     const complete = () => {
       if (completed) return;
       completed = true;
+      if (this.#writeTimeout !== null) this.#cancelTimeout(this.#writeTimeout);
+      this.#writeTimeout = null;
       this.#writing = false;
       this.#activeChunk = null;
       this.#completeChunk(chunk);
     };
+    this.#writeTimeout = this.#scheduleTimeout(() => {
+      if (completed) return;
+      completed = true;
+      this.#writeTimeout = null;
+      this.#fail(
+        new TerminalWriteTimeoutError(this.#writeTimeoutMs, data.length),
+      );
+    }, this.#writeTimeoutMs);
     try {
       this.#sink(data, complete);
     } catch (error) {
       this.#onError(error);
       complete();
     }
+  }
+
+  #fail(error: TerminalWriteTimeoutError) {
+    this.#failed = true;
+    this.#writing = false;
+    const groups = new Set(this.#chunks.map((chunk) => chunk.group));
+    if (this.#activeChunk) groups.add(this.#activeChunk.group);
+    this.#chunks = [];
+    this.#activeChunk = null;
+    this.#queuedCharacters = 0;
+    for (const group of groups) this.#finishGroup(group);
+    this.#notify();
+    this.#onWriteTimeout(error);
   }
 
   #completeChunk(chunk: WriteChunk) {

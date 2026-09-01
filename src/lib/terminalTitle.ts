@@ -1,15 +1,4 @@
-const TERMINAL_TITLE_SPINNER_FRAMES = new Set([
-  "⠋",
-  "⠙",
-  "⠹",
-  "⠸",
-  "⠼",
-  "⠴",
-  "⠦",
-  "⠧",
-  "⠇",
-  "⠏",
-]);
+const TERMINAL_TITLE_SPINNER = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?=\s)/u;
 
 export type TerminalTitleParts = {
   activity: string;
@@ -19,14 +8,11 @@ export type TerminalTitleParts = {
 /** Keep a leading CLI activity spinner out of the user-editable title. */
 export function splitTerminalTitle(value: string): TerminalTitleParts {
   const normalized = value.trim();
-  const [first = ""] = [...normalized];
-  if (
-    TERMINAL_TITLE_SPINNER_FRAMES.has(first) &&
-    /^\s/u.test(normalized.slice(first.length))
-  ) {
+  const activity = normalized.match(TERMINAL_TITLE_SPINNER)?.[0] ?? "";
+  if (activity) {
     return {
-      activity: first,
-      title: normalized.slice(first.length).trimStart(),
+      activity,
+      title: normalized.slice(activity.length).trimStart(),
     };
   }
   return { activity: "", title: normalized };

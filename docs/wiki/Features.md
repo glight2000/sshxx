@@ -130,12 +130,17 @@ All canvas window types use the same title and surface-color workflow.
 Double-click a title to edit it in place; Enter or an outside click saves, while
 Escape cancels. A title-bar click focuses the component, while an actual drag
 moves it without changing focus. Titles are no longer duplicated in appearance
-menus. Each background picker provides 24 low-luminance neutral and chromatic
-presets whose contrast against the primary text color is at least 10:1, plus a
-custom color input. A terminal's first swatch restores its theme background, so
-it does not need a separate enable/disable control. Saved titles and backgrounds
-are shared with the session and persisted in the daemon workspace; title-edit
-focus itself remains viewer-local.
+menus. The yellow title-bar control minimizes or restores a window for every
+viewer. A minimized window keeps its width and saved expanded height, displays
+only its title bar at exactly one background-grid unit high, and cannot be
+resized or opened full-screen until restored. This state is synchronized and
+daemon-persisted; temporary full-screen remains viewer-local. Each background
+picker provides 24 low-luminance neutral and chromatic presets whose contrast
+against the primary text color is at least 10:1, plus a custom color input. A
+terminal's first swatch restores its theme background, so it does not need a
+separate enable/disable control. Saved titles and backgrounds are shared with
+the session and persisted in the daemon workspace; title-edit focus itself
+remains viewer-local.
 
 ## Custom HTML, JavaScript, and URL components
 
@@ -154,15 +159,38 @@ Custom source or URL, content type, content/preview mode, title, background,
 page, and geometry are synchronized and persisted in the daemon workspace. A
 mode change is reflected by every viewer; each viewer entering preview rebuilds
 its own iframe at least once. The editor cursor and running iframe remain
-browser-local. Preview uses a sandboxed, opaque-origin iframe: scripts, forms,
-media, downloads, and CORS-permitted API calls are available, while access to
-the sshxx parent document, same-origin storage, top-level navigation, nested
-frames, objects, referrer data, and browser device permissions is not granted.
-URL mode rejects the viewer's own origin before loading; the server's anti-frame
-headers and client embedding guard provide a second recursion boundary. A target
-site can still refuse embedding with `X-Frame-Options` or `frame-ancestors`, and
-sites requiring same-origin cookies or storage may not work in the opaque
-sandbox.
+browser-local. Pointer movement from an HTML/JavaScript preview is bridged into
+the normal page-aware live cursor. A click is deliberately never replayed in
+another browser; other viewers on that page instead see the transient message
+`自定义组件不同步点击事件` at the corresponding component position. A remote URL
+remains cross-origin and cannot be instrumented by sshxx; it participates only
+if that page explicitly emits the documented `sshxx-custom-pointer-v1`
+`postMessage` shape itself. Preview uses a sandboxed, opaque-origin iframe:
+scripts, forms, media, downloads, and CORS-permitted API calls are available,
+while access to the sshxx parent document, same-origin storage, top-level
+navigation, nested frames, objects, referrer data, and browser device
+permissions is not granted. URL mode rejects the viewer's own origin before
+loading; the server's anti-frame headers and client embedding guard provide a
+second recursion boundary. A target site can still refuse embedding with
+`X-Frame-Options` or `frame-ancestors`, and sites requiring same-origin cookies
+or storage may not work in the opaque sandbox.
+
+An HTML/JavaScript preview may explicitly navigate the shared component from a
+user action:
+
+```html
+<button onclick="window.sshxx.setUrl('https://example.test/next')">
+  Open next view
+</button>
+```
+
+The parent validates an absolute HTTP(S) URL, rejects recursive sshxx origins,
+switches the component to URL preview, and sends the normal shared component
+update. Every viewer then loads the new URL, and the daemon persists it with the
+workspace. A cross-origin URL page cannot be inspected automatically; a page
+that intentionally integrates with sshxx may instead send
+`{ type: "sshxx-custom-set-url-v1", url: "https://…" }` to its parent. Normal
+iframe navigation without one of these explicit requests remains browser-local.
 
 This is intentionally client-side rendering. Every viewer that opens preview
 runs the component independently, and switching back to preview runs it again.
@@ -326,13 +354,13 @@ design.
 
 ## Feature and state summary
 
-| Capability                              | Durable at daemon      | Shared with session                  | Viewer-local only                |
-| --------------------------------------- | ---------------------- | ------------------------------------ | -------------------------------- |
-| Pages and canvas window content/layout  | Yes                    | Yes                                  | Active page, viewport, selection |
-| Terminal process                        | Until host/OS restart  | Stream/input                         | Focus and selection              |
-| Note paragraphs and relationships       | Yes                    | Character-level updates              | Undo stack and active editor     |
-| File tree/editor navigation and content | Yes                    | Yes                                  | Menus, hover, undo, full-screen  |
-| SSH profiles                            | Encrypted file         | Metadata; writer mutation            | Password prompt input            |
-| User preferences                        | No                     | No                                   | Browser `localStorage`           |
-| Online users and editing ownership      | No                     | Transient                            | Hover/overflow menu              |
-| Uploaded images                         | Temporary daemon cache | Encrypted transfer and inserted path | Drag/paste UI state              |
+| Capability                                                        | Durable at daemon      | Shared with session                  | Viewer-local only                |
+| ----------------------------------------------------------------- | ---------------------- | ------------------------------------ | -------------------------------- |
+| Pages and canvas window content/layout, including minimized state | Yes                    | Yes                                  | Active page, viewport, selection |
+| Terminal process                                                  | Until host/OS restart  | Stream/input                         | Focus and selection              |
+| Note paragraphs and relationships                                 | Yes                    | Character-level updates              | Undo stack and active editor     |
+| File tree/editor navigation and content                           | Yes                    | Yes                                  | Menus, hover, undo, full-screen  |
+| SSH profiles                                                      | Encrypted file         | Metadata; writer mutation            | Password prompt input            |
+| User preferences                                                  | No                     | No                                   | Browser `localStorage`           |
+| Online users and editing ownership                                | No                     | Transient                            | Hover/overflow menu              |
+| Uploaded images                                                   | Temporary daemon cache | Encrypted transfer and inserted path | Drag/paste UI state              |

@@ -46,6 +46,7 @@ async fn test_basic_restore() -> Result<()> {
         page_id,
         theme: "Tokyo Night".into(),
         generation: 0,
+        minimized: true,
     };
     let note = WsNote {
         x: 120,
@@ -61,6 +62,7 @@ async fn test_basic_restore() -> Result<()> {
         background: "#654321".into(),
         opacity: 65,
         page_id,
+        minimized: true,
     };
 
     s.send_input(Sid(1), b"hello there!").await;
@@ -94,6 +96,7 @@ async fn test_basic_restore() -> Result<()> {
     file_window.editor_stream = 1 << 63;
     file_window.editor_data = b"encrypted editor buffer".as_slice().into();
     file_window.editor_dirty = true;
+    file_window.minimized = true;
     s.send(WsClient::UpdateFileWindow(
         Sid(3),
         page_id,
@@ -110,6 +113,7 @@ async fn test_basic_restore() -> Result<()> {
     custom_window.show_preview = true;
     custom_window.url = "https://status.example.test/dashboard".into();
     custom_window.use_url = true;
+    custom_window.minimized = true;
     s.send(WsClient::UpdateCustomWindow(
         Sid(4),
         page_id,

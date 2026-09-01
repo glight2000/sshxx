@@ -117,6 +117,7 @@ mod tests {
                 page_id: 2,
                 theme: "Tokyo Night".into(),
                 ssh_profile_id: "work-server".into(),
+                minimized: true,
             }],
             notes: vec![WorkspaceNote {
                 id: 8,
@@ -133,6 +134,7 @@ mod tests {
                 background: "#445566".into(),
                 opacity: 80,
                 page_id: 2,
+                minimized: true,
             }],
             file_windows: vec![WorkspaceFileWindow {
                 id: 9,
@@ -156,6 +158,7 @@ mod tests {
                 editor_dirty: true,
                 sidebar_width: 360,
                 tree_revision: 4,
+                minimized: true,
             }],
             custom_windows: Vec::new(),
             pages: vec![

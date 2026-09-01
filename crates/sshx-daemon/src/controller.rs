@@ -252,6 +252,7 @@ impl Controller {
             Some(path) => Some(crate::uploads::UploadManager::new(path).await?),
             None => None,
         };
+        let terminal_host_version = runner.terminal_host_version().await;
 
         let req = OpenRequest {
             origin: origin.into(),
@@ -265,6 +266,7 @@ impl Controller {
                 SYSTEM_ACTION_CAPABILITY.into(),
                 CUSTOM_COMPONENT_CAPABILITY.into(),
             ],
+            terminal_host_version,
         };
         let mut resp = client.open(req).await?.into_inner();
         resp.url = resp.url + "#" + &encryption_key;
@@ -410,6 +412,7 @@ impl Controller {
                 SYSTEM_ACTION_CAPABILITY.into(),
                 CUSTOM_COMPONENT_CAPABILITY.into(),
             ],
+            terminal_host_version: self.runner.terminal_host_version().await,
         };
         let mut client = Self::connect(&self.origin).await?;
         let response = client.open(request).await?.into_inner();

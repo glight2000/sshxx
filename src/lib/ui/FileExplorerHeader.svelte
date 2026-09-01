@@ -10,11 +10,13 @@
   export let title: string;
   export let background: string;
   export let fullscreen: boolean;
+  export let minimized: boolean;
   export let hasWriteAccess: boolean | undefined;
 
   const dispatch = createEventDispatcher<{
     close: void;
     toggleFullscreen: void;
+    minimized: boolean;
     bringToFront: void;
     startMove: MouseEvent;
     reload: void;
@@ -43,6 +45,8 @@
     settingsOpen = open;
     dispatch("floatingChange", open);
   }
+
+  $: if (minimized && settingsOpen) setSettingsOpen(false);
 </script>
 
 <svelte:window on:mousedown|capture={closeSettingsOnOutsideClick} />
@@ -52,6 +56,8 @@
   data-canvas-titlebar
   class="relative flex h-9 shrink-0 cursor-default select-none items-center border-b border-zinc-800"
   class:cursor-default={fullscreen}
+  class:border-transparent={minimized}
+  style:height={minimized ? "100%" : undefined}
   on:mousedown|stopPropagation={(event) => {
     dispatch("bringToFront");
     if (event.button === 0 && !fullscreen) dispatch("startMove", event);
@@ -66,8 +72,19 @@
         on:mousedown={(event) => event.button === 0 && dispatch("close")}
       />
       <CircleButton
+        kind="yellow"
+        active={minimized}
+        disabled={!hasWriteAccess}
+        ariaLabel={minimized
+          ? "Restore file explorer"
+          : "Minimize file explorer"}
+        on:mousedown={(event) =>
+          event.button === 0 && dispatch("minimized", !minimized)}
+      />
+      <CircleButton
         kind="purple"
         active={fullscreen}
+        disabled={minimized}
         ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
         on:mousedown={(event) =>
           event.button === 0 && dispatch("toggleFullscreen")}

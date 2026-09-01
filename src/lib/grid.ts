@@ -1,6 +1,9 @@
 /** Spacing between dotted canvas grid points, in canvas coordinates. */
 export const GRID_SIZE = 40;
 
+/** Shared collapsed height for every canvas component. */
+export const MINIMIZED_WINDOW_HEIGHT = GRID_SIZE;
+
 /** Small visual inset from a grid point, shared by leading and trailing edges. */
 export const GRID_EDGE_GAP = GRID_SIZE / 10;
 

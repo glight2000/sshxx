@@ -16,6 +16,8 @@ export type WsWinsize = {
   theme: string;
   /** Volatile PTY generation used to reset renderer subscriptions safely. */
   generation: number;
+  /** Whether only the one-grid-unit title bar is visible. */
+  minimized: boolean;
 };
 
 /** Shared state for a note on the infinite canvas. */
@@ -38,6 +40,8 @@ export type WsNote = {
   background: string;
   opacity: number;
   pageId: number;
+  /** Whether only the one-grid-unit title bar is visible. */
+  minimized: boolean;
 };
 
 /** Shared state for a filesystem browser attached to a terminal. */
@@ -62,6 +66,8 @@ export type WsFileWindow = {
   editorDirty: boolean;
   sidebarWidth: number;
   treeRevision: number;
+  /** Whether only the one-grid-unit title bar is visible. */
+  minimized: boolean;
 };
 
 /** Shared custom HTML/JavaScript component state. */
@@ -77,6 +83,8 @@ export type WsCustomWindow = {
   showPreview: boolean;
   url: string;
   useUrl: boolean;
+  /** Whether only the one-grid-unit title bar is visible. */
+  minimized: boolean;
 };
 
 /** A named canvas page shared by every viewer. */
@@ -148,7 +156,7 @@ export type WsUser = {
 
 /** Server message type, see the Rust version. */
 export type WsServer = {
-  hello?: [Uid, string, string, string];
+  hello?: [Uid, string, string, string, string?];
   capabilities?: string[];
   invalidAuth?: [];
   users?: [Uid, WsUser][];
@@ -170,6 +178,7 @@ export type WsServer = {
   shellLatency?: number | bigint;
   fileResponse?: [string, bigint, Uint8Array];
   systemActionResult?: [string, string, boolean, string];
+  customClick?: [Uid, Sid, number, number, number];
   pong?: number | bigint;
   error?: string;
 };
@@ -179,6 +188,7 @@ export type WsClient = {
   authenticate?: [Uint8Array, Uint8Array | null];
   setName?: string;
   setCursor?: [number, [number, number] | null];
+  customClick?: [Sid, number, number, number];
   setFocus?: [Sid, number] | null;
   create?: [number, number, number];
   createSized?: [number, number, number, number, number];

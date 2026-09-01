@@ -43,6 +43,9 @@ pub struct WsWinsize {
     /// recreated after terminal-host state loss.
     #[serde(default)]
     pub generation: u32,
+    /// Whether only the one-grid-unit title bar is visible.
+    #[serde(default)]
+    pub minimized: bool,
 }
 
 fn default_opacity() -> u8 {
@@ -80,6 +83,7 @@ impl Default for WsWinsize {
             page_id: default_page_id(),
             theme: String::new(),
             generation: 0,
+            minimized: false,
         }
     }
 }
@@ -122,6 +126,9 @@ pub struct WsNote {
     /// Canvas page containing this note.
     #[serde(default = "default_page_id")]
     pub page_id: u32,
+    /// Whether only the one-grid-unit title bar is visible.
+    #[serde(default)]
+    pub minimized: bool,
 }
 
 /// Shared state for a filesystem browser attached to a terminal.
@@ -180,6 +187,9 @@ pub struct WsFileWindow {
     /// Change token replaced after filesystem mutations.
     #[serde(default)]
     pub tree_revision: u32,
+    /// Whether only the one-grid-unit title bar is visible.
+    #[serde(default)]
+    pub minimized: bool,
 }
 
 /// Shared custom HTML/JavaScript component state.
@@ -212,6 +222,9 @@ pub struct WsCustomWindow {
     /// Whether preview renders `url` rather than the HTML/JavaScript source.
     #[serde(default)]
     pub use_url: bool,
+    /// Whether only the one-grid-unit title bar is visible.
+    #[serde(default)]
+    pub minimized: bool,
 }
 
 /// A named page in the shared workspace.
@@ -314,9 +327,9 @@ pub enum WsTerminalSubscription {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum WsServer {
-    /// Initial message with user ID, session name, server version, and daemon
-    /// version.
-    Hello(Uid, String, String, String),
+    /// Initial message with user ID, session name, server, daemon, and
+    /// terminal-host versions.
+    Hello(Uid, String, String, String, String),
     /// Optional protocol capabilities understood by this server. Older Web
     /// clients safely ignore message fields they do not use.
     Capabilities(Vec<String>),
@@ -356,6 +369,8 @@ pub enum WsServer {
     FileResponse(String, u64, Bytes),
     /// Result of an authenticated daemon-owned lifecycle action.
     SystemActionResult(String, String, bool, String),
+    /// Transient custom-component click for non-triggering clients.
+    CustomClick(Uid, Sid, u32, u16, u16),
     /// Echo back a timestamp, for the the client's own latency measurement.
     Pong(u64),
     /// Alert the client of an application error.
@@ -373,6 +388,8 @@ pub enum WsClient {
     SetName(String),
     /// Send real-time information about the user's cursor.
     SetCursor(u32, Option<(i32, i32)>),
+    /// Announce a click inside a custom component without replaying it.
+    CustomClick(Sid, u32, u16, u16),
     /// Set the currently focused shell.
     SetFocus(Option<(Sid, u32)>),
     /// Create a new shell.

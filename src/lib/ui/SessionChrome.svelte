@@ -32,6 +32,7 @@
   export let settingsOpen: boolean;
   export let serverVersion: string;
   export let daemonVersion: string;
+  export let terminalHostVersion: string;
   export let systemActionsAvailable: boolean;
   export let systemActionPending: boolean;
   export let pages: WsPage[];
@@ -126,6 +127,7 @@
   open={settingsOpen}
   {serverVersion}
   {daemonVersion}
+  {terminalHostVersion}
   {hasWriteAccess}
   {systemActionsAvailable}
   {systemActionPending}

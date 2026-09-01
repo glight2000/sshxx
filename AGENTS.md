@@ -11,15 +11,29 @@ here.
   `docs/wiki/Architecture-and-State.md`: terminal host, daemon, server, and
   client. A feature must name its authority, persistence lifetime, and
   synchronization scope before adding state.
+- Keep the suite Release version in `release.json` separate from the client,
+  server, daemon, terminal-host, and internal core package versions. Bump only
+  the components whose implementation or compatibility contract changed; a
+  bundle Release must never force unchanged components to adopt its version. In
+  particular, do not bump terminal-host for Web, client, server, daemon,
+  packaging, or documentation-only work because activating a new host can
+  disconnect every hosted process.
 - Keep page identity on every shared canvas mutation. Browser-local view state,
   focus, menus, temporary full-screen state, and undo/redo must not leak into
   synchronized or daemon-persisted state.
+- Keep every page's canvas component instances mounted after session hydration.
+  Page switching is a browser-local visibility and transition change; it must
+  not recreate terminals, notes, file explorers, or custom components.
 - Extend existing protocol messages and versioned persistence formats
   compatibly. Any incompatible format change requires an explicit migration,
   tests for old data, and documentation in the same change.
 - Preserve the repository's current Svelte, Rust, protocol, styling, error, and
   test conventions. Do not introduce a parallel state system, UI framework, or
   service boundary without an explicit architecture decision.
+- Before changing an established lifecycle, state-ownership, synchronization,
+  persistence, architecture, or user-interaction contract, explain the reason
+  and impact and obtain explicit user confirmation. A bug fix is not implicit
+  approval for a product-design change.
 
 ## Module boundaries and loading
 

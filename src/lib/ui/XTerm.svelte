@@ -35,7 +35,6 @@
 
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import type { Terminal } from "@xterm/xterm";
-  import { Buffer } from "buffer";
   import { FolderIcon, SettingsIcon } from "svelte-feather-icons";
 
   import themes, { isThemeName, type ThemeName } from "./themes";
@@ -52,6 +51,7 @@
   import { splitTerminalTitle } from "$lib/terminalTitle";
   import { TypeAheadAddon } from "$lib/typeahead";
   import { installXtermMouseCoordinateAdapter } from "$lib/xtermMouseCoordinates";
+  import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
 
   /** Used to determine Cmd versus Ctrl keyboard shortcuts. */
   const isMac = browser && navigator.platform.startsWith("Mac");
@@ -66,6 +66,7 @@
       initialWorkingDirectoryHost: string;
     };
     toggleFullscreen: void;
+    minimized: boolean;
     openFiles: string;
     appearance: {
       title: string;
@@ -81,6 +82,7 @@
     navigateNote: CanvasRelationItem;
     unlinkNote: CanvasRelationItem;
     floatingChange: boolean;
+    rendererFailure: string;
   }>();
 
   const typeahead = new TypeAheadAddon();
@@ -95,6 +97,7 @@
   export let opacity = 80;
   export let hasWriteAccess: boolean | undefined;
   export let fullscreen = false;
+  export let minimized = false;
   export let linkedNotes: CanvasRelationItem[] = [];
   export let linkedHighlight = false;
   export let paragraphDropActive = false;
@@ -108,6 +111,7 @@
   let webglContextLoss: { dispose(): void } | null = null;
   let webglRefreshTimer: number | null = null;
   let lastRefreshedZoom = canvasZoom;
+  let observedMinimized = minimized;
 
   let legacyTheme = $settings.theme;
   let previewTheme: ThemeName | null = null;
@@ -162,6 +166,19 @@
   let workingDirectoryHost = "";
   let initialWorkingDirectoryHost = "";
   const pendingExecuteTimers = new Set<number>();
+
+  function notifyReplayInputBlocked() {
+    makeToast(
+      {
+        id: "terminal-replay-input-blocked",
+        kind: "error",
+        message:
+          "Terminal output is still being restored. Input was not sent; try again when catch-up finishes.",
+      },
+      5000,
+    );
+  }
+
   function requestAttention() {
     if (suppressAttention === 0 && !focused) attention = true;
     return true;
@@ -218,6 +235,23 @@
     appearanceOpen = open;
     dispatch("floatingChange", open);
   }
+
+  function handleMinimizedChange(value: boolean) {
+    if (observedMinimized === value) return;
+    observedMinimized = value;
+    if (value) {
+      closeThemeMenu();
+      setAppearanceOpen(false);
+      term?.blur();
+      setFocused(false);
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      if (term && term.rows > 0) term.refresh(0, term.rows - 1);
+    });
+  }
+
+  $: handleMinimizedChange(minimized);
 
   function setFocused(isFocused: boolean) {
     if (isFocused && !focused) {
@@ -292,6 +326,12 @@
 
   function handlePaste(event: ClipboardEvent) {
     if (event.target instanceof HTMLInputElement) return;
+    if (suppressInput > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      notifyReplayInputBlocked();
+      return;
+    }
     const file = Array.from(event.clipboardData?.items ?? [])
       .find(
         (item) => item.kind === "file" && supportedImageTypes.has(item.type),
@@ -345,11 +385,13 @@
     onReplayStart() {
       suppressAttention += 1;
       suppressInput += 1;
+      if (term) term.options.disableStdin = true;
       typeahead.beginInputSuppression();
     },
     onReplayEnd() {
       suppressAttention = Math.max(0, suppressAttention - 1);
       suppressInput = Math.max(0, suppressInput - 1);
+      if (term && suppressInput === 0) term.options.disableStdin = false;
       typeahead.endInputSuppression();
     },
     onStateChange(state) {
@@ -358,6 +400,10 @@
     },
     onError(error) {
       console.error("Could not write terminal output.", error);
+    },
+    onWriteTimeout(error) {
+      console.error("Terminal renderer write timed out.", error);
+      dispatch("rendererFailure", error.message);
     },
   });
 
@@ -395,6 +441,10 @@
 
     // Keyboard shortcuts for natural text editing.
     term.attachCustomKeyEventHandler((event) => {
+      if (suppressInput > 0) {
+        if (event.type === "keydown") notifyReplayInputBlocked();
+        return false;
+      }
       if (event.key === "Enter" && event.shiftKey) {
         if (event.type === "keydown") {
           term?.clearSelection();
@@ -497,6 +547,10 @@
     term.resize(cols, rows);
     writeQueue.setSink((data, complete) => term!.write(data, complete));
     sendText = (data: string, execute = false) => {
+      if (suppressInput > 0) {
+        notifyReplayInputBlocked();
+        return;
+      }
       term?.paste(data);
       // Keep Enter out of the same PTY read burst as bracketed paste. TUIs
       // otherwise occasionally classify it as another pasted newline.
@@ -536,7 +590,10 @@
     });
     term.onBinary((data: string) => {
       if (suppressInput > 0) return;
-      dispatch("data", Buffer.from(data, "binary"));
+      dispatch(
+        "data",
+        Uint8Array.from(data, (character) => character.charCodeAt(0)),
+      );
     });
   });
 
@@ -559,12 +616,17 @@
   class:focused={focused || titleEditing}
   class:windowed={windowHeight > 0}
   class:fullscreen
+  class:minimized
   class:linked-highlight={linkedHighlight}
   class:paragraph-drop-active={paragraphDropActive}
   style:background={terminalTheme.background}
   style:opacity={opacity / 100}
   style:width={windowWidth > 0 ? `${windowWidth}px` : undefined}
-  style:height={windowHeight > 0 ? `${windowHeight}px` : undefined}
+  style:height={minimized
+    ? `${MINIMIZED_WINDOW_HEIGHT}px`
+    : windowHeight > 0
+      ? `${windowHeight}px`
+      : undefined}
   on:mousedown|capture={handleContainerMouseDown}
   on:pointerdown={(event) => event.stopPropagation()}
   on:paste|capture={handlePaste}
@@ -602,8 +664,17 @@
           on:mousedown={(event) => event.button === 0 && dispatch("close")}
         />
         <CircleButton
+          kind="yellow"
+          active={minimized}
+          disabled={!hasWriteAccess}
+          ariaLabel={minimized ? "Restore terminal" : "Minimize terminal"}
+          on:mousedown={(event) =>
+            event.button === 0 && dispatch("minimized", !minimized)}
+        />
+        <CircleButton
           kind="purple"
           active={fullscreen}
+          disabled={minimized}
           ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
           on:mousedown={(event) =>
             event.button === 0 && dispatch("toggleFullscreen")}
@@ -824,6 +895,15 @@
     min-height: 0;
     flex: 1;
     overflow: hidden;
+  }
+
+  .term-container.minimized > :not(.terminal-titlebar) {
+    display: none;
+  }
+
+  .term-container.minimized .terminal-titlebar {
+    height: 100%;
+    border-radius: 0.45rem;
   }
 
   .term-container.fullscreen {

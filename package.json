@@ -27,7 +27,6 @@
     "@zag-js/svelte": "^1.43.3",
     "@zag-js/tree-view": "^1.43.3",
     "argon2-browser": "^1.18.0",
-    "buffer": "^6.0.3",
     "cbor-x": "^1.6.5",
     "codemirror": "^6.0.2",
     "firacode": "^6.2.0",

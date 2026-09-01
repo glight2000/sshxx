@@ -1,6 +1,6 @@
 [package]
 name = "sshxx-terminal-host"
-version.workspace = true
+version = "0.10.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true

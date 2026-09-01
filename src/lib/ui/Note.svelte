@@ -2,8 +2,6 @@
   import { createEventDispatcher, tick } from "svelte";
   import {
     CopyIcon,
-    Maximize2Icon,
-    Minimize2Icon,
     Edit3Icon,
     FileTextIcon,
     PlayIcon,
@@ -12,8 +10,8 @@
     SettingsIcon,
     TerminalIcon,
     Trash2Icon,
-    XIcon,
   } from "svelte-feather-icons";
+  import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
   import type { WsNote } from "$lib/protocol";
   import { makeToast } from "$lib/toast";
   import {
@@ -33,6 +31,8 @@
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";
   import BackgroundPicker from "./BackgroundPicker.svelte";
+  import CircleButton from "./CircleButton.svelte";
+  import CircleButtons from "./CircleButtons.svelte";
   import InlineTitle from "./InlineTitle.svelte";
   import ResizeHandles, { type ResizeDirection } from "./ResizeHandles.svelte";
 
@@ -92,6 +92,7 @@
   let paragraphMenuLeft = 0;
   let paragraphMenuTop = 0;
   let paragraphMenuPositioned = false;
+  let observedMinimized = note.minimized;
   let paragraphs = noteParagraphs(note);
   let selectedParagraphIndexes: number[] = [];
   let selectionAnchor: number | null = null;
@@ -822,6 +823,17 @@
     settingsOpen = open;
     dispatch("floatingChange", open);
   }
+
+  function handleMinimizedChange(minimized: boolean) {
+    if (observedMinimized === minimized) return;
+    observedMinimized = minimized;
+    if (!minimized) return;
+    closeParagraphMenu();
+    setSettingsOpen(false);
+    if (editing) finishEditing();
+  }
+
+  $: handleMinimizedChange(note.minimized);
   function handleWindowKeyDown(event: KeyboardEvent) {
     if (event.key !== "Escape" || paragraphMenu === null) return;
     event.preventDefault();
@@ -1004,13 +1016,18 @@
   data-canvas-note-id={noteId}
   class="note-container relative overflow-visible rounded-lg border border-white/15 shadow-xl shadow-black/40"
   class:fullscreen
+  class:minimized={note.minimized}
   class:focused
   class:editing-active={focused && editing}
   class:linked-highlight={linkedHighlight}
   class:linked-from-terminal={linkedHighlight &&
     linkedHighlightSource === "terminal"}
   style:width={fullscreen ? "100%" : `${note.width}px`}
-  style:height={fullscreen ? "100%" : `${note.height}px`}
+  style:height={fullscreen
+    ? "100%"
+    : note.minimized
+      ? `${MINIMIZED_WINDOW_HEIGHT}px`
+      : `${note.height}px`}
   style:background={note.background}
   on:mousedown={() => {
     root.focus({ preventScroll: true });
@@ -1030,7 +1047,7 @@
   <header
     role="presentation"
     data-canvas-titlebar
-    class="flex h-9 cursor-default select-none items-center justify-between rounded-t-lg border-b border-white/10 bg-black/15 px-2"
+    class="note-titlebar flex h-9 cursor-default select-none items-center justify-between rounded-t-lg border-b border-white/10 bg-black/15 px-2"
     class:cursor-default={fullscreen}
     on:mousedown|stopPropagation={(event) => {
       dispatch("bringToFront");
@@ -1038,24 +1055,30 @@
         dispatch("startMove", event);
     }}
   >
-    <div class="inline-flex h-5 items-center gap-0.5">
-      <button
-        type="button"
-        class="circle-action red"
-        aria-label="Close note"
+    <CircleButtons>
+      <CircleButton
+        kind="red"
         disabled={!hasWriteAccess}
-        on:mousedown|stopPropagation={(event) =>
-          event.button === 0 && dispatch("close")}><XIcon /></button
-      >
-      <button
-        type="button"
-        class="circle-action purple"
-        aria-label={fullscreen ? "Exit full screen" : "Full screen"}
-        on:mousedown|stopPropagation={(event) =>
+        ariaLabel="Close note"
+        on:mousedown={(event) => event.button === 0 && dispatch("close")}
+      />
+      <CircleButton
+        kind="yellow"
+        active={note.minimized}
+        disabled={!hasWriteAccess}
+        ariaLabel={note.minimized ? "Restore note" : "Minimize note"}
+        on:mousedown={(event) =>
+          event.button === 0 && update({ minimized: !note.minimized })}
+      />
+      <CircleButton
+        kind="purple"
+        active={fullscreen}
+        disabled={note.minimized}
+        ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
+        on:mousedown={(event) =>
           event.button === 0 && dispatch("toggleFullscreen")}
-        >{#if fullscreen}<Minimize2Icon />{:else}<Maximize2Icon />{/if}</button
-      >
-    </div>
+      />
+    </CircleButtons>
     <div class="min-w-0 flex-[4] text-center">
       <div class="mx-auto max-w-48 text-xs font-medium text-zinc-200/75">
         <InlineTitle
@@ -1067,7 +1090,7 @@
         />
       </div>
       {#if focused}<span
-          class="block max-w-40 truncate text-[10px] text-zinc-300/65"
+          class="note-title-status block max-w-40 truncate text-[10px] text-zinc-300/65"
           >{editing
             ? "Editing paragraph"
             : selectedParagraphIndexes.length > 1
@@ -1075,7 +1098,7 @@
               : "Selected"}</span
         >
       {:else if editingBy !== null && editingBy !== userId}<span
-          class="block max-w-36 truncate text-[10px] text-zinc-300/60"
+          class="note-title-status block max-w-36 truncate text-[10px] text-zinc-300/60"
           >{editingName || `User ${editingBy}`} is editing</span
         >{/if}
     </div>
@@ -1279,7 +1302,7 @@
     />
   </footer>
   <ResizeHandles
-    disabled={!hasWriteAccess || fullscreen}
+    disabled={!hasWriteAccess || note.minimized || fullscreen}
     on:start={(event) => dispatch("startResize", event.detail)}
   />
 </article>
@@ -1299,6 +1322,16 @@
   .note-container {
     @apply flex flex-col;
   }
+  .note-container.minimized > :not(.note-titlebar):not(.panel) {
+    display: none;
+  }
+  .note-container.minimized .note-titlebar {
+    height: 100%;
+    border-radius: 0.45rem;
+  }
+  .note-container.minimized .note-title-status {
+    display: none;
+  }
   .note-container.linked-highlight {
     border-color: rgb(125 211 252 / 80%);
     animation: linked-note-pulse 1.8s ease-in-out infinite;
@@ -1310,19 +1343,6 @@
   .note-container.fullscreen {
     display: flex;
     flex-direction: column;
-  }
-  .circle-action {
-    @apply inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md p-0 disabled:opacity-40;
-  }
-  .circle-action :global(svg) {
-    @apply h-3.5 w-3.5 rounded-full border p-[2px];
-    stroke-width: 2.5;
-  }
-  .circle-action.red :global(svg) {
-    @apply border-rose-300/50 bg-rose-400 text-rose-950;
-  }
-  .circle-action.purple :global(svg) {
-    @apply border-violet-300/50 bg-violet-400 text-violet-950;
   }
   .paragraph-input {
     @apply block min-h-7 w-full resize-none overflow-hidden bg-transparent px-2 py-1 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-300/40;

@@ -8,11 +8,16 @@ import {
 import {
   GRID_EDGE_GAP,
   GRID_SIZE,
+  MINIMIZED_WINDOW_HEIGHT,
   gridAlignedRect,
   gridLeadingEdge,
   gridSpanSize,
   gridTrailingEdge,
 } from "../src/lib/grid.ts";
+
+test("minimized canvas windows occupy exactly one grid unit", () => {
+  assert.equal(MINIMIZED_WINDOW_HEIGHT, GRID_SIZE);
+});
 
 test("leading and trailing anchors use exact one-tenth grid offsets", () => {
   const rawLeading = 33;

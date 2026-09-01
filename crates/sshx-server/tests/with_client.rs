@@ -40,6 +40,7 @@ async fn test_custom_component_sync_validation_and_page_move() -> Result<()> {
     component.show_preview = true;
     component.url = "https://status.example.test/dashboard".into();
     component.use_url = true;
+    component.minimized = true;
     writer
         .send(WsClient::UpdateCustomWindow(
             Sid(1),
@@ -63,7 +64,7 @@ async fn test_custom_component_sync_validation_and_page_move() -> Result<()> {
         .await;
     writer.flush().await;
     viewer.flush().await;
-    let moved = viewer.custom_windows.get(&Sid(1)).unwrap();
+    let moved = viewer.custom_windows.get(&Sid(1)).unwrap().clone();
     assert_eq!((moved.page_id, moved.x, moved.y), (target_page, 360, 480));
     assert!(
         server
@@ -82,6 +83,15 @@ async fn test_custom_component_sync_validation_and_page_move() -> Result<()> {
             .workspace_state()
             .custom_windows[0]
             .use_url
+    );
+    assert!(
+        server
+            .state()
+            .lookup(&name)
+            .unwrap()
+            .workspace_state()
+            .custom_windows[0]
+            .minimized
     );
     assert_eq!(
         server
@@ -103,6 +113,24 @@ async fn test_custom_component_sync_validation_and_page_move() -> Result<()> {
             .source,
         component.source
     );
+
+    writer
+        .send(WsClient::CustomClick(Sid(1), target_page, 320, 240))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert_eq!(
+        viewer.custom_clicks.last(),
+        Some(&(writer.user_id, Sid(1), target_page, 320, 240))
+    );
+
+    let click_errors = writer.errors.len();
+    time::sleep(Duration::from_millis(50)).await;
+    writer
+        .send(WsClient::CustomClick(Sid(1), target_page, 721, 240))
+        .await;
+    writer.flush().await;
+    assert_eq!(writer.errors.len(), click_errors + 1);
 
     let errors = writer.errors.len();
     let mut invalid = moved.clone();
@@ -569,6 +597,19 @@ async fn test_pages_and_live_note_editing() -> Result<()> {
     assert_eq!(viewer.shells.get(&Sid(1)).unwrap().page_id, page_id);
     assert_eq!(viewer.notes.get(&Sid(2)).unwrap().page_id, page_id);
 
+    let mut minimized_shell = writer.shells.get(&Sid(1)).unwrap().clone();
+    minimized_shell.minimized = true;
+    writer
+        .send(WsClient::Move(
+            Sid(1),
+            page_id,
+            Some(minimized_shell.clone()),
+        ))
+        .await;
+    writer.flush().await;
+    viewer.flush().await;
+    assert_eq!(viewer.shells.get(&Sid(1)), Some(&minimized_shell));
+
     writer
         .send(WsClient::CreateFileWindow(
             Sid(1),
@@ -596,6 +637,7 @@ async fn test_pages_and_live_note_editing() -> Result<()> {
     file_window.editor_stream = 1 << 63;
     file_window.editor_data = b"encrypted editor buffer".as_slice().into();
     file_window.editor_dirty = true;
+    file_window.minimized = true;
     writer
         .send(WsClient::UpdateFileWindow(
             Sid(3),
@@ -654,6 +696,7 @@ async fn test_pages_and_live_note_editing() -> Result<()> {
     linked_note.linked_shell_ids = vec![Sid(1)];
     linked_note.linked_note_ids = vec![Sid(4)];
     linked_note.linked_file_window_ids = vec![Sid(3)];
+    linked_note.minimized = true;
     writer
         .send(WsClient::UpdateNote(
             Sid(2),
@@ -702,17 +745,20 @@ async fn test_pages_and_live_note_editing() -> Result<()> {
     let workspace = server.state().lookup(&name).unwrap().workspace_state();
     assert_eq!(workspace.pages.last().unwrap().name, "Review");
     assert_eq!(workspace.shells[0].page_id, page_id);
+    assert!(workspace.shells[0].minimized);
     let workspace_note = workspace.notes.iter().find(|note| note.id == 2).unwrap();
     assert_eq!(workspace_note.page_id, page_id);
     assert_eq!(workspace_note.paragraphs, linked_note.paragraphs);
     assert_eq!(workspace_note.linked_shell_ids, [1]);
     assert_eq!(workspace_note.linked_note_ids, [4]);
     assert_eq!(workspace_note.linked_file_window_ids, [3]);
+    assert!(workspace_note.minimized);
     assert_eq!(workspace.file_windows[0].shell_id, 1);
     assert_eq!(workspace.file_windows[0].x, 240);
     assert_eq!(workspace.file_windows[0].current_path, "/tmp/project");
     assert_eq!(workspace.file_windows[0].tree_scroll_top, 128);
     assert!(workspace.file_windows[0].editor_dirty);
+    assert!(workspace.file_windows[0].minimized);
 
     writer
         .send(WsClient::SetNoteEditing(Sid(2), page_id, false))

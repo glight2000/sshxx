@@ -21,6 +21,10 @@ test("waits for each bounded renderer write before scheduling the next", async (
       return scheduled.length;
     },
     cancel() {},
+    scheduleTimeout() {
+      return 1;
+    },
+    cancelTimeout() {},
     onStateChange(state) {
       states.push(state);
     },
@@ -66,6 +70,10 @@ test("keeps replay suppression active for a complete logical write", async () =>
       return scheduled.length;
     },
     cancel() {},
+    scheduleTimeout() {
+      return 1;
+    },
+    cancelTimeout() {},
     onReplayStart: () => events.push("start"),
     onReplayEnd: () => events.push("end"),
   });
@@ -79,4 +87,46 @@ test("keeps replay suppression active for a complete logical write", async () =>
   writes[1].complete();
   await completion;
   assert.deepEqual(events, ["start", "end"]);
+});
+
+test("times out a stalled renderer write and releases replay suppression", async () => {
+  const writes = [];
+  const events = [];
+  const errors = [];
+  let timeoutCallback;
+  let clearedTimeout = null;
+  const queue = new TerminalWriteQueue({
+    chunkCharacters: 4,
+    writeTimeoutMs: 25,
+    scheduleTimeout(callback, timeoutMs) {
+      assert.equal(timeoutMs, 25);
+      timeoutCallback = callback;
+      return 7;
+    },
+    cancelTimeout(handle) {
+      clearedTimeout = handle;
+    },
+    onReplayStart: () => events.push("start"),
+    onReplayEnd: () => events.push("end"),
+    onWriteTimeout: (error) => errors.push(error),
+  });
+  queue.setSink((data, complete) => writes.push({ data, complete }));
+
+  const completion = queue.write("abcdefgh", true);
+  assert.deepEqual(events, ["start"]);
+  assert.equal(writes.length, 1);
+  timeoutCallback();
+  await completion;
+
+  assert.deepEqual(events, ["start", "end"]);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].name, "TerminalWriteTimeoutError");
+  assert.equal(errors[0].chunkCharacters, 4);
+  assert.equal(clearedTimeout, null);
+
+  // The failed sink remains quarantined until its owning terminal component
+  // is remounted. A late xterm callback must not restart the old queue.
+  writes[0].complete();
+  await queue.write("ignored after failure");
+  assert.equal(writes.length, 1);
 });

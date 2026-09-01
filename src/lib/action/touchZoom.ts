@@ -117,8 +117,9 @@ export class TouchZoom {
   #dragPanning = false;
   #moveFrame: number | null = null;
   #pendingMoveIsManual = false;
+  #pendingMovePreservesFocus = false;
 
-  #callbacks = new Set<(manual: boolean) => void>();
+  #callbacks = new Set<(manual: boolean, preservesFocus: boolean) => void>();
 
   isPinching = false;
   center: number[] = [0, 0];
@@ -249,7 +250,6 @@ export class TouchZoom {
 
     event.preventDefault();
     event.stopPropagation();
-    window.getSelection()?.removeAllRanges();
     this.#middlePointerId = event.pointerId;
     this.#middleLastPoint = [event.clientX, event.clientY];
     this.#node.classList.add("canvas-middle-panning");
@@ -271,7 +271,7 @@ export class TouchZoom {
     if (vectorsEqual(delta, [0, 0])) return;
 
     this.center = subtractVector(this.center, divideVector(delta, this.zoom));
-    this.#moved();
+    this.#moved(true, true);
   };
 
   #handleMiddlePointerEnd = (event: PointerEvent) => {
@@ -367,7 +367,9 @@ export class TouchZoom {
     return this.#canvasPanButton() === 2 && this.#secondaryPointerId !== null;
   }
 
-  onMove(callback: (manual: boolean) => void): () => void {
+  onMove(
+    callback: (manual: boolean, preservesFocus: boolean) => void,
+  ): () => void {
     this.#callbacks.add(callback);
     return () => this.#callbacks.delete(callback);
   }
@@ -410,14 +412,18 @@ export class TouchZoom {
     this.#moved(false);
   }
 
-  #moved(manual = true) {
+  #moved(manual = true, preservesFocus = false) {
     this.#pendingMoveIsManual ||= manual;
+    this.#pendingMovePreservesFocus ||= preservesFocus;
     if (this.#moveFrame !== null) return;
     this.#moveFrame = requestAnimationFrame(() => {
       this.#moveFrame = null;
       const isManual = this.#pendingMoveIsManual;
+      const shouldPreserveFocus = this.#pendingMovePreservesFocus;
       this.#pendingMoveIsManual = false;
-      for (const callback of this.#callbacks) callback(isManual);
+      this.#pendingMovePreservesFocus = false;
+      for (const callback of this.#callbacks)
+        callback(isManual, shouldPreserveFocus);
     });
   }
 
@@ -453,8 +459,9 @@ export class TouchZoom {
 
     const [x, y, z] = normalizeWheel(e);
 
-    // Modifier+scroll always zooms. Plain scrolling can also zoom when the
-    // owning canvas has no active interactive item.
+    // Modifier+scroll always zooms. Plain scrolling follows the owning
+    // canvas policy; interactive descendants keep their own wheel events by
+    // stopping propagation or through the scrollable-content guard above.
     if (
       (e.altKey || e.ctrlKey || e.metaKey || this.#shouldZoomWheel()) &&
       e.buttons === 0
@@ -648,6 +655,7 @@ export class TouchZoom {
       if (this.#moveFrame !== null) cancelAnimationFrame(this.#moveFrame);
       this.#moveFrame = null;
       this.#pendingMoveIsManual = false;
+      this.#pendingMovePreservesFocus = false;
 
       this.#gesture.destroy();
       this.#node = null as any;

@@ -4,7 +4,6 @@ default-members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.10.0"
 authors = ["sshxx contributors"]
 license = "MIT"
 description = "A self-hosted, persistent, collaborative terminal."

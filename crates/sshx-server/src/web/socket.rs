@@ -28,9 +28,13 @@ const IMAGE_UPLOAD_CHUNK_BYTES: usize = 64 << 10;
 const IMAGE_UPLOAD_MAX_BYTES: u64 = 20 << 20;
 const FILE_REQUEST_MAX_BYTES: usize = 12 << 20;
 const TERMINAL_RENDER_ACK_CAPABILITY: &str = "terminal-render-ack-v1";
+// A 256 KiB server batch can become four 64 KiB browser writes. Keep this
+// above the client's per-write recovery deadline plus scheduling overhead.
+const TERMINAL_RENDER_ACK_TIMEOUT: Duration = Duration::from_secs(75);
 const TERMINAL_GENERATION_CAPABILITY: &str = "terminal-generation-v1";
 const SYSTEM_ACTION_CAPABILITY: &str = "system-action-v1";
 const CUSTOM_COMPONENT_CAPABILITY: &str = "custom-component-v1";
+const CUSTOM_CLICK_MIN_INTERVAL: Duration = Duration::from_millis(40);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalChunkProtocol {
@@ -40,6 +44,24 @@ enum TerminalChunkProtocol {
 }
 
 type TerminalChunks = (Sid, u32, u32, TerminalChunkProtocol, bool, u64, Vec<Bytes>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderAckWait {
+    Received,
+    Closed,
+    TimedOut,
+}
+
+async fn wait_for_render_ack(
+    receiver: &mut mpsc::Receiver<()>,
+    timeout: Duration,
+) -> RenderAckWait {
+    match tokio::time::timeout(timeout, receiver.recv()).await {
+        Ok(Some(())) => RenderAckWait::Received,
+        Ok(None) => RenderAckWait::Closed,
+        Err(_) => RenderAckWait::TimedOut,
+    }
+}
 
 fn resolve_terminal_subscription(
     session: &Session,
@@ -91,8 +113,17 @@ fn spawn_chunk_forwarder(
                 break;
             }
             if let Some(receiver) = rendered_rx.as_mut() {
-                if receiver.recv().await.is_none() {
-                    break;
+                match wait_for_render_ack(receiver, TERMINAL_RENDER_ACK_TIMEOUT).await {
+                    RenderAckWait::Received => {}
+                    RenderAckWait::Closed => break,
+                    RenderAckWait::TimedOut => {
+                        warn!(
+                            terminal_id = id.0,
+                            generation,
+                            "terminal renderer acknowledgement timed out; stopping the flow-controlled subscription"
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -246,6 +277,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
             metadata.name.clone(),
             env!("CARGO_PKG_VERSION").into(),
             metadata.daemon_version.clone(),
+            metadata.terminal_host_version.clone(),
         ),
     )
     .await?;
@@ -315,6 +347,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     // them, even though the daemon-to-server transport is session-scoped.
     let mut pending_file_requests = HashMap::<String, Instant>::new();
     let mut pending_system_actions = HashMap::<String, Instant>::new();
+    let mut last_custom_click = Instant::now() - CUSTOM_CLICK_MIN_INTERVAL;
     let (chunks_tx, mut chunks_rx) = mpsc::channel::<TerminalChunks>(1);
 
     let mut shells_stream = session.subscribe_shells();
@@ -404,6 +437,15 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     user.cursor = cursor;
                     user.page_id = page_id;
                 })?;
+            }
+            WsClient::CustomClick(id, page_id, x, y) => {
+                if last_custom_click.elapsed() < CUSTOM_CLICK_MIN_INTERVAL {
+                    continue;
+                }
+                last_custom_click = Instant::now();
+                if let Err(error) = session.send_custom_click(user_id, id, page_id, x, y) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
             }
             WsClient::SetFocus(focus) => {
                 if let Some((id, page_id)) = focus {
@@ -1773,11 +1815,37 @@ async fn proxy_redirect(socket: &mut WebSocket, host: &str, name: &str) -> Resul
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use sshx_core::Sid;
+    use tokio::sync::mpsc;
 
     use crate::web::protocol::{WsClient, WsTerminalSubscription};
 
-    use super::{same_ssh_host, valid_image_upload, valid_request_id};
+    use super::{
+        same_ssh_host, valid_image_upload, valid_request_id, wait_for_render_ack, RenderAckWait,
+    };
+
+    #[tokio::test]
+    async fn bounds_terminal_renderer_ack_waits() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender.send(()).await.expect("ack channel should be open");
+        assert_eq!(
+            wait_for_render_ack(&mut receiver, Duration::from_secs(1)).await,
+            RenderAckWait::Received
+        );
+
+        assert_eq!(
+            wait_for_render_ack(&mut receiver, Duration::from_millis(10)).await,
+            RenderAckWait::TimedOut
+        );
+
+        drop(sender);
+        assert_eq!(
+            wait_for_render_ack(&mut receiver, Duration::from_secs(1)).await,
+            RenderAckWait::Closed
+        );
+    }
 
     #[test]
     fn accepts_only_bounded_hex_system_request_ids() {

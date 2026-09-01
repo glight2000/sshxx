@@ -15,7 +15,7 @@
 - `Ctrl` + wheel always zooms the canvas and suppresses browser zoom. Wheel zoom
   uses the faster canvas step; it does not change browser page scale.
 - Plain wheel is routed to a hovered terminal, note, menu, tree, directory grid,
-  or editor. Outside windows, it zooms when no canvas item is active.
+  or editor. Outside windows, it always zooms the canvas.
 - When a component is full-screen, canvas pan/zoom is disabled. Clicking the
   visible space outside the component exits full-screen.
 - Double-click a page name in the bottom pager to rename it inline; there is no
@@ -42,7 +42,9 @@
   title-bar/chrome space and never goes below 240 by 160 canvas pixels.
 - With snapping enabled, the leading and trailing anchors use the same one-tenth
   grid inset. New items are created with matching aligned geometry.
-- Close and full-screen controls are at the left of the title bar. Contextual
+- Close, minimize/restore, and full-screen controls are at the left of the title
+  bar. Minimize/restore is shared and persisted; it preserves the expanded width
+  and height while showing a title bar exactly one grid unit high. Contextual
   actions and appearance settings are at the right.
 
 ## Terminal

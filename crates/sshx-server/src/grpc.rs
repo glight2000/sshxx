@@ -68,6 +68,7 @@ impl SshxService for GrpcServer {
             name: request.name,
             write_password_hash: request.write_password_hash,
             daemon_version: request.daemon_version,
+            terminal_host_version: request.terminal_host_version,
             daemon_capabilities: request.capabilities,
         };
         let session = Arc::new(Session::new(metadata));

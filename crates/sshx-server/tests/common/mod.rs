@@ -98,6 +98,7 @@ pub struct ClientSocket {
     pub user_id: Uid,
     pub server_version: String,
     pub daemon_version: String,
+    pub terminal_host_version: String,
     pub users: BTreeMap<Uid, WsUser>,
     pub shells: BTreeMap<Sid, WsWinsize>,
     pub notes: BTreeMap<Sid, WsNote>,
@@ -109,6 +110,7 @@ pub struct ClientSocket {
     pub chunk_replays: Vec<(Sid, bool)>,
     pub messages: Vec<(Uid, String, String)>,
     pub system_action_results: Vec<(String, String, bool, String)>,
+    pub custom_clicks: Vec<(Uid, Sid, u32, u16, u16)>,
     pub errors: Vec<String>,
 }
 
@@ -125,6 +127,7 @@ impl ClientSocket {
             user_id: Uid(0),
             server_version: String::new(),
             daemon_version: String::new(),
+            terminal_host_version: String::new(),
             users: BTreeMap::new(),
             shells: BTreeMap::new(),
             notes: BTreeMap::new(),
@@ -136,6 +139,7 @@ impl ClientSocket {
             chunk_replays: Vec::new(),
             messages: Vec::new(),
             system_action_results: Vec::new(),
+            custom_clicks: Vec::new(),
             errors: Vec::new(),
         };
         this.authenticate().await;
@@ -190,10 +194,17 @@ impl ClientSocket {
         let flush_task = async {
             while let Some(msg) = self.recv().await {
                 match msg {
-                    WsServer::Hello(user_id, _, server_version, daemon_version) => {
+                    WsServer::Hello(
+                        user_id,
+                        _,
+                        server_version,
+                        daemon_version,
+                        terminal_host_version,
+                    ) => {
                         self.user_id = user_id;
                         self.server_version = server_version;
                         self.daemon_version = daemon_version;
+                        self.terminal_host_version = terminal_host_version;
                     }
                     WsServer::Capabilities(_) => {}
                     WsServer::InvalidAuth() => panic!("invalid authentication"),
@@ -269,6 +280,9 @@ impl ClientSocket {
                     WsServer::SystemActionResult(request_id, action, ok, message) => {
                         self.system_action_results
                             .push((request_id, action, ok, message));
+                    }
+                    WsServer::CustomClick(user_id, id, page_id, x, y) => {
+                        self.custom_clicks.push((user_id, id, page_id, x, y));
                     }
                     WsServer::Pong(_) => {}
                     WsServer::Error(err) => self.errors.push(err),
