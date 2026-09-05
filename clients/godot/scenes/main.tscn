@@ -1,0 +1,139 @@
+[gd_scene format=3 uid="uid://bhvvcj73s34qi"]
+
+[ext_resource type="PackedScene" uid="uid://dj40xfuc5f7oo" path="res://scenes/spatial_panel.tscn" id="1_0wfyh"]
+[ext_resource type="Script" uid="uid://dmkg4fgietoax" path="res://scripts/main.gd" id="1_sugp2"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_jyhfs"]
+bg_color = Color(0.06666667, 0.07450981, 0.12941177, 0.93333334)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.23137255, 0.24313726, 0.36078432, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_tbgi4"]
+bg_color = Color(0.06666667, 0.07450981, 0.12941177, 0.8)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.23137255, 0.24313726, 0.36078432, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+
+[sub_resource type="Environment" id="Environment_tefeu"]
+background_mode = 1
+background_color = Color(0.03529412, 0.039215688, 0.078431375, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.46666667, 0.47058824, 0.654902, 1)
+ambient_light_energy = 0.55
+
+[node name="Main" type="Node3D" unique_id=1265403697]
+script = ExtResource("1_sugp2")
+
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=1197374970]
+transform = Transform3D(0.88294756, 0.31413782, -0.34888536, 0, 0.7431448, 0.6691306, 0.46947157, -0.59080726, 0.6561579, 0, 0, 0)
+light_energy = 1.2
+shadow_enabled = true
+
+[node name="CameraRig" type="Node3D" parent="." unique_id=783330735]
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig" unique_id=435318529]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 10)
+current = true
+
+[node name="Panels" type="Node3D" parent="." unique_id=1120984328]
+
+[node name="TerminalPanel" type="Node3D" parent="Panels" unique_id=325156284 instance=ExtResource("1_0wfyh")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.55, 1.62, 0)
+title_text = "Terminal"
+body_text = "$ ssh app@host
+sshxx terminal stream
+
+● attached to terminal-host"
+accent_color = Color(0.60784316, 0.54901963, 1, 1)
+
+[node name="NotePanel" type="Node3D" parent="Panels" unique_id=1909869511 instance=ExtResource("1_0wfyh")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.55, 1.62, -0.15)
+title_text = "Note"
+body_text = "Release checklist
+
+• Android spatial client
+• Windows portable client"
+accent_color = Color(0.7176471, 0.73333335, 0.78431374, 1)
+
+[node name="BrowserPanel" type="Node3D" parent="Panels" unique_id=2133214332 instance=ExtResource("1_0wfyh")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.62, 0.15)
+title_text = "Browser"
+body_text = "Native browser surface
+
+WebView / OSR integration is the next milestone."
+accent_color = Color(0.25882354, 0.84705883, 0.78431374, 1)
+
+[node name="Interface" type="CanvasLayer" parent="." unique_id=1597212962]
+
+[node name="TopBar" type="Panel" parent="Interface" unique_id=1464251242]
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 20.0
+offset_top = 18.0
+offset_right = -20.0
+offset_bottom = 76.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_jyhfs")
+
+[node name="Content" type="HBoxContainer" parent="Interface/TopBar" unique_id=178901861]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 18.0
+offset_top = 10.0
+offset_right = -12.0
+offset_bottom = -10.0
+theme_override_constants/separation = 16
+
+[node name="Brand" type="Label" parent="Interface/TopBar/Content" unique_id=788708414]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "XX  sshxx"
+
+[node name="Spacer" type="Control" parent="Interface/TopBar/Content" unique_id=1998393111]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Status" type="Label" parent="Interface/TopBar/Content" unique_id=671947422]
+modulate = Color(0.6627451, 0.68235296, 0.78039217, 1)
+layout_mode = 2
+text = "Native 3D prototype · protocol bridge pending"
+
+[node name="Reset" type="Button" parent="Interface/TopBar/Content" unique_id=1635877455]
+layout_mode = 2
+text = "Reset view"
+
+[node name="BottomBar" type="Panel" parent="Interface" unique_id=1331824373]
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 250.0
+offset_top = -58.0
+offset_right = -250.0
+offset_bottom = -18.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_tbgi4")
+
+[node name="Hint" type="Label" parent="Interface/BottomBar" unique_id=1588302353]
+modulate = Color(0.78039217, 0.7921569, 0.85882354, 1)
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+text = "Tap a panel to focus · drag empty space to pan · wheel to zoom"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=791502467]
+environment = SubResource("Environment_tefeu")

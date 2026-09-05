@@ -32,6 +32,7 @@ sshx-core.workspace = true
 sshxx-terminal-host.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+tempfile = "3.27.0"
 tonic.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -46,4 +47,3 @@ conpty = "0.7.0"
 
 [dev-dependencies]
 sshxx-terminal-host = { workspace = true, features = ["host"] }
-tempfile = "3.27.0"

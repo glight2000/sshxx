@@ -12,9 +12,12 @@ export function isUpstreamSshxUrl(url: URL): boolean {
   );
 }
 
-/** Returns whether the frontend is running inside a Tauri webview. */
+/** Returns whether the frontend is running inside a packaged desktop shell. */
 export function isNativeApp(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return (
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "sshxxDesktop" in window)
+  );
 }
 
 /**

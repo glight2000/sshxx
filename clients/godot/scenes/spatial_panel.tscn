@@ -1,0 +1,26 @@
+[gd_scene format=3 uid="uid://dj40xfuc5f7oo"]
+
+[ext_resource type="Script" path="res://scripts/spatial_panel.gd" id="1_ei745"]
+
+[node name="SpatialPanel" type="Node3D" unique_id=325156284]
+script = ExtResource("1_ei745")
+
+[node name="Surface" type="CSGBox3D" parent="." unique_id=317991989]
+use_collision = true
+size = Vector3(4.6, 2.8, 0.12)
+
+[node name="Title" type="Label3D" parent="." unique_id=696398628]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.02, 0.08)
+text = "Panel"
+font_size = 48
+outline_size = 8
+horizontal_alignment = 0
+width = 800.0
+
+[node name="Body" type="Label3D" parent="." unique_id=140341684]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.12, 0.08)
+font_size = 31
+outline_size = 6
+horizontal_alignment = 0
+line_spacing = 8.0
+width = 800.0

@@ -118,7 +118,7 @@
     >
   {/if}
   {#if dirty}
-    <span class="text-xs text-amber-300">Unsaved</span>
+    <span class="text-xs text-[var(--surface-warning)]">Unsaved</span>
     <button
       class="save-button"
       disabled={!hasWriteAccess || loading}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { surfaceBackground, surfaceTone } from "./surfaceTheme";
   import { createEventDispatcher, tick } from "svelte";
   import {
     CopyIcon,
@@ -1014,7 +1015,8 @@
   tabindex="-1"
   data-canvas-note
   data-canvas-note-id={noteId}
-  class="note-container relative overflow-visible rounded-lg border border-white/15 shadow-xl shadow-black/40"
+  class="note-container theme-surface relative overflow-visible rounded-xl border"
+  data-surface-tone={surfaceTone(surfaceBackground(note.background, "#3f3f46"))}
   class:fullscreen
   class:minimized={note.minimized}
   class:focused
@@ -1022,13 +1024,15 @@
   class:linked-highlight={linkedHighlight}
   class:linked-from-terminal={linkedHighlight &&
     linkedHighlightSource === "terminal"}
+  class:linked-from-file={linkedHighlight && linkedHighlightSource === "file"}
   style:width={fullscreen ? "100%" : `${note.width}px`}
   style:height={fullscreen
     ? "100%"
     : note.minimized
       ? `${MINIMIZED_WINDOW_HEIGHT}px`
       : `${note.height}px`}
-  style:background={note.background}
+  style:background={surfaceBackground(note.background, "#3f3f46") ||
+    "var(--surface-note)"}
   on:mousedown={() => {
     root.focus({ preventScroll: true });
     dispatch("bringToFront");
@@ -1047,7 +1051,7 @@
   <header
     role="presentation"
     data-canvas-titlebar
-    class="note-titlebar flex h-9 cursor-default select-none items-center justify-between rounded-t-lg border-b border-white/10 bg-black/15 px-2"
+    class="note-titlebar flex h-9 cursor-default select-none items-center justify-between rounded-t-xl border-b px-2"
     class:cursor-default={fullscreen}
     on:mousedown|stopPropagation={(event) => {
       dispatch("bringToFront");
@@ -1089,15 +1093,7 @@
           on:change={(event) => update({ title: event.detail })}
         />
       </div>
-      {#if focused}<span
-          class="note-title-status block max-w-40 truncate text-[10px] text-zinc-300/65"
-          >{editing
-            ? "Editing paragraph"
-            : selectedParagraphIndexes.length > 1
-              ? `${selectedParagraphIndexes.length} paragraphs selected`
-              : "Selected"}</span
-        >
-      {:else if editingBy !== null && editingBy !== userId}<span
+      {#if !focused && editingBy !== null && editingBy !== userId}<span
           class="note-title-status block max-w-36 truncate text-[10px] text-zinc-300/60"
           >{editingName || `User ${editingBy}`} is editing</span
         >{/if}
@@ -1105,7 +1101,7 @@
     <button
       bind:this={settingsButton}
       type="button"
-      class="rounded p-1 text-zinc-200/70 hover:bg-white/10 hover:text-white"
+      class="ui-icon-button"
       aria-label="Note appearance"
       on:mousedown|stopPropagation={(event) =>
         event.button === 0 && setSettingsOpen(!settingsOpen)}
@@ -1121,7 +1117,8 @@
       on:mousedown|stopPropagation
     >
       <BackgroundPicker
-        value={note.background}
+        value={surfaceBackground(note.background, "#3f3f46")}
+        allowNone
         disabled={!hasWriteAccess}
         on:change={(event) => update({ background: event.detail })}
       />
@@ -1200,7 +1197,7 @@
           <div
             bind:this={paragraphMenuPanel}
             role="presentation"
-            class="paragraph-menu"
+            class="paragraph-menu panel"
             class:positioned={paragraphMenuPositioned}
             style:left={`${paragraphMenuLeft}px`}
             style:top={`${paragraphMenuTop}px`}
@@ -1309,18 +1306,16 @@
 
 <style lang="postcss">
   @reference "../../app.css";
-  .note-container.focused {
-    border-color: rgb(228 228 231 / 88%);
-  }
-  .note-container.editing-active {
-    border-color: rgb(186 230 253 / 92%);
-    box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
-  }
   .note-container.editing-active > header {
-    background: rgb(125 211 252 / 10%);
+    background: var(--surface-selection);
   }
   .note-container {
+    --canvas-state-color: var(--canvas-note-focus);
     @apply flex flex-col;
+  }
+  .note-titlebar {
+    border-color: var(--surface-border);
+    background: var(--surface-subtle);
   }
   .note-container.minimized > :not(.note-titlebar):not(.panel) {
     display: none;
@@ -1333,12 +1328,19 @@
     display: none;
   }
   .note-container.linked-highlight {
-    border-color: rgb(125 211 252 / 80%);
-    animation: linked-note-pulse 1.8s ease-in-out infinite;
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+    animation: canvas-state-pulse 1.8s ease-in-out infinite;
   }
-  .note-container.linked-highlight.linked-from-terminal {
-    border-color: rgb(129 140 248 / 50%);
-    animation-name: linked-note-from-terminal-pulse;
+  .note-container:where(.linked-from-terminal, .linked-from-file) {
+    --canvas-state-color: var(--canvas-focus);
+  }
+  .note-container.focused,
+  .note-container.editing-active {
+    --canvas-state-color: var(--canvas-note-focus);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+    animation: none;
   }
   .note-container.fullscreen {
     display: flex;
@@ -1352,7 +1354,8 @@
     user-select: text;
   }
   .note-editor.editing .paragraph-input:focus {
-    @apply rounded bg-white/[0.035];
+    @apply rounded;
+    background: var(--surface-subtle);
   }
   .note-editor.block-selecting .paragraph-input {
     cursor: crosshair;
@@ -1361,10 +1364,16 @@
     @apply absolute left-1.5 top-2 grid h-4 w-4 cursor-grab grid-cols-[repeat(2,2px)] grid-rows-[repeat(2,2px)] place-content-center gap-x-[1.5px] gap-y-[3px] rounded text-zinc-300 opacity-35 transition-opacity hover:bg-white/10 hover:text-zinc-100 hover:opacity-100 active:cursor-grabbing disabled:pointer-events-none;
   }
   .paragraph-row {
-    @apply mx-1 rounded-md border border-white/[0.055] bg-black/[0.06] transition-[border-color,background-color,opacity,transform] duration-150 hover:border-white/10 hover:bg-white/[0.035];
+    @apply mx-1 rounded-md border transition-[border-color,background-color,opacity,transform] duration-150;
+    border-color: var(--surface-subtle);
+    background: var(--surface-subtle);
+  }
+  .paragraph-row:hover {
+    border-color: var(--surface-border);
   }
   .paragraph-row.selected {
-    @apply border-sky-300/30 bg-sky-300/[0.07];
+    border-color: var(--surface-accent);
+    background: var(--surface-selection);
   }
   .paragraph-row.dragging {
     @apply scale-[0.99] opacity-45;
@@ -1376,7 +1385,8 @@
     @apply mt-1.5;
   }
   .paragraph-hint {
-    @apply pointer-events-none mx-3 mt-2 select-none text-[10px] text-zinc-300/35;
+    @apply pointer-events-none mx-3 mt-2 select-none text-[10px];
+    color: var(--surface-muted);
     user-select: none;
   }
   .paragraph-row:hover .paragraph-marker,
@@ -1387,7 +1397,9 @@
     @apply h-0.5 w-0.5 rounded-full bg-current;
   }
   .paragraph-marker.selected {
-    @apply bg-sky-300/15 text-sky-100 opacity-100;
+    @apply opacity-100;
+    background: var(--surface-selection);
+    color: var(--surface-accent);
   }
   .paragraph-send {
     @apply absolute right-1.5 top-1.5 z-10 inline-flex h-5 w-5 items-center justify-center rounded text-zinc-300 opacity-0 transition-[background-color,color,opacity] hover:bg-sky-300/15 hover:text-sky-100 focus-visible:bg-sky-300/15 focus-visible:text-sky-100 focus-visible:opacity-100 focus-visible:outline-none disabled:pointer-events-none;
@@ -1399,28 +1411,32 @@
   .paragraph-send :global(svg) {
     @apply h-3.5 w-3.5;
   }
+  .paragraph-send:hover,
+  .paragraph-send:focus-visible {
+    color: var(--surface-accent);
+    background: var(--surface-selection);
+  }
   .paragraph-menu {
     position: fixed;
     z-index: 1000;
     visibility: hidden;
     width: 15rem;
     overflow: hidden;
-    border: 1px solid rgb(63 63 70);
-    border-radius: 0.375rem;
-    background: rgb(24 24 27 / 98%);
+    border: 1px solid var(--surface-border);
+    border-radius: 0.75rem;
+    background: var(--app-surface-solid);
     padding: 0.25rem;
-    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 35%);
+    box-shadow: var(--popover-shadow);
   }
   .paragraph-menu.positioned {
     visibility: visible;
   }
   .paragraph-menu button {
     @apply flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs;
-    color: rgb(212 212 216);
+    color: var(--app-text);
   }
   .paragraph-menu button:hover {
-    background: rgb(39 39 42);
-    color: white;
+    background: var(--surface-hover);
   }
   .paragraph-menu button:disabled {
     @apply cursor-not-allowed opacity-35;
@@ -1450,27 +1466,9 @@
     @apply absolute -left-1 -top-[3px] h-2 w-2 rounded-full bg-sky-200;
   }
   .note-relations {
-    @apply flex h-9 shrink-0 items-center justify-end gap-2 rounded-b-lg border-t border-white/10 bg-black/15 px-2;
-  }
-  @keyframes linked-note-pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 4px rgb(125 211 252 / 18%);
-    }
-    50% {
-      box-shadow: 0 0 11px rgb(125 211 252 / 48%);
-    }
-  }
-  @keyframes linked-note-from-terminal-pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 2px rgb(129 140 248 / 6%);
-    }
-    50% {
-      box-shadow:
-        0 0 10px rgb(129 140 248 / 55%),
-        0 0 18px rgb(129 140 248 / 34%);
-    }
+    @apply flex h-9 shrink-0 items-center justify-end gap-2 rounded-b-xl border-t px-2;
+    border-color: var(--surface-border);
+    background: var(--surface-subtle);
   }
   @keyframes paragraph-settle {
     from {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher, tick } from "svelte";
-  import { PlusIcon } from "svelte-feather-icons";
+  import { PlusIcon, Trash2Icon } from "svelte-feather-icons";
 
   import type { WsPage } from "$lib/protocol";
 
@@ -13,11 +13,34 @@
     select: number;
     create: void;
     rename: { id: number; name: string };
+    delete: number;
   }>();
 
   let editingId: number | null = null;
   let draft = "";
   let renameInput: HTMLInputElement;
+  let contextPage: WsPage | null = null;
+  let menu: HTMLDivElement;
+  let menuX = 0;
+  let menuY = 0;
+
+  async function openContextMenu(page: WsPage, event: MouseEvent) {
+    contextPage = page;
+    menuX = event.clientX;
+    menuY = event.clientY;
+    await tick();
+    if (!menu) return;
+    const bounds = menu.getBoundingClientRect();
+    menuX = Math.max(8, Math.min(menuX, window.innerWidth - bounds.width - 8));
+    menuY = Math.max(
+      8,
+      Math.min(menuY, window.innerHeight - bounds.height - 8),
+    );
+    menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }
+
+  $: if (contextPage && !pages.some((page) => page.id === contextPage?.id))
+    contextPage = null;
 
   async function beginRename(page: WsPage) {
     if (!hasWriteAccess) return;
@@ -35,6 +58,17 @@
     editingId = null;
   }
 </script>
+
+<svelte:window
+  on:pointerdown|capture={(event) => {
+    if (event.target instanceof Node && !menu?.contains(event.target))
+      contextPage = null;
+  }}
+  on:keydown={(event) => {
+    if (event.key === "Escape") contextPage = null;
+  }}
+  on:resize={() => (contextPage = null)}
+/>
 
 <nav
   aria-label="Canvas pages"
@@ -70,6 +104,8 @@
             aria-current={page.id === activePageId ? "page" : undefined}
             on:click={() => dispatch("select", page.id)}
             on:dblclick={() => beginRename(page)}
+            on:contextmenu|preventDefault|stopPropagation={(event) =>
+              openContextMenu(page, event)}
           >
             {page.name}
           </button>
@@ -90,6 +126,39 @@
     <PlusIcon class="h-4 w-4" />
   </button>
 </nav>
+
+{#if contextPage}
+  <div
+    bind:this={menu}
+    class="panel fixed z-50 w-48 p-1.5"
+    role="menu"
+    tabindex="-1"
+    aria-label="Page actions"
+    style:left={`${menuX}px`}
+    style:top={`${menuY}px`}
+    on:contextmenu|preventDefault|stopPropagation
+    on:pointerdown|stopPropagation
+    on:mousedown|stopPropagation
+    on:wheel|stopPropagation
+  >
+    <div class="truncate px-2 py-1 text-xs text-zinc-400">
+      {contextPage.name}
+    </div>
+    <button
+      type="button"
+      role="menuitem"
+      class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm text-[var(--surface-danger)] hover:bg-zinc-800 disabled:opacity-40"
+      disabled={!hasWriteAccess || pages.length <= 1}
+      title={pages.length <= 1
+        ? "At least one page must remain"
+        : "Delete page"}
+      on:click={() => {
+        if (contextPage) dispatch("delete", contextPage.id);
+        contextPage = null;
+      }}><Trash2Icon class="h-4 w-4" />Delete page</button
+    >
+  </div>
+{/if}
 
 <style lang="postcss">
   @reference "../../app.css";

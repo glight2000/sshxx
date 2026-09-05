@@ -60,16 +60,19 @@
     @apply grid grid-cols-5 gap-1.5;
   }
   .preset {
-    @apply h-7 rounded-md border border-white/10 outline-none transition-transform hover:scale-105 hover:border-white/35 focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed;
+    @apply h-7 rounded-md border border-zinc-600/60 outline-none transition-transform hover:scale-105 hover:border-zinc-400 focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed;
   }
   .preset.selected {
-    @apply border-white/80 ring-2 ring-indigo-400/75 ring-offset-1 ring-offset-zinc-900;
+    @apply border-zinc-400 ring-2 ring-indigo-400/75 ring-offset-1 ring-offset-zinc-900;
   }
   .no-background {
     position: relative;
     overflow: hidden;
-    background: repeating-conic-gradient(#3f3f46 0 25%, #18181b 0 50%) 0 0 / 8px
-      8px;
+    background: repeating-conic-gradient(
+        var(--surface-border) 0 25%,
+        var(--surface-bg) 0 50%
+      )
+      0 0 / 8px 8px;
   }
   .no-background::after {
     content: "";

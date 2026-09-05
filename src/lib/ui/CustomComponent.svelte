@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { surfaceBackground, surfaceTone } from "./surfaceTheme";
   import { browser } from "$app/environment";
   import { createEventDispatcher, onDestroy } from "svelte";
   import {
@@ -271,14 +272,18 @@
   bind:this={root}
   role="presentation"
   aria-label={customWindow.title || "Custom component"}
-  class="custom-window flex overflow-visible rounded-xl border border-transparent shadow-lg shadow-black/20"
+  class="custom-window theme-surface flex overflow-visible rounded-xl border border-transparent"
+  data-surface-tone={surfaceTone(
+    surfaceBackground(customWindow.background, "#18181b"),
+  )}
   class:fullscreen
   class:minimized={customWindow.minimized}
   style:width={`${customWindow.width}px`}
   style:height={customWindow.minimized
     ? `${MINIMIZED_WINDOW_HEIGHT}px`
     : `${customWindow.height}px`}
-  style:background={customWindow.background || "#18181b"}
+  style:background={surfaceBackground(customWindow.background, "#18181b") ||
+    "var(--surface-bg)"}
   tabindex="-1"
   on:focusin={() => dispatch("focus")}
   on:focusout={(event) => {
@@ -376,7 +381,8 @@
           on:mousedown|stopPropagation
         >
           <BackgroundPicker
-            value={customWindow.background || "#18181b"}
+            value={surfaceBackground(customWindow.background, "#18181b")}
+            allowNone
             disabled={!hasWriteAccess}
             on:change={(event) =>
               dispatch("update", { background: event.detail })}
@@ -504,7 +510,7 @@
   @reference "../../app.css";
   .custom-window {
     @apply relative flex-col text-zinc-200;
-    --custom-window-border-color: rgb(63 63 70);
+    --custom-window-border-color: var(--surface-border);
   }
   .custom-window.fullscreen {
     @apply h-full w-full;
@@ -517,11 +523,9 @@
     border-bottom-color: transparent;
     border-radius: inherit;
   }
-  .custom-window:focus-within {
-    box-shadow: 0 0 0 1px rgb(129 140 248 / 0.45);
-  }
   .custom-window:focus-within > .custom-window-border {
-    border-color: rgb(129 140 248 / 0.95);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
   }
   .custom-window-border {
     position: absolute;
@@ -541,7 +545,10 @@
     @apply flex h-full min-h-0 flex-col bg-zinc-950;
   }
   .source-notice {
-    @apply shrink-0 border-b border-amber-700/30 bg-amber-950/35 px-3 py-2 text-xs leading-5 text-amber-100/80 select-none;
+    @apply shrink-0 border-b px-3 py-2 text-xs leading-5 select-none;
+    color: var(--surface-warning);
+    background: var(--surface-warning-bg);
+    border-color: color-mix(in srgb, var(--surface-warning) 20%, transparent);
   }
   .source-kind {
     @apply flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900 px-2 py-1.5;
@@ -568,9 +575,10 @@
     @apply text-xs leading-5 text-zinc-500;
   }
   .url-editor p.error {
-    @apply text-rose-300;
+    color: var(--surface-danger);
   }
   .preview-error {
-    @apply flex h-full w-full items-center justify-center bg-zinc-950 p-5 text-center text-sm text-rose-300;
+    @apply flex h-full w-full items-center justify-center bg-zinc-950 p-5 text-center text-sm;
+    color: var(--surface-danger);
   }
 </style>

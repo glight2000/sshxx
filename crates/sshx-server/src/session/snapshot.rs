@@ -28,6 +28,7 @@ const MAX_SNAPSHOT_SIZE: usize = 1 << 26; // 64 MiB
 impl Session {
     /// Snapshot the session, returning a compressed representation.
     pub fn snapshot(&self) -> Result<Vec<u8>> {
+        let pages = self.pages.borrow();
         let ids = self.counter.get_current_values();
         let winsizes: BTreeMap<Sid, WsWinsize> = self.source.borrow().iter().cloned().collect();
         let message = SerializedSession {
@@ -112,9 +113,7 @@ impl Session {
                     )
                 })
                 .collect(),
-            pages: self
-                .pages
-                .borrow()
+            pages: pages
                 .iter()
                 .map(|page| SerializedPage {
                     id: page.id,
@@ -410,6 +409,12 @@ impl Session {
         session.notes.send_replace(restored_notes);
         session.file_windows.send_replace(file_windows);
         session.custom_windows.send_replace(custom_windows);
+        *session.next_page_id.lock() = pages
+            .iter()
+            .map(|page| page.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         session.pages.send_replace(pages);
         session.restore_ssh_profiles(SshProfileCollection {
             format_version: SSH_PROFILE_FORMAT_VERSION,

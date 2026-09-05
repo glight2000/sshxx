@@ -266,6 +266,9 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
                     }
                 }
                 Ok(None) => {}
+                Err(_) if !session.page_exists(new_shell.page_id.max(1)) => {
+                    return send_msg(tx, ServerMessage::CloseShell(id.0)).await;
+                }
                 Err(err) => return send_err(tx, format!("add shell: {:?}", err)).await,
             }
         }

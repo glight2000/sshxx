@@ -361,6 +361,11 @@ pub enum WsServer {
     Chunks(WsTerminalChunks),
     /// Generation-aware terminal data chunks.
     ChunksGeneration(Sid, u32, u32, bool, u64, Vec<Bytes>),
+    /// Recoverable batch: shell, page, PTY generation, subscription token,
+    /// replay, byte sequence, starting chunk index, encrypted chunks.
+    TerminalBatch(Sid, u32, u32, u32, bool, u64, u64, Vec<Bytes>),
+    /// This viewer's subscription stopped waiting for a renderer acknowledgement.
+    TerminalStalled(Sid, u32, u32, u32),
     /// Get a chat message tuple `(uid, name, text)` from the room.
     Hear(Uid, String, String),
     /// Forward a latency measurement between the server and backend shell.
@@ -482,6 +487,8 @@ pub enum WsClient {
     CreatePage(String),
     /// Rename an existing canvas page.
     RenamePage(u32, String),
+    /// Delete a canvas page and close its components. At least one page remains.
+    DeletePage(u32),
     /// Create or update a reusable SSH connection profile.
     UpsertSshProfile(WsSshProfile),
     /// Delete a reusable SSH connection profile by stable ID.
@@ -502,6 +509,10 @@ pub enum WsClient {
     SubscribeGeneration(Sid, u32, u32, u64),
     /// Subscribe to a specific PTY generation with one rendered batch in flight.
     SubscribeFlowControlledGeneration(Sid, u32, u32, u64),
+    /// Generation-aware flow control with isolated recovery and a viewer token.
+    SubscribeRecoverable(Sid, u32, u32, u32, u64),
+    /// Shell, PTY generation, subscription token, next expected chunk index.
+    RenderedBatch(Sid, u32, u32, u64),
     /// Confirm that the latest flow-controlled batch reached the renderer.
     RenderedChunks(Sid),
     /// Send a a chat message to the room.

@@ -174,6 +174,17 @@ export type WsServer = {
     | [Sid, number, boolean, number, Uint8Array[]]
     | [Sid, number, number, boolean, number, Uint8Array[]];
   chunksGeneration?: [Sid, number, number, boolean, number, Uint8Array[]];
+  terminalBatch?: [
+    Sid,
+    number,
+    number,
+    number,
+    boolean,
+    number,
+    number,
+    Uint8Array[],
+  ];
+  terminalStalled?: [Sid, number, number, number];
   hear?: [Uid, string, string];
   shellLatency?: number | bigint;
   fileResponse?: [string, bigint, Uint8Array];
@@ -297,6 +308,7 @@ export type WsClient = {
   updateCustomWindow?: [Sid, number, WsCustomWindow | null];
   createPage?: string;
   renamePage?: [number, string];
+  deletePage?: number;
   upsertSshProfile?: WsSshProfile;
   deleteSshProfile?: string;
   data?: [Sid, number, Uint8Array, bigint];
@@ -318,6 +330,8 @@ export type WsClient = {
   subscribeGeneration?: [Sid, number, number, number];
   subscribeFlowControlledGeneration?: [Sid, number, number, number];
   renderedChunks?: Sid;
+  subscribeRecoverable?: [Sid, number, number, number, number];
+  renderedBatch?: [Sid, number, number, number];
   chat?: string;
   ping?: bigint;
 };

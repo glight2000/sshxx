@@ -63,7 +63,7 @@
 
 <div
   bind:this={menuElement}
-  class="context-menu"
+  class="context-menu panel"
   role="menu"
   tabindex="-1"
   aria-label={`Actions for ${entry.name}`}
@@ -154,22 +154,22 @@
 <style lang="postcss">
   @reference "../../app.css";
   .context-menu {
-    @apply absolute z-50 w-[210px] rounded-lg border border-zinc-700 bg-zinc-900/98 p-1.5 text-left shadow-xl shadow-black/60 backdrop-blur-md;
+    @apply absolute z-50 w-[210px] p-1.5 text-left;
   }
   .context-title {
     @apply truncate px-2 py-1.5 text-[11px] font-medium text-zinc-500;
   }
   .context-action {
-    @apply flex h-8 w-full items-center gap-2 rounded-md px-2 text-xs text-zinc-300 outline-none hover:bg-zinc-700 hover:text-white focus-visible:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-35;
+    @apply flex h-8 w-full items-center gap-2 rounded-md px-2 text-xs text-zinc-300 outline-none hover:bg-zinc-800 hover:text-zinc-100 focus-visible:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-35;
   }
   .context-action :global(svg) {
     @apply h-3.5 w-3.5 shrink-0;
   }
   .context-action.danger:not(:disabled) {
-    @apply text-red-300;
+    color: var(--surface-danger);
   }
   .context-action.danger:hover:not(:disabled) {
-    @apply bg-red-950/70;
+    background: color-mix(in srgb, var(--surface-danger) 12%, transparent);
   }
   .context-divider {
     @apply my-1 border-t border-zinc-700/80;

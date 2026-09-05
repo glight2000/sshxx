@@ -180,15 +180,9 @@ async fn execute_local(
             if content.len() > MAX_FILE_BYTES {
                 bail!("files larger than 8 MiB cannot be saved");
             }
-            tokio::fs::write(&path, &content).await?;
-            Ok(success(
-                request,
-                path,
-                None,
-                None,
-                None,
-                Some(content.len() as u64),
-            ))
+            let size = content.len() as u64;
+            crate::safe_file::write_local(&path, content).await?;
+            Ok(success(request, path, None, None, None, Some(size)))
         }
         FileOperation::CreateFile => {
             let mut options = tokio::fs::OpenOptions::new();
@@ -373,9 +367,7 @@ async fn execute_sftp(
             if content.len() > MAX_FILE_BYTES {
                 bail!("files larger than 8 MiB cannot be saved");
             }
-            let mut file = sftp.create(&canonical).await?;
-            file.write_all(&content).await?;
-            file.close().await?;
+            crate::safe_file::write_sftp(sftp, &canonical, &content).await?;
             Ok(success(
                 request,
                 canonical,
@@ -386,10 +378,12 @@ async fn execute_sftp(
             ))
         }
         FileOperation::CreateFile => {
-            if fs.metadata(&canonical).await.is_ok() {
-                bail!("the selected file already exists");
-            }
-            let file = sftp.create(&canonical).await?;
+            let file = sftp
+                .options()
+                .write(true)
+                .create_new(true)
+                .open(&canonical)
+                .await?;
             file.close().await?;
             Ok(success(request, canonical, None, None, None, Some(0)))
         }
@@ -612,6 +606,74 @@ fn success(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sftp_create_file_is_exclusive() -> Result<()> {
+        let executable = std::env::var_os("SSHXX_TEST_SFTP_SERVER")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/usr/lib/openssh/sftp-server"));
+        if !executable.is_file() {
+            eprintln!("SKIP: set SSHXX_TEST_SFTP_SERVER to run the SFTP integration test");
+            return Ok(());
+        }
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("exclusive.txt");
+        let mut child = Command::new(executable)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        let sftp = Sftp::new(
+            child.stdin.take().unwrap(),
+            child.stdout.take().unwrap(),
+            SftpOptions::new(),
+        )
+        .await?;
+        let create = request(FileOperation::CreateFile, &path, None);
+        let (first, second) =
+            tokio::join!(execute_sftp(&create, &sftp), execute_sftp(&create, &sftp));
+        assert_ne!(first.is_ok(), second.is_ok());
+        tokio::fs::write(&path, "keep existing contents").await?;
+        assert!(execute_sftp(&create, &sftp).await.is_err());
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await?,
+            "keep existing contents"
+        );
+        let save = request(FileOperation::Write, &path, Some("safely replaced"));
+        execute_sftp(&save, &sftp).await?;
+        assert_eq!(tokio::fs::read_to_string(&path).await?, "safely replaced");
+        let uploaded = directory.path().join("upload.txt");
+        execute_sftp(
+            &request(FileOperation::Write, &uploaded, Some("new file")),
+            &sftp,
+        )
+        .await?;
+        assert_eq!(tokio::fs::read_to_string(&uploaded).await?, "new file");
+        let link = directory.path().join("link.txt");
+        std::os::unix::fs::symlink(&path, &link)?;
+        execute_sftp(
+            &request(FileOperation::Write, &link, Some("through link")),
+            &sftp,
+        )
+        .await?;
+        assert!(tokio::fs::symlink_metadata(&link).await?.is_symlink());
+        assert_eq!(tokio::fs::read_to_string(&path).await?, "through link");
+        assert!(execute_sftp(
+            &request(FileOperation::Write, directory.path(), Some("invalid")),
+            &sftp
+        )
+        .await
+        .is_err());
+        assert!(!std::fs::read_dir(directory.path())?.any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".sshxx-save-")));
+        sftp.close().await?;
+        child.wait().await?;
+        Ok(())
+    }
 
     fn request(
         operation: FileOperation,

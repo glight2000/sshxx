@@ -146,6 +146,38 @@ session name; a random-name deployment necessarily receives a new URL.
 
 ### Deliberately local behavior
 
+- Page deletion is a shared, write-authorized workspace operation. Right-click a
+  page and choose **Delete page**, then confirm. Its terminals are terminated,
+  its notes/custom components/file windows are removed, and dangling note links
+  are cleared. As with closing a terminal, file windows tied to that terminal
+  also close even on another page. Unsaved edits are lost; files on disk are not
+  deleted. At least one page must remain. Viewers on the deleted page fall back
+  to a remaining page; viewers elsewhere keep their current page. Page creation
+  and cross-page moves are serialized against deletion at the page registry.
+- Application light/dark/system mode controls the shared UI chrome, menus,
+  editors, and default backgrounds of notes, file explorers, and custom
+  components. It is a viewer preference, not a workspace mutation. Explicit
+  component backgrounds remain shared; their text palette follows background
+  contrast. "Use theme background" restores the viewer-dependent appearance.
+  Legacy default colors (`#3f3f46`, `#111113`, `#18181b`, respectively) are
+  interpreted as theme defaults without rewriting saved workspaces. An old
+  explicit choice identical to its component's legacy default cannot be
+  distinguished from that default. Terminal ANSI palettes and embedded
+  third-party pages remain independent; settings menus always follow the
+  application mode. Canvas status colors follow application mode, not the custom
+  content palette: dark mode uses indigo for focus, neutral gray for note focus,
+  and gold for selection; light mode uses saturated blue, cyan, and orange,
+  respectively. Linked components use the source component's focus hue. Light
+  mode reserves a permanent 2px border on all four component types so changing
+  state never shifts their content. Both modes share a solid-color border and a
+  glow that fades outward from a solid-color core. Focus uses a steady glow;
+  linked components and selection share one breathing animation with different
+  durations (1.8s and 1.15s). Breathing changes the glow's extent and strength,
+  not window opacity or geometry. Reduced-motion mode keeps the steady glow.
+  States recolor the existing border (the custom component uses its permanent
+  iframe-safe border layer), never add a second status outline. Selection takes
+  precedence over focus/linked highlights. Default-opacity light-mode border
+  contrast is covered by `tests/canvasStateColors.test.mjs`.
 - Page switching is local, while every shared page mutation includes a page ID.
   After session hydration, every page's terminal, note, file-explorer, and
   custom-component instances remain mounted in that browser. Switching pages
@@ -237,7 +269,8 @@ Terminal output delivery uses capability-negotiated renderer backpressure.
 Compatible viewers receive at most 256 KiB per terminal batch; the server does
 not send that terminal's next batch until xterm's public write callback confirms
 that the current batch was rendered. The viewer further writes in 64 KiB chunks
-with an event-loop yield between chunks. Inactive-page terminals acknowledge
+with a timer-based event-loop yield between chunks, independent of animation
+frames that pause in hidden browser tabs. Inactive-page terminals acknowledge
 after their bounded browser history accepts the data. Older viewers retain the
 legacy subscription behavior, while batch size and current-page labeling remain
 safe on the server side.
@@ -246,10 +279,60 @@ The browser bounds each xterm write-callback wait to 15 seconds. A timeout
 quarantines that renderer, releases replay/input suppression, clears only that
 viewer's bounded terminal scrollback, and remounts the xterm instance; it never
 restarts or closes the PTY, SSH connection, or terminal-host process. The server
-independently bounds a renderer-acknowledgement wait to 75 seconds and stops the
-stalled flow-controlled forwarding task instead of retaining it forever. While
-retained output is replaying, keyboard, paste, and component-driven input are
-blocked with a visible retry message rather than being silently discarded.
+independently bounds a renderer-acknowledgement wait to 75 seconds. With the
+`terminal-recovery-v1` capability, it removes only that viewer's stalled
+terminal subscription and sends `terminalStalled`. The viewer waits for its
+bounded write queue to settle and subscribes again from the chunk checkpoint
+accepted into its browser history, using the terminal's current page and a fresh
+subscription token. Batch acknowledgements include the PTY generation, token,
+and exact next chunk index; old or duplicate acknowledgements cannot release a
+newer batch. Other terminals, file requests, viewers, and the underlying
+processes are not restarted. Terminal output follows the stable ID/generation
+across page moves; page identity still scopes shared layout mutations. Old
+clients that cannot negotiate recovery use connection-level reconnect after an
+ACK timeout; new clients fall back to the older subscription protocol when
+connected to an older server. While retained output is replaying, keyboard,
+paste, and component-driven input are blocked with a visible retry message
+rather than being silently discarded.
+
+### Filesystem save safety
+
+File saves and uploads stage complete contents in a randomly named sibling
+`.sshxx-save-*` file, then publish it without truncating the destination first.
+Local staging uses the existing `tempfile` dependency and is removed on ordinary
+failure or cancellation. Preparing a local save in a blocking worker cannot
+publish a file after its requesting future has been cancelled. Symbolic links
+are followed to their targets; local files with multiple hard links are rejected
+because replacing one name would silently leave the other names unchanged.
+
+Local Linux saves preserve owner/group, mode, and exposed extended attributes
+(including POSIX ACLs); macOS uses native metadata copying; Windows uses native
+[`ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+attribute/security merging without ignore-error flags. Its failure path retains
+recovery files and reports their locations, because a failed native replacement
+can already have renamed the original. Successful replacement removes the
+backup. An attribute copy failure aborts before publication. New local files are
+published exclusively and default to private permissions. Atomic replacement
+requires permission to write the containing directory as well as access to the
+original file. Detected concurrent changes abort the save, but this is not a
+filesystem transaction or a cross-process compare-and-swap guarantee.
+
+Remote saves preserve the owner/group and permissions exposed by SFTP and
+require OpenSSH atomic-replacement support for existing files, or exclusive
+hard-link publication for new files. Unsupported servers fail explicitly instead
+of falling back to truncation. SFTP v3 does not expose all ACLs, extended
+attributes, or hard-link counts: remote preservation of those properties is
+**not guaranteed**. Use native tools for remote files that depend on them.
+Extended-attribute merging on macOS and Windows still needs native-platform
+acceptance testing.
+
+Normal remote failures attempt staging-file cleanup. A daemon/SSH crash can
+leave a `.sshxx-save-*` sibling behind; no automatic sweep deletes such files. A
+network failure during the final rename can also lose the success response after
+the save committed: reload and verify before retrying. Atomic replacement
+prevents partially written destination contents; it does not promise universal
+power-loss durability on every remote filesystem. Changes to file contents
+retain the existing daemon authority and file-editor collaboration scope.
 
 The server cannot decrypt terminal contents, filesystem payloads, pasted image
 chunks, or active editor contents without the URL-fragment session key. It can

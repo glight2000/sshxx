@@ -26,11 +26,20 @@ const sharedRules = {
 
 export default [
   {
-    ignores: ["build/**", ".svelte-kit/**", "src-tauri/**", "target/**"],
+    ignores: [
+      "build/**",
+      ".svelte-kit/**",
+      "src-tauri/**",
+      "target/**",
+      "clients/electron/dist/**",
+      "clients/electron/node_modules/**",
+      "clients/godot/.godot/**",
+      "clients/godot/addons/**",
+    ],
   },
   js.configs.recommended,
   {
-    files: ["**/*.{js,ts}"],
+    files: ["**/*.{js,mjs,ts}"],
     languageOptions: {
       parser: tsParser,
       parserOptions: { ecmaVersion: "latest", sourceType: "module" },

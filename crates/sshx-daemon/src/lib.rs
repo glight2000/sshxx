@@ -10,6 +10,7 @@ pub mod controller;
 pub mod encrypt;
 mod file_browser;
 pub mod runner;
+mod safe_file;
 mod ssh_profiles;
 pub mod terminal;
 pub mod terminal_host;

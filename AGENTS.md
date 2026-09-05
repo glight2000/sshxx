@@ -30,6 +30,14 @@ here.
 - Preserve the repository's current Svelte, Rust, protocol, styling, error, and
   test conventions. Do not introduce a parallel state system, UI framework, or
   service boundary without an explicit architecture decision.
+- Treat the root Svelte application as the established client behavior and
+  protocol baseline. `src-tauri/`, `clients/electron/`, and `clients/godot/` are
+  alternative shells or native clients within the same client authority; they
+  must not silently change persistence, synchronization, or server trust
+  boundaries.
+- Keep proprietary or machine-local editor integrations out of Git and export
+  artifacts. In particular, Godot MCP Pro is a local development aid, not an
+  sshxx source or runtime dependency.
 - Before changing an established lifecycle, state-ownership, synchronization,
   persistence, architecture, or user-interaction contract, explain the reason
   and impact and obtain explicit user confirmation. A bug fix is not implicit

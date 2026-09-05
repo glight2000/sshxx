@@ -15,6 +15,11 @@ component material stay with the code they operate.
 
 ## Maintenance rules
 
+Experimental native client build notes live in
+[`clients/electron/README.md`](../clients/electron/README.md) and
+[`clients/godot/README.md`](../clients/godot/README.md). They describe
+prototypes, not supported replacements for the established Web client.
+
 - Keep the English and Chinese READMEs structurally equivalent. They summarize;
   they do not duplicate the full feature guide or architecture contract.
 - GitHub Wiki pages use descriptive `Title-Case.md` names. Add every page to

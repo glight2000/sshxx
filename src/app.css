@@ -1,6 +1,57 @@
 @import "tailwindcss/index.css";
 @config "../tailwind.config.cjs";
 
+/* Canvas status belongs to the viewer's UI mode, never a custom content palette. */
+:root {
+  --canvas-focus: #818cf8;
+  --canvas-note-focus: #e4e4e7;
+  --canvas-selected: #fef08a;
+  --canvas-marquee: #a1a1aa;
+}
+
+:root[data-color-mode="light"] {
+  --canvas-focus: #005cff;
+  --canvas-note-focus: #00798e;
+  --canvas-selected: #ba4900;
+  --canvas-marquee: #64748b;
+}
+
+/* Reserve the same real border in every state: no focus/selection layout jump.
+   One translucent pixel becomes too faint on the light canvas when zoomed out. */
+:root[data-color-mode="light"]
+  :is(.term-container, .note-container, .file-window, .custom-window-border) {
+  border-width: 2px;
+}
+
+/* One colored glow on the existing border, shared by every state and mode.
+   Define it on the border itself so its state color resolves locally. */
+:is(.term-container, .note-container, .file-window, .custom-window-border) {
+  --canvas-state-color: var(--canvas-focus);
+  --canvas-state-glow:
+    0 0 3px 1px var(--canvas-state-color),
+    0 0 10px color-mix(in srgb, var(--canvas-state-color) 55%, transparent);
+}
+
+@keyframes canvas-state-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 1px var(--canvas-state-color),
+      0 0 3px color-mix(in srgb, var(--canvas-state-color) 15%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 4px 1px var(--canvas-state-color),
+      0 0 14px color-mix(in srgb, var(--canvas-state-color) 65%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .linked-highlight {
+    animation: none !important;
+  }
+}
+
 .canvas-middle-panning,
 .canvas-middle-panning *,
 .canvas-secondary-panning,
@@ -25,22 +76,65 @@
 }
 
 @layer base {
-  :root {
-    --app-bg: #111111;
-    --app-text: #ffffff;
-    --app-surface-solid: #111111;
-    --control-bg: #18181b;
+  :root,
+  .theme-surface[data-surface-tone="dark"],
+  :root:not([data-color-mode="light"]) .panel {
+    --app-bg: #14161b;
+    --app-text: #e4e4e7;
+    --app-surface-solid: #202229;
+    --control-bg: #191b21;
     --control-text: #f4f4f5;
-    --canvas-grid-dot: #333333;
+    --canvas-grid-dot: #383b45;
+    --surface-bg: #202229;
+    --surface-note: #2a2d34;
+    --surface-border: #3a3d47;
+    --surface-subtle: rgb(255 255 255 / 6%);
+    --surface-hover: rgb(255 255 255 / 9%);
+    --surface-muted: #a1a1aa;
+    --surface-accent: #a5b4fc;
+    --surface-selection: rgb(129 140 248 / 17%);
+    --surface-danger: #fda4af;
+    --surface-success: #6ee7b7;
+    --surface-warning: #fcd58b;
+    --surface-warning-bg: #3a3022;
+    --surface-shadow: 0 3px 10px rgb(0 0 0 / 18%);
+    --popover-shadow: 0 8px 28px rgb(0 0 0 / 28%);
+    --color-zinc-50: #fafafa;
+    --color-zinc-100: #f4f4f5;
+    --color-zinc-200: #e4e4e7;
+    --color-zinc-300: #d4d4d8;
+    --color-zinc-400: #a1a1aa;
+    --color-zinc-500: #858590;
+    --color-zinc-600: #52525b;
+    --color-zinc-700: #3a3d47;
+    --color-zinc-800: #2d3038;
+    --color-zinc-900: #202229;
+    --color-zinc-950: #191b21;
   }
 
-  :root[data-color-mode="light"] {
-    --app-bg: #f4f4f5;
-    --app-text: #18181b;
+  :root[data-color-mode="light"],
+  .theme-surface[data-surface-tone="light"],
+  :root[data-color-mode="light"] .panel {
+    --app-bg: #eceef2;
+    --app-text: #242730;
     --app-surface-solid: #ffffff;
     --control-bg: #ffffff;
     --control-text: #18181b;
-    --canvas-grid-dot: #a1a1aa;
+    --canvas-grid-dot: #c1c6d0;
+    --surface-bg: #ffffff;
+    --surface-note: #f7f8fa;
+    --surface-border: #ced3dd;
+    --surface-subtle: rgb(24 32 48 / 5%);
+    --surface-hover: rgb(24 32 48 / 8%);
+    --surface-muted: #616775;
+    --surface-accent: #4f46b8;
+    --surface-selection: rgb(99 102 241 / 11%);
+    --surface-danger: #b4233c;
+    --surface-success: #087f5b;
+    --surface-warning: #805512;
+    --surface-warning-bg: #fff5df;
+    --surface-shadow: 0 3px 10px rgb(24 32 48 / 8%);
+    --popover-shadow: 0 8px 28px rgb(24 32 48 / 14%);
     --color-zinc-50: #09090b;
     --color-zinc-100: #18181b;
     --color-zinc-200: #27272a;
@@ -68,9 +162,13 @@
     color-scheme: light;
   }
 
-  /* Terminal and note palettes are intentionally independent from UI mode. */
-  .term-container,
-  .note-container {
+  button:focus-visible {
+    outline: 2px solid var(--surface-accent);
+    outline-offset: 2px;
+  }
+
+  /* Only terminal content keeps its independent ANSI palette. */
+  .term-container {
     --color-zinc-50: #fafafa;
     --color-zinc-100: #f4f4f5;
     --color-zinc-200: #e4e4e7;
@@ -87,6 +185,36 @@
 
 @layer components {
   .panel {
-    @apply border border-zinc-800 bg-zinc-900/90 backdrop-blur-sm rounded-xl pointer-events-auto;
+    @apply border rounded-xl pointer-events-auto;
+    background: var(--app-surface-solid);
+    color: var(--app-text);
+    border-color: var(--surface-border);
+    box-shadow: var(--popover-shadow);
+    color-scheme: inherit;
+  }
+  .theme-surface {
+    color: var(--app-text);
+    border-color: var(--surface-border);
+    box-shadow: var(--surface-shadow);
+  }
+  .theme-surface,
+  .panel {
+    scrollbar-width: thin;
+    scrollbar-color: var(--surface-border) transparent;
+  }
+  .ui-icon-button {
+    @apply inline-flex h-7 w-7 items-center justify-center rounded-md disabled:cursor-not-allowed disabled:opacity-35;
+    color: var(--surface-muted);
+    transition:
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+  .ui-icon-button:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--app-text);
+  }
+  .ui-icon-button:focus-visible {
+    outline: 2px solid var(--surface-accent);
+    outline-offset: 2px;
   }
 }

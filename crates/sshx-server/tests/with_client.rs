@@ -12,6 +12,53 @@ use crate::common::*;
 pub mod common;
 
 #[tokio::test]
+async fn test_delete_page_is_shared_and_requires_write_access() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, true).await?;
+    let name = controller.name().to_owned();
+    let key = controller.encryption_key().to_owned();
+    let password = controller
+        .write_url()
+        .unwrap()
+        .split(',')
+        .nth(1)
+        .unwrap()
+        .to_owned();
+    tokio::spawn(async move { controller.run().await });
+    let endpoint = server.ws_endpoint(&name);
+    let mut writer = ClientSocket::connect(&endpoint, &key, Some(&password)).await?;
+    let mut reader = ClientSocket::connect(&endpoint, &key, None).await?;
+    writer.send(WsClient::CreatePage("Disposable".into())).await;
+    writer.flush().await;
+    let page = writer.pages.last().unwrap().id;
+    writer.send(WsClient::Create(0, 0, page)).await;
+    writer.send(WsClient::CreateNote(0, 0, page)).await;
+    writer
+        .send(WsClient::CreateCustomWindow(0, 0, 640, 480, page))
+        .await;
+    writer.flush().await;
+    reader.flush().await;
+    reader.send(WsClient::DeletePage(page)).await;
+    reader.flush().await;
+    assert_eq!(reader.pages.len(), 2);
+    assert!(!reader.errors.is_empty());
+    writer.send(WsClient::DeletePage(page)).await;
+    writer.flush().await;
+    reader.flush().await;
+    assert_eq!(reader.pages.len(), 1);
+    assert_eq!(reader.pages, writer.pages);
+    assert!(reader.shells.is_empty());
+    assert!(reader.notes.is_empty());
+    assert!(reader.custom_windows.is_empty());
+    assert!(writer.errors.is_empty(), "{:?}", writer.errors);
+    writer.send(WsClient::DeletePage(1)).await;
+    writer.flush().await;
+    assert_eq!(writer.pages.len(), 1);
+    assert_eq!(writer.errors.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_custom_component_sync_validation_and_page_move() -> Result<()> {
     let server = TestServer::new().await;
     let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
@@ -478,6 +525,84 @@ async fn test_flow_control_waits_for_terminal_render_ack() -> Result<()> {
     }
     assert!(client.read(Sid(1)).ends_with("live"));
     assert_eq!(client.chunk_replays.last(), Some(&(Sid(1), false)));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "exercises the real 75-second renderer timeout; run explicitly for transport changes"]
+async fn test_recoverable_terminal_timeout_preserves_other_subscriptions() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
+    let name = controller.name().to_owned();
+    let key = controller.encryption_key().to_owned();
+    tokio::spawn(async move { controller.run().await });
+    let mut client = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
+    client.flush().await;
+    for _ in 0..2 {
+        client.send(WsClient::Create(0, 0, 1)).await;
+        client.flush().await;
+    }
+    let session = server.state().lookup(&name).context("missing session")?;
+    let encrypt = Encrypt::new(&key);
+    for id in [Sid(1), Sid(2)] {
+        session.add_data(
+            id,
+            encrypt
+                .segment(0x100000000 | id.0 as u64, 0, b"first")
+                .into(),
+            0,
+        )?;
+        client
+            .send(WsClient::SubscribeRecoverable(id, 1, 0, 1, 0))
+            .await;
+    }
+    client.flush().await;
+    client.send(WsClient::RenderedBatch(Sid(2), 0, 1, 1)).await;
+    // Neither an old protocol ACK nor a wrong token/checkpoint may release terminal 1.
+    client.send(WsClient::RenderedChunks(Sid(1))).await;
+    client.send(WsClient::RenderedBatch(Sid(1), 0, 0, 1)).await;
+    client
+        .send(WsClient::RenderedBatch(Sid(1), 0, 1, 999))
+        .await;
+    session.add_data(Sid(1), encrypt.segment(0x100000001, 5, b"next").into(), 5)?;
+    client.flush().await;
+    assert_eq!(client.read(Sid(1)), "first");
+    let user = client.user_id;
+    client
+        .send(WsClient::CreatePage("Recovery destination".into()))
+        .await;
+    client.flush().await;
+    let page = client.pages.last().unwrap().id;
+    client
+        .send(WsClient::MoveCanvasItems(
+            1,
+            page,
+            vec![(Sid(1), 120, 240)],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await;
+    client.flush().await;
+    tokio::time::sleep(std::time::Duration::from_secs(76)).await;
+    client.flush().await;
+    assert_eq!(client.terminal_stalls, [(Sid(1), page, 0, 1)]);
+    client
+        .send(WsClient::SubscribeRecoverable(Sid(1), page, 0, 2, 1))
+        .await;
+    client.flush().await;
+    assert_eq!(client.read(Sid(1)), "firstnext");
+    assert_eq!(client.terminal_batches.last(), Some(&(Sid(1), 0, 2, 2)));
+    client.send(WsClient::RenderedBatch(Sid(1), 0, 1, 2)).await;
+    session.add_data(Sid(1), encrypt.segment(0x100000001, 9, b"live").into(), 9)?;
+    client.flush().await;
+    assert_eq!(client.read(Sid(1)), "firstnext");
+    client.send(WsClient::RenderedBatch(Sid(1), 0, 2, 2)).await;
+    session.add_data(Sid(2), encrypt.segment(0x100000002, 5, b"live").into(), 5)?;
+    client.flush().await;
+    assert_eq!(client.read(Sid(1)), "firstnextlive");
+    assert_eq!(client.read(Sid(2)), "firstlive");
+    assert_eq!(client.user_id, user);
+    assert!(client.errors.is_empty());
     Ok(())
 }
 

@@ -242,7 +242,7 @@
           >
             <ChevronRightIcon class="h-3.5 w-3.5" />
           </span>
-          <FolderIcon class="h-4 w-4 shrink-0 text-amber-300/85" />
+          <FolderIcon class="h-4 w-4 shrink-0 text-[var(--surface-warning)]" />
           <span {...api.getBranchTextProps(nodeProps)} class="truncate"
             >{node.name}</span
           >
@@ -258,7 +258,11 @@
 <style lang="postcss">
   @reference "../../app.css";
   .tree-row {
-    @apply flex h-8 items-center gap-2 rounded px-2 text-sm text-zinc-300 outline-none hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 data-[selected]:bg-indigo-500/15 data-[selected]:text-indigo-100;
+    @apply flex h-8 items-center gap-2 rounded-md px-2 text-sm text-zinc-300 outline-none hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70;
+  }
+  .tree-row[data-selected] {
+    color: var(--surface-accent);
+    background: var(--surface-selection);
   }
   .branch-indicator {
     @apply inline-flex shrink-0 cursor-pointer rounded p-0.5 text-zinc-500 transition-transform hover:bg-zinc-700 hover:text-zinc-200 data-[state=open]:rotate-90;

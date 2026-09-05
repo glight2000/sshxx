@@ -1,0 +1,49 @@
+{
+  "name": "sshxx-electron-client",
+  "version": "0.1.0",
+  "description": "Portable Electron shell for the sshxx client",
+  "author": "sshxx contributors",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "build:web": "npm --prefix ../.. run build",
+    "dev": "npm run build:web && electron .",
+    "pack:win": "npm run build:web && electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "44.1.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "io.sshxx.electron-client",
+    "productName": "sshxx-client",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.mjs",
+      "preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../build",
+        "to": "web"
+      }
+    ],
+    "win": {
+      "icon": "../../src-tauri/icons/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "sshxx-client-electron-${version}-windows-${arch}.${ext}"
+    }
+  }
+}

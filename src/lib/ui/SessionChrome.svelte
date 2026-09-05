@@ -59,6 +59,7 @@
     selectPage: number;
     createPage: void;
     renamePage: { id: number; name: string };
+    deletePage: number;
   }>();
 </script>
 
@@ -146,6 +147,7 @@
   on:select={(event) => dispatch("selectPage", event.detail)}
   on:create={() => dispatch("createPage")}
   on:rename={(event) => dispatch("renamePage", event.detail)}
+  on:delete={(event) => dispatch("deletePage", event.detail)}
 />
 
 <div class="py-2">

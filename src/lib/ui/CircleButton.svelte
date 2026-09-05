@@ -45,7 +45,7 @@
   on:click
 >
   <span
-    class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border shadow-sm shadow-black/30 transition-colors {details[
+    class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border transition-colors {details[
       kind
     ].cls}"
   >

@@ -79,20 +79,20 @@
   @reference "../../app.css";
 
   .relation-strip {
-    @apply flex min-w-0 flex-row-reverse items-center gap-1 overflow-x-auto rounded-md border border-white/10 bg-black/25 px-1 py-0.5;
+    @apply flex min-w-0 flex-row-reverse items-center gap-1 overflow-x-auto rounded-md border border-zinc-700/50 bg-zinc-900/25 px-1 py-0.5;
     scrollbar-width: none;
   }
   .relation-strip::-webkit-scrollbar {
     display: none;
   }
   .relation-button {
-    @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-400 outline-none hover:bg-white/10 hover:text-zinc-100 focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:opacity-35;
+    @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-400 outline-none hover:bg-zinc-700/40 hover:text-zinc-100 focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:opacity-35;
   }
   .relation-button :global(svg) {
     @apply h-3.5 w-3.5;
   }
   .add-button.active {
-    @apply bg-indigo-400/20 text-indigo-200 ring-1 ring-indigo-300/60;
+    @apply bg-indigo-400/20 text-zinc-100 ring-1 ring-indigo-400/60;
     animation: relation-selecting 1.25s ease-in-out infinite;
   }
   .item-button {

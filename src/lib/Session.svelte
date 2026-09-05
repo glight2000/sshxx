@@ -17,6 +17,7 @@
     randomHex,
   } from "./fileRequests";
   import { createLock } from "./lock";
+  import { terminalSubscriptionMessage } from "./terminalSubscription";
   import { Srocket } from "./srocket";
   import { isNativeApp } from "./runtime";
   import type {
@@ -228,6 +229,7 @@
   let terminalHostVersion = "unknown";
   let terminalRenderFlowControl = false;
   let terminalGenerationProtocol = false;
+  let terminalRecoveryProtocol = false;
 
   function canvasItemFromTarget(target: EventTarget | null) {
     if (!(target instanceof Element)) return null;
@@ -688,6 +690,8 @@
   const fileWrappers: Record<number, HTMLDivElement> = {};
   const customWrappers: Record<number, HTMLDivElement> = {};
   const chunknums: Record<number, number> = {};
+  const terminalSubscriptionTokens: Record<number, number> = {};
+  let nextTerminalSubscriptionToken = 0;
   const locks: Record<number, any> = {};
   const terminalHistory = new TerminalHistory(2 * 1024 * 1024);
   const replayedWriters: Record<
@@ -803,8 +807,16 @@
     );
   }
 
-  async function writeTerminalData(id: number, data: string, replay: boolean) {
+  async function writeTerminalData(
+    id: number,
+    data: string,
+    replay: boolean,
+    nextChunk: number,
+  ) {
     appendTerminalHistory(id, data);
+    // The browser history owns the batch before xterm finishes. Preserve this
+    // checkpoint across a disconnect during the renderer callback wait.
+    chunknums[id] = nextChunk;
     const writer = writers[id];
     if (!writer) return;
     if (replayedWriters[id] !== writer) {
@@ -822,12 +834,16 @@
     replay: boolean,
     seqnum: number,
     chunks: Uint8Array[],
+    subscriptionToken?: number,
+    startChunk?: number,
   ) {
     if (
       !shells.some(
         ([shellId, shell]) =>
           shellId === id &&
-          shell.pageId === pageId &&
+          // Output follows stable terminal identity across page moves. Layout
+          // mutations still validate page identity at the server boundary.
+          (subscriptionToken !== undefined || shell.pageId === pageId) &&
           (generation === null || shell.generation === generation),
       )
     ) {
@@ -835,7 +851,18 @@
     }
     locks[id]?.(async () => {
       await tick();
-      chunknums[id] += chunks.length;
+      if (
+        subscriptionToken !== undefined &&
+        terminalSubscriptionTokens[id] !== subscriptionToken
+      )
+        return;
+      if (
+        generation !== null &&
+        !shells.some(
+          ([sid, shell]) => sid === id && shell.generation === generation,
+        )
+      )
+        return;
       const plaintextChunks: string[] = [];
       const decoder = new TextDecoder();
       for (const data of chunks) {
@@ -847,10 +874,87 @@
         seqnum += data.length;
         plaintextChunks.push(decoder.decode(buf));
       }
-      await writeTerminalData(id, plaintextChunks.join(""), replay);
+      if (
+        subscriptionToken !== undefined &&
+        terminalSubscriptionTokens[id] !== subscriptionToken
+      )
+        return;
+      if (
+        generation !== null &&
+        !shells.some(
+          ([sid, shell]) => sid === id && shell.generation === generation,
+        )
+      )
+        return;
+      await writeTerminalData(
+        id,
+        plaintextChunks.join(""),
+        replay,
+        (startChunk ?? chunknums[id]) + chunks.length,
+      );
+      if (
+        subscriptionToken !== undefined &&
+        terminalSubscriptionTokens[id] !== subscriptionToken
+      )
+        return;
+      if (subscriptionToken !== undefined && generation !== null) {
+        srocket?.send({
+          renderedBatch: [id, generation, subscriptionToken, chunknums[id]],
+        });
+        return;
+      }
       if (terminalRenderFlowControl) {
         srocket?.send({ renderedChunks: id });
       }
+    });
+  }
+
+  function subscribeTerminal(id: number, winsize: WsWinsize) {
+    chunknums[id] ??= 0;
+    locks[id] ??= createLock();
+    subscriptions.add(id);
+    const token = ++nextTerminalSubscriptionToken;
+    terminalSubscriptionTokens[id] = token;
+    srocket?.send(
+      terminalSubscriptionMessage(
+        id,
+        winsize.pageId ?? 1,
+        winsize.generation ?? 0,
+        chunknums[id],
+        token,
+        {
+          recovery: terminalRecoveryProtocol,
+          generation: terminalGenerationProtocol,
+          flowControl: terminalRenderFlowControl,
+        },
+      ),
+    );
+  }
+
+  function resumeStalledTerminal(
+    id: number,
+    generation: number,
+    token: number,
+  ) {
+    if (terminalSubscriptionTokens[id] !== token) return;
+    // Serialize behind the batch already received. The bounded write queue
+    // releases this lock even if xterm's callback never arrives.
+    locks[id]?.(async () => {
+      if (terminalSubscriptionTokens[id] !== token) return;
+      const shell = shells.find(
+        ([sid, state]) => sid === id && state.generation === generation,
+      )?.[1];
+      if (!shell || !srocket?.connected) return;
+      subscribeTerminal(id, shell);
+      makeToast(
+        {
+          id: `terminal-subscription-${id}`,
+          kind: "error",
+          message:
+            "Terminal output acknowledgement timed out. Resuming this terminal; its process and other components are unaffected.",
+        },
+        6000,
+      );
     });
   }
 
@@ -1417,6 +1521,9 @@
           exitReason = null;
           failureStage = null;
         } else if (message.capabilities) {
+          terminalRecoveryProtocol = message.capabilities.includes(
+            "terminal-recovery-v1",
+          );
           terminalRenderFlowControl = message.capabilities.includes(
             TERMINAL_RENDER_ACK_CAPABILITY,
           );
@@ -1435,6 +1542,22 @@
             "session",
           );
           srocket?.dispose();
+        } else if (message.terminalBatch) {
+          const [id, page, generation, token, replay, sequence, start, chunks] =
+            message.terminalBatch;
+          handleTerminalChunks(
+            id,
+            page,
+            generation,
+            replay,
+            sequence,
+            chunks,
+            token,
+            start,
+          );
+        } else if (message.terminalStalled) {
+          const [id, , generation, token] = message.terminalStalled;
+          resumeStalledTerminal(id, generation, token);
         } else if (message.chunks) {
           if (message.chunks.length === 5) {
             const [id, pageId, replay, seqnum, chunks] = message.chunks;
@@ -1481,6 +1604,7 @@
             if (liveShellIds.has(shellId)) continue;
             subscriptions.delete(shellId);
             delete chunknums[shellId];
+            delete terminalSubscriptionTokens[shellId];
             delete locks[shellId];
             delete replayedWriters[shellId];
             delete terminalRendererRevisions[shellId];
@@ -1518,35 +1642,7 @@
           }
           for (const [id, winsize] of message.shells) {
             if (!subscriptions.has(id)) {
-              chunknums[id] ??= 0;
-              locks[id] ??= createLock();
-              subscriptions.add(id);
-              const pageId = winsize.pageId ?? 1;
-              const generation = winsize.generation ?? 0;
-              const subscription: WsClient = terminalGenerationProtocol
-                ? terminalRenderFlowControl
-                  ? {
-                      subscribeFlowControlledGeneration: [
-                        id,
-                        pageId,
-                        generation,
-                        chunknums[id],
-                      ],
-                    }
-                  : {
-                      subscribeGeneration: [
-                        id,
-                        pageId,
-                        generation,
-                        chunknums[id],
-                      ],
-                    }
-                : terminalRenderFlowControl
-                  ? {
-                      subscribeFlowControlled: [id, pageId, chunknums[id]],
-                    }
-                  : { subscribe: [id, pageId, chunknums[id]] };
-              srocket?.send(subscription);
+              subscribeTerminal(id, winsize);
             }
           }
         } else if (message.notes) {
@@ -1722,12 +1818,15 @@
         sessionReady = false;
         userId = 0;
         subscriptions.clear();
+        for (const id of Object.keys(terminalSubscriptionTokens))
+          delete terminalSubscriptionTokens[Number(id)];
         users = [];
         noteEditors = {};
         serverLatencies = [];
         shellLatencies = [];
         terminalRenderFlowControl = false;
         terminalGenerationProtocol = false;
+        terminalRecoveryProtocol = false;
         systemActionsAvailable = false;
         customComponentsAvailable = false;
         fileRequests?.rejectAll(
@@ -3506,6 +3605,18 @@
       srocket?.send({
         renamePage: [event.detail.id, event.detail.name],
       })}
+    on:deletePage={(event) => {
+      const pageId = event.detail;
+      const page = pages.find((page) => page.id === pageId);
+      if (!hasWriteAccess || !page || pages.length <= 1) return;
+      if (
+        !window.confirm(
+          `Delete “${page.name}” and all its components? Running terminals will be closed, including their file browsers on other pages. Unsaved edits will be lost. Files on disk will not be deleted. This affects all viewers and cannot be undone.`,
+        )
+      )
+        return;
+      srocket?.send({ deletePage: pageId });
+    }}
   />
 
   <CanvasContextMenu
@@ -4456,19 +4567,37 @@
     z-index: 2;
     will-change: transform;
   }
-  :global([data-canvas-terminal].canvas-selected > .term-container),
-  :global([data-canvas-note-wrapper].canvas-selected > .note-container),
-  :global([data-canvas-file-window].canvas-selected > .file-window) {
-    border-color: rgb(254 240 138 / 1);
-    animation: canvas-selection-pulse 1.15s ease-in-out infinite;
+  :global([data-canvas-file-window].canvas-active > section.file-window) {
+    --canvas-state-color: var(--canvas-focus);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+    animation: none;
   }
   :global(
-    [data-canvas-custom-window].canvas-selected
+    [data-canvas-custom-window].canvas-active
       > .custom-window
       > .custom-window-border
   ) {
-    border-color: rgb(254 240 138 / 1);
-    animation: canvas-selection-pulse 1.15s ease-in-out infinite;
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+  }
+  :global([data-canvas-terminal].canvas-selected > div.term-container),
+  :global([data-canvas-note-wrapper].canvas-selected > article.note-container),
+  :global([data-canvas-file-window].canvas-selected > section.file-window) {
+    --canvas-state-color: var(--canvas-selected);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+    animation: canvas-state-pulse 1.15s ease-in-out infinite;
+  }
+  :global(
+    [data-canvas-custom-window].canvas-selected
+      > section.custom-window
+      > div.custom-window-border
+  ) {
+    --canvas-state-color: var(--canvas-selected);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+    animation: canvas-state-pulse 1.15s ease-in-out infinite;
   }
   :global([data-canvas-terminal] > .term-container),
   :global([data-canvas-note-wrapper] > .note-container),
@@ -4497,7 +4626,7 @@
     will-change: transform, opacity;
   }
   .selection-marquee {
-    border: 1px solid rgb(212 212 216 / 0.72);
+    border: 1px solid var(--canvas-marquee);
     border-radius: 0;
     background: rgb(113 113 122 / 0.12);
   }
@@ -4512,18 +4641,6 @@
   }
   :global(.canvas-floating) {
     z-index: 45 !important;
-  }
-
-  @keyframes canvas-selection-pulse {
-    0%,
-    100% {
-      border-color: rgb(253 224 71 / 0.8);
-      box-shadow: 0 0 4px rgb(253 224 71 / 0.3);
-    }
-    50% {
-      border-color: rgb(254 249 195 / 1);
-      box-shadow: 0 0 8px rgb(254 240 138 / 0.72);
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -4542,7 +4659,7 @@
         > .custom-window
         > .custom-window-border
     ) {
-      animation: none;
+      animation: none !important;
     }
     :global([data-canvas-terminal].canvas-page-drop-preview > .term-container),
     :global(

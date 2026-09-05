@@ -83,18 +83,34 @@
       basicSetup,
       EditorView.editable.of(!readOnly),
       EditorView.theme({
-        "&": { height: "100%", backgroundColor: "#111113", color: "#e4e4e7" },
+        "&": {
+          height: "100%",
+          backgroundColor: "var(--control-bg)",
+          color: "var(--control-text)",
+        },
         ".cm-scroller": {
           overflow: "auto",
           fontFamily: "Fira Code VF, monospace",
         },
         ".cm-gutters": {
-          backgroundColor: "#18181b",
-          color: "#71717a",
+          backgroundColor: "var(--surface-bg)",
+          color: "var(--surface-muted)",
           border: "none",
         },
         ".cm-activeLine, .cm-activeLineGutter": {
-          backgroundColor: "#27272a66",
+          backgroundColor: "var(--surface-subtle)",
+        },
+        ".cm-cursor, .cm-dropCursor": {
+          borderLeftColor: "var(--control-text)",
+        },
+        "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
+          {
+            backgroundColor: "var(--surface-selection)",
+          },
+        ".cm-panels, .cm-tooltip": {
+          backgroundColor: "var(--app-surface-solid)",
+          color: "var(--app-text)",
+          borderColor: "var(--surface-border)",
         },
       }),
       EditorView.updateListener.of((update) => {

@@ -71,6 +71,12 @@ daemon startup.
 
 ## Pages, canvas navigation, and search
 
+Right-click a page tab and choose **Delete page** to remove it after
+confirmation. This closes its terminals and removes its components for every
+viewer; unsaved edits are lost, but files on disk are not deleted. File browsers
+attached to a closed terminal also close. The last page cannot be deleted.
+Viewers currently on the removed page switch to a remaining page.
+
 Every page owns an independent set of terminals, notes, file windows, and custom
 components. Window geometry, content, and relationships are page-aware and
 persisted by the daemon. A viewer's active page and pan/zoom for each page stay

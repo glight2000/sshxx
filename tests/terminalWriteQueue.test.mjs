@@ -10,6 +10,51 @@ test("splits large terminal writes without breaking surrogate pairs", () => {
   assert.deepEqual(splitTerminalWrite("ab😀cd", 3), ["ab", "😀c", "d"]);
 });
 
+test("a renderer that never mounts cannot hold the subscription lock forever", async () => {
+  let expire;
+  let failure;
+  const queue = new TerminalWriteQueue({
+    scheduleTimeout(callback) {
+      expire = callback;
+      return 1;
+    },
+    cancelTimeout() {},
+    onWriteTimeout(error) {
+      failure = error;
+    },
+  });
+  const completion = queue.write("pending replay", true);
+  expire();
+  await completion;
+  assert.match(failure.message, /Terminal renderer did not complete/);
+  queue.dispose();
+});
+
+test("default write scheduling progresses without animation frames", async () => {
+  const previous = globalThis.window;
+  globalThis.window = {
+    setTimeout,
+    clearTimeout,
+    requestAnimationFrame() {
+      throw new Error("background tab cannot schedule rendering frames");
+    },
+  };
+  const writes = [];
+  const queue = new TerminalWriteQueue({ chunkCharacters: 2 });
+  try {
+    queue.setSink((data, complete) => {
+      writes.push(data);
+      complete();
+    });
+    await queue.write("abcdef", true);
+    assert.deepEqual(writes, ["ab", "cd", "ef"]);
+  } finally {
+    queue.dispose();
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+  }
+});
+
 test("waits for each bounded renderer write before scheduling the next", async () => {
   const scheduled = [];
   const writes = [];

@@ -1,0 +1,9 @@
+<svg width="320" height="320" viewBox="0 0 400 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="rainbow" x1="58" y1="70" x2="350" y2="338" gradientUnits="userSpaceOnUse"><stop stop-color="#FF4D6D"/><stop offset=".18" stop-color="#FF9F1C"/><stop offset=".34" stop-color="#FFE66D"/><stop offset=".52" stop-color="#2EC4B6"/><stop offset=".68" stop-color="#00BBF9"/><stop offset=".84" stop-color="#6366F1"/><stop offset="1" stop-color="#C77DFF"/></linearGradient>
+    <radialGradient id="purple" cx="0" cy="0" r="1" gradientTransform="translate(172 150) rotate(52) scale(290)" gradientUnits="userSpaceOnUse"><stop stop-color="#3B2357"/><stop offset=".58" stop-color="#21132F"/><stop offset="1" stop-color="#120B1C"/></radialGradient>
+    <filter id="glow" x="20" y="20" width="360" height="360" filterUnits="userSpaceOnUse"><feGaussianBlur stdDeviation="8"/></filter>
+  </defs>
+  <rect x="48" y="48" width="304" height="304" rx="58" fill="url(#purple)"/><rect x="48" y="48" width="304" height="304" rx="58" stroke="url(#rainbow)" stroke-width="22" opacity=".58" filter="url(#glow)"/><rect x="48" y="48" width="304" height="304" rx="58" stroke="url(#rainbow)" stroke-width="16"/>
+  <path d="M172.141 142L198.625 188.719L225.344 142H250.891L213.469 202L251.203 262H225.656L198.625 217.156L171.672 262H146.047L183.391 202L146.516 142H172.141Z" fill="#C4B5FD" transform="translate(-26)"/><path d="M172.141 142L198.625 188.719L225.344 142H250.891L213.469 202L251.203 262H225.656L198.625 217.156L171.672 262H146.047L183.391 202L146.516 142H172.141Z" fill="#F5F3FF" transform="translate(26)"/>
+</svg>

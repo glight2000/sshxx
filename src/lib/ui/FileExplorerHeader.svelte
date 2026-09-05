@@ -3,6 +3,7 @@
   import { RefreshCwIcon, SettingsIcon } from "svelte-feather-icons";
 
   import BackgroundPicker from "./BackgroundPicker.svelte";
+  import { surfaceBackground } from "./surfaceTheme";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
   import InlineTitle from "./InlineTitle.svelte";
@@ -107,7 +108,7 @@
     class="relative flex h-full flex-1 items-center justify-end gap-0.5 pr-2"
   >
     <button
-      class="header-button"
+      class="header-button ui-icon-button"
       title="Reload filesystem"
       aria-label="Reload filesystem"
       on:mousedown|stopPropagation
@@ -115,7 +116,7 @@
     >
     <button
       bind:this={settingsButton}
-      class="header-button"
+      class="header-button ui-icon-button"
       title="File explorer settings"
       aria-label="File explorer settings"
       on:mousedown|stopPropagation
@@ -129,7 +130,8 @@
         on:mousedown|stopPropagation
       >
         <BackgroundPicker
-          value={background || "#18181b"}
+          value={surfaceBackground(background, "#111113")}
+          allowNone
           disabled={!hasWriteAccess}
           on:change={(event) => dispatch("background", event.detail)}
         />
@@ -148,13 +150,10 @@
 
 <style lang="postcss">
   @reference "../../app.css";
-  .header-button {
-    @apply inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35;
-  }
   .header-button :global(svg) {
     @apply h-4 w-4;
   }
   .settings-row {
-    @apply block w-full rounded border-t border-zinc-700/70 px-2 pt-2 text-left text-xs text-zinc-300 hover:text-white;
+    @apply block w-full rounded-md border-t border-zinc-700/70 px-2 py-2 text-left text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100;
   }
 </style>

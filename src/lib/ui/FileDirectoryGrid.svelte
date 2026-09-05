@@ -58,7 +58,7 @@
           dispatch("context", { entry, source: "grid", event })}
       >
         {#if entry.kind === "directory"}
-          <FolderIcon class="text-amber-300/90" />
+          <FolderIcon class="text-[var(--surface-warning)]" />
         {:else}
           <FileIcon class="text-zinc-400" />
         {/if}
@@ -79,7 +79,9 @@
     @apply flex h-24 w-full flex-col items-center justify-center gap-2 rounded-lg border border-transparent px-2 py-2 text-sm text-zinc-300 outline-none hover:border-zinc-700/70 hover:bg-zinc-800/80 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70;
   }
   .directory-entry.selected {
-    @apply bg-indigo-500/20 text-indigo-100 ring-1 ring-inset ring-indigo-400/45;
+    @apply ring-1 ring-inset ring-indigo-400/45;
+    color: var(--surface-accent);
+    background: var(--surface-selection);
   }
   .directory-entry :global(svg) {
     @apply h-9 w-9 shrink-0;

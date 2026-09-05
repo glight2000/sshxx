@@ -78,6 +78,7 @@ export class TerminalWriteQueue {
   #writing = false;
   #scheduled: number | null = null;
   #writeTimeout: number | null = null;
+  #sinkTimeout: number | null = null;
   #queuedCharacters = 0;
   #disposed = false;
   #failed = false;
@@ -96,11 +97,11 @@ export class TerminalWriteQueue {
       this.#writeTimeoutMs <= 0
     )
       throw new Error("Terminal write timeout must be a positive integer.");
+    // Parsing/ACK progress must not depend on visible rendering frames.
+    // Background tabs pause requestAnimationFrame entirely.
     this.#schedule =
-      options.schedule ??
-      ((callback) => window.requestAnimationFrame(callback));
-    this.#cancel =
-      options.cancel ?? ((handle) => window.cancelAnimationFrame(handle));
+      options.schedule ?? ((callback) => window.setTimeout(callback, 0));
+    this.#cancel = options.cancel ?? ((handle) => window.clearTimeout(handle));
     this.#scheduleTimeout =
       options.scheduleTimeout ??
       ((callback, timeoutMs) => window.setTimeout(callback, timeoutMs));
@@ -116,6 +117,8 @@ export class TerminalWriteQueue {
 
   setSink(sink: TerminalWriteSink) {
     if (this.#disposed) return;
+    if (this.#sinkTimeout !== null) this.#cancelTimeout(this.#sinkTimeout);
+    this.#sinkTimeout = null;
     this.#sink = sink;
     this.#drain();
   }
@@ -134,6 +137,17 @@ export class TerminalWriteQueue {
         this.#chunks.push({ data: piece, replay, group });
       }
       this.#queuedCharacters += data.length;
+      if (!this.#sink && this.#sinkTimeout === null) {
+        this.#sinkTimeout = this.#scheduleTimeout(() => {
+          this.#sinkTimeout = null;
+          this.#fail(
+            new TerminalWriteTimeoutError(
+              this.#writeTimeoutMs,
+              this.#queuedCharacters,
+            ),
+          );
+        }, this.#writeTimeoutMs);
+      }
       this.#notify();
       this.#drain();
     });
@@ -146,6 +160,8 @@ export class TerminalWriteQueue {
     this.#scheduled = null;
     if (this.#writeTimeout !== null) this.#cancelTimeout(this.#writeTimeout);
     this.#writeTimeout = null;
+    if (this.#sinkTimeout !== null) this.#cancelTimeout(this.#sinkTimeout);
+    this.#sinkTimeout = null;
 
     const groups = new Set(this.#chunks.map((chunk) => chunk.group));
     if (this.#activeChunk) groups.add(this.#activeChunk.group);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { surfaceBackground, surfaceTone } from "./surfaceTheme";
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { FolderIcon } from "svelte-feather-icons";
 
@@ -1217,11 +1218,13 @@
 
 <section
   bind:this={sectionElement}
-  class="file-window relative flex flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 shadow-sm shadow-black/20"
+  class="file-window theme-surface relative flex flex-col overflow-hidden rounded-xl border"
+  data-surface-tone={surfaceTone(surfaceBackground(background, "#111113"))}
   class:linked-highlight={linkedHighlight}
   class:fullscreen
   class:minimized
-  style:--file-window-background={background || "#111113"}
+  style:--file-window-background={surfaceBackground(background, "#111113") ||
+    "var(--surface-bg)"}
   style:width={fullscreen ? "100%" : `${width}px`}
   style:height={fullscreen
     ? "100%"
@@ -1493,10 +1496,12 @@
 <style lang="postcss">
   @reference "../../app.css";
   .path-input {
-    @apply h-7 w-full rounded border border-indigo-500/40 bg-zinc-950/85 px-2 font-mono text-xs text-indigo-100 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/25;
+    @apply h-7 w-full rounded-md border border-indigo-500/40 bg-zinc-950/85 px-2 font-mono text-xs outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/25;
+    color: var(--surface-accent);
   }
   .path-input.path-invalid {
-    @apply border-red-500/55 text-red-200 focus:border-red-400 focus:ring-red-500/20;
+    @apply border-red-500/55 focus:border-red-400 focus:ring-red-500/20;
+    color: var(--surface-danger);
   }
   .sidebar-divider {
     @apply relative cursor-col-resize border-0 bg-zinc-800/60 p-0 outline-none transition-colors hover:bg-indigo-500/65 focus-visible:bg-indigo-500/65;
@@ -1523,21 +1528,22 @@
     background: var(--file-window-background);
   }
   .file-tree-pane {
-    background: color-mix(in srgb, var(--file-window-background) 82%, black);
+    background: color-mix(
+      in srgb,
+      var(--file-window-background) 94%,
+      var(--surface-muted)
+    );
   }
   .file-content-pane {
-    background: color-mix(in srgb, var(--file-window-background) 90%, black);
+    background: var(--file-window-background);
   }
   .file-window.linked-highlight {
-    border-color: rgb(212 212 216 / 75%);
-    animation: linked-file-pulse 1.8s ease-in-out infinite;
+    --canvas-state-color: var(--canvas-note-focus);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+    animation: canvas-state-pulse 1.8s ease-in-out infinite;
   }
   .file-relations {
     @apply pointer-events-auto absolute bottom-2 right-2 z-20 max-w-[65%];
-  }
-  @keyframes linked-file-pulse {
-    50% {
-      box-shadow: 0 0 10px rgb(212 212 216 / 34%);
-    }
   }
 </style>

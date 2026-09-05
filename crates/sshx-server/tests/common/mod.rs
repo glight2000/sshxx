@@ -112,6 +112,8 @@ pub struct ClientSocket {
     pub system_action_results: Vec<(String, String, bool, String)>,
     pub custom_clicks: Vec<(Uid, Sid, u32, u16, u16)>,
     pub errors: Vec<String>,
+    pub terminal_batches: Vec<(Sid, u32, u32, u64)>,
+    pub terminal_stalls: Vec<(Sid, u32, u32, u32)>,
 }
 
 impl ClientSocket {
@@ -141,6 +143,8 @@ impl ClientSocket {
             system_action_results: Vec::new(),
             custom_clicks: Vec::new(),
             errors: Vec::new(),
+            terminal_batches: Vec::new(),
+            terminal_stalls: Vec::new(),
         };
         this.authenticate().await;
         Ok(this)
@@ -207,6 +211,36 @@ impl ClientSocket {
                         self.terminal_host_version = terminal_host_version;
                     }
                     WsServer::Capabilities(_) => {}
+                    WsServer::TerminalStalled(id, page, generation, token) => {
+                        self.terminal_stalls.push((id, page, generation, token));
+                    }
+                    WsServer::TerminalBatch(
+                        id,
+                        _,
+                        generation,
+                        token,
+                        replay,
+                        seqnum,
+                        start,
+                        chunks,
+                    ) => {
+                        self.terminal_batches.push((
+                            id,
+                            generation,
+                            token,
+                            start + chunks.len() as u64,
+                        ));
+                        self.chunk_replays.push((id, replay));
+                        let value = self.data.entry(id).or_default();
+                        let mut sequence = seqnum;
+                        for buf in chunks {
+                            let plaintext =
+                                self.encrypt
+                                    .segment(0x100000000 | id.0 as u64, sequence, &buf);
+                            sequence += buf.len() as u64;
+                            value.push_str(std::str::from_utf8(&plaintext).unwrap());
+                        }
+                    }
                     WsServer::InvalidAuth() => panic!("invalid authentication"),
                     WsServer::Users(users) => self.users = BTreeMap::from_iter(users),
                     WsServer::UserDiff(id, maybe_user) => {

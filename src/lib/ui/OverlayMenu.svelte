@@ -50,11 +50,11 @@
       transition:scale={{ duration: 200, start: 0.95 }}
     >
       <div
-        class="relative h-screen max-h-screen overflow-y-auto overscroll-contain bg-[var(--app-surface-solid)] px-6 py-10 sm:h-auto sm:rounded-lg sm:border sm:border-zinc-800 sm:py-6"
+        class="panel relative h-screen max-h-screen overflow-y-auto overscroll-contain rounded-none px-6 py-10 sm:h-auto sm:rounded-2xl sm:py-6"
       >
         {#if showCloseButton}
           <button
-            class="absolute top-4 right-4 p-1 rounded hover:bg-zinc-700 active:bg-indigo-700 transition-colors"
+            class="ui-icon-button absolute top-4 right-4"
             aria-label="Close {title}"
             on:click={close}
           >

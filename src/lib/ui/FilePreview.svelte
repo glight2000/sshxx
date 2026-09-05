@@ -153,7 +153,7 @@
     Loading…
   </div>{/if}
 {#if paragraphDropBlocked}<div
-    class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center border-2 border-dashed border-amber-300/65 bg-amber-950/35 p-8 text-center text-sm font-medium text-amber-100 backdrop-blur-[1px]"
+    class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center border-2 border-dashed border-[var(--surface-warning)] bg-[var(--surface-warning-bg)]/90 p-8 text-center text-sm font-medium text-[var(--surface-warning)] backdrop-blur-[1px]"
   >
     Open an editable text file before dropping this paragraph.
   </div>{/if}
@@ -164,6 +164,7 @@
     @apply rounded-md border border-red-300/35 bg-red-950/40 px-3 py-1.5 text-xs text-red-100 hover:bg-red-900/55;
   }
   .media-error {
-    @apply flex h-full items-center justify-center p-8 text-center text-sm text-amber-300;
+    @apply flex h-full items-center justify-center p-8 text-center text-sm;
+    color: var(--surface-warning);
   }
 </style>

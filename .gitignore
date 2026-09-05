@@ -15,6 +15,14 @@ id_ed25519
 
 /target
 /src-tauri/target
+/clients/electron/dist
+/clients/electron/node_modules
+/clients/godot/.godot
+/clients/godot/build
+
+# Godot MCP Pro is a local proprietary development tool and must never be
+# committed or included in redistributable client artifacts.
+/clients/godot/addons/godot_mcp
 
 /node_modules
 /.svelte-kit
@@ -28,6 +36,8 @@ id_ed25519
 .sshx-connections.key.invalid-*
 .sshx-connections.tmp
 .sshx-connections.invalid-*
+# Staged saves/recovery backups may contain private file contents.
+.sshxx-save-*
 
 # Machine-specific deployment files.
 /deploy/center/

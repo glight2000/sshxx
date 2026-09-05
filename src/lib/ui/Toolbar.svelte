@@ -182,7 +182,7 @@
 <style lang="postcss">
   @reference "../../app.css";
   .v-divider {
-    @apply h-5 mx-2 border-l-4 border-zinc-800;
+    @apply h-5 mx-2 border-l border-zinc-700;
   }
   .icon-button {
     @apply relative inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-zinc-700 active:bg-indigo-700 transition-colors disabled:opacity-50 disabled:bg-transparent;
@@ -210,21 +210,22 @@
     @apply bg-zinc-700;
   }
   .connection-menu {
-    @apply absolute left-0 top-[calc(100%+0.6rem)] z-50 w-80 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl shadow-black/50;
+    @apply absolute left-0 top-[calc(100%+0.6rem)] z-50 w-80 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900;
+    box-shadow: var(--popover-shadow);
   }
   .activity {
     @apply absolute top-1 right-0.5 text-xs p-[4.5px] bg-red-500 rounded-full;
   }
   .network-status.connected {
-    @apply text-emerald-300;
+    color: var(--surface-success);
     animation: connected-glow 2.4s ease-in-out infinite;
   }
   .network-status.connecting {
-    @apply text-amber-300;
+    color: var(--surface-warning);
     animation: connecting-pulse 1.2s ease-in-out infinite;
   }
   .network-status.unavailable {
-    @apply text-red-400;
+    color: var(--surface-danger);
   }
   @keyframes connected-glow {
     50% {

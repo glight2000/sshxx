@@ -63,6 +63,20 @@ test("maps secure server links to secure WebSockets", () => {
   );
 });
 
+test("Electron uses its selected server instead of the application scheme", () => {
+  globalThis.window = {
+    sshxxDesktop: { runtime: "electron" },
+    location: {
+      href: "sshxx://app/s/demo?server=https%3A%2F%2Fsshxx.example",
+      search: "?server=https%3A%2F%2Fsshxx.example",
+    },
+  };
+  assert.equal(
+    resolveWebSocketUrl("/api/s/demo"),
+    "wss://sshxx.example/api/s/demo",
+  );
+});
+
 test("browser sessions ignore cross-origin server overrides", () => {
   globalThis.window = {
     location: {

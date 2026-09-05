@@ -18,7 +18,7 @@ use sshx_core::{
 use tokio::sync::{broadcast, watch, Notify};
 use tokio::time::Instant;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream, WatchStream};
-use tokio_stream::Stream;
+use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};
 
 use crate::utils::Shutdown;
@@ -26,6 +26,7 @@ use crate::web::protocol::{
     WsCustomWindow, WsFileWindow, WsNote, WsPage, WsServer, WsSshProfile, WsUser, WsWinsize,
 };
 
+mod pages;
 mod snapshot;
 mod validation;
 
@@ -122,6 +123,8 @@ pub struct Session {
 
     /// Watch channel source for the ordered list of named canvas pages.
     pages: watch::Sender<Vec<WsPage>>,
+    // Do not reuse deleted page IDs while stale browser events can still arrive.
+    next_page_id: Mutex<u32>,
 
     /// Reusable SSH connection profiles owned and persisted by the daemon.
     ssh_profiles: watch::Sender<Vec<WsSshProfile>>,
@@ -199,6 +202,7 @@ impl Session {
             }])
             .0,
             ssh_profiles: watch::channel(Vec::new()).0,
+            next_page_id: Mutex::new(2),
             note_editors: RwLock::new(HashMap::new()),
             workspace_revision: watch::channel(0).0,
             pending_restored_shells: Mutex::new(HashSet::new()),
@@ -402,6 +406,8 @@ impl Session {
 
     /// Return the current terminal and note metadata in portable form.
     pub fn workspace_state(&self) -> WorkspaceState {
+        // Page registry precedes component locks, matching page deletion.
+        let pages = self.pages.borrow();
         WorkspaceState {
             format_version: WORKSPACE_FORMAT_VERSION,
             shells: self
@@ -505,9 +511,7 @@ impl Session {
                     minimized: window.minimized,
                 })
                 .collect(),
-            pages: self
-                .pages
-                .borrow()
+            pages: pages
                 .iter()
                 .map(|page| WorkspacePage {
                     id: page.id,
@@ -792,6 +796,12 @@ impl Session {
         self.notes.send_replace(notes);
         self.file_windows.send_replace(file_windows);
         self.custom_windows.send_replace(custom_windows);
+        *self.next_page_id.lock() = pages
+            .iter()
+            .map(|page| page.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         self.pages.send_replace(pages);
         *self.pending_restored_shells.lock() = requests
             .iter()
@@ -828,12 +838,12 @@ impl Session {
             if pages.len() >= 50 {
                 return;
             }
-            created_id = pages
-                .iter()
-                .map(|page| page.id)
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1);
+            let mut next_id = self.next_page_id.lock();
+            created_id = *next_id;
+            if created_id == u32::MAX {
+                created_id = 0;
+                return;
+            }
             let name = if requested_name.trim().is_empty() {
                 format!("Page {}", pages.len() + 1)
             } else {
@@ -844,6 +854,7 @@ impl Session {
                     id: created_id,
                     name,
                 });
+                *next_id += 1;
             } else {
                 created_id = 0;
             }
@@ -954,8 +965,18 @@ impl Session {
         &self,
         id: Sid,
         generation: u32,
-        mut chunknum: u64,
+        chunknum: u64,
     ) -> impl Stream<Item = (bool, u64, Vec<Bytes>)> + '_ {
+        self.subscribe_indexed_chunks(id, generation, chunknum)
+            .map(|(replay, seqnum, _, chunks)| (replay, seqnum, chunks))
+    }
+
+    pub(crate) fn subscribe_indexed_chunks(
+        &self,
+        id: Sid,
+        generation: u32,
+        mut chunknum: u64,
+    ) -> impl Stream<Item = (bool, u64, u64, Vec<Bytes>)> + '_ {
         async_stream::stream! {
             let mut replay = true;
             while !self.shutdown.is_terminated() {
@@ -998,7 +1019,7 @@ impl Session {
                 };
 
                 if !chunks.is_empty() {
-                    yield (replay, seqnum, chunks);
+                    yield (replay, seqnum, chunknum - chunks.len() as u64, chunks);
                     if caught_up {
                         replay = false;
                     }
@@ -1059,6 +1080,7 @@ impl Session {
         requested_style: (String, String, String),
     ) -> Result<Option<WsWinsize>> {
         use std::collections::hash_map::Entry::*;
+        let pages = self.pages.borrow();
         let restored = self.pending_restored_shells.lock().remove(&id);
         if restored {
             let winsize = self
@@ -1072,7 +1094,13 @@ impl Session {
             return Ok(Some(winsize));
         }
 
-        if !self.page_exists(page_id) {
+        if !pages.iter().any(|page| page.id == page_id) {
+            // Creation can finish on the daemon after its page was deleted.
+            // Retain a tombstone until its close acknowledgement arrives.
+            self.shells.write().entry(id).or_insert_with(|| State {
+                closed: true,
+                ..State::default()
+            });
             bail!("cannot add terminal to missing page");
         }
         let (requested_rows, requested_cols) = requested_terminal_size;
@@ -1214,7 +1242,8 @@ impl Session {
         if source_page_id == target_page_id {
             bail!("canvas items are already on the target page");
         }
-        if !self.page_exists(target_page_id) {
+        let pages = self.pages.borrow();
+        if !pages.iter().any(|page| page.id == target_page_id) {
             bail!("cannot move canvas items to a missing page");
         }
         let item_count = terminals.len() + notes.len() + file_windows.len() + custom_windows.len();
@@ -1327,7 +1356,8 @@ impl Session {
         page_id: u32,
         requested_size: Option<(u16, u16)>,
     ) -> Result<()> {
-        if !self.page_exists(page_id) {
+        let pages = self.pages.borrow();
+        if !pages.iter().any(|page| page.id == page_id) {
             bail!("cannot add note to missing page");
         }
         let (width, height) = requested_size.unwrap_or((384, 224));
@@ -1443,6 +1473,10 @@ impl Session {
         width: u16,
         height: u16,
     ) -> Result<()> {
+        let pages = self.pages.borrow();
+        if !pages.iter().any(|page| page.id == page_id) {
+            bail!("cannot open file browser on missing page");
+        }
         self.check_shell_page(shell_id, page_id)?;
         {
             let windows = self.file_windows.borrow();
@@ -1562,7 +1596,8 @@ impl Session {
         size: (u16, u16),
         page_id: u32,
     ) -> Result<()> {
-        if !self.page_exists(page_id) {
+        let pages = self.pages.borrow();
+        if !pages.iter().any(|page| page.id == page_id) {
             bail!("cannot add custom component to missing page");
         }
         if self.custom_windows.borrow().len() >= 100 {
@@ -1757,7 +1792,13 @@ impl Session {
 
     /// Receive new data into the session.
     pub fn add_data(&self, id: Sid, data: Bytes, seq: u64) -> Result<()> {
-        let mut shell = self.get_shell_mut(id)?;
+        let mut shells = self.shells.write();
+        let shell = shells.get_mut(&id).context("terminal does not exist")?;
+        // Output already in transit is expected while page deletion propagates
+        // the close command to the daemon. Never resurrect the closed stream.
+        if shell.closed {
+            return Ok(());
+        }
 
         if seq <= shell.seqnum && seq + data.len() as u64 > shell.seqnum {
             let start = shell.seqnum - seq;
@@ -2008,7 +2049,7 @@ mod tests {
     use super::*;
     use tokio_stream::StreamExt;
 
-    fn session() -> Session {
+    pub(super) fn session() -> Session {
         Session::new(Metadata {
             encrypted_zeros: Bytes::new(),
             name: "test".into(),
@@ -2053,6 +2094,34 @@ mod tests {
         assert_eq!(state.seqnum, 0);
         assert!(state.data.is_empty());
         assert!(!state.closed);
+    }
+
+    #[tokio::test]
+    async fn indexed_replay_reports_the_retained_checkpoint_after_trimming() {
+        let session = session();
+        let id = Sid(9);
+        session
+            .add_shell(
+                id,
+                (0, 0),
+                1,
+                (24, 80),
+                (640, 480),
+                (String::new(), String::new(), String::new()),
+            )
+            .unwrap();
+        {
+            let mut state = session.get_shell_mut(id).unwrap();
+            state.chunk_offset = 5;
+            state.byte_offset = 50;
+            state.data.push(Bytes::from_static(b"retained"));
+            state.seqnum = 58;
+        }
+        let stream = session.subscribe_indexed_chunks(id, 0, 0);
+        tokio::pin!(stream);
+        let (_, bytes, chunk, data) = stream.next().await.unwrap();
+        assert_eq!((bytes, chunk), (50, 5));
+        assert_eq!(data, [Bytes::from_static(b"retained")]);
     }
 
     #[tokio::test]

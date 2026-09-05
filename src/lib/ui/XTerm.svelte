@@ -990,19 +990,25 @@
     }
   }
 
-  .term-container.focused,
-  .term-container:focus-within {
-    border-color: rgb(129 140 248 / 80%);
+  .term-container.linked-highlight {
+    --canvas-state-color: var(--canvas-note-focus);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+    animation: canvas-state-pulse 1.8s ease-in-out infinite;
   }
 
-  .term-container.linked-highlight {
-    border-color: rgb(228 228 231 / 50%);
-    animation: linked-terminal-pulse 1.8s ease-in-out infinite;
+  .term-container.focused,
+  .term-container:focus-within {
+    --canvas-state-color: var(--canvas-focus);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
+    animation: none;
   }
 
   .term-container.paragraph-drop-active {
-    border-color: rgb(125 211 252 / 85%);
-    box-shadow: 0 0 12px rgb(125 211 252 / 38%);
+    --canvas-state-color: var(--canvas-focus);
+    border-color: var(--canvas-state-color);
+    box-shadow: var(--canvas-state-glow);
   }
   .term-container.paragraph-drop-active::after {
     content: "Release to paste at the terminal cursor";
@@ -1011,18 +1017,6 @@
 
   .terminal-relations {
     @apply absolute bottom-1.5 right-2 z-20 max-w-[65%];
-  }
-
-  @keyframes linked-terminal-pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 2px rgb(228 228 231 / 6%);
-    }
-    50% {
-      box-shadow:
-        0 0 10px rgb(228 228 231 / 55%),
-        0 0 18px rgb(228 228 231 / 34%);
-    }
   }
 
   .term-container:not(.focused) :global(.xterm) {

@@ -14,7 +14,9 @@ export default defineConfig({
   plugins: [sveltekit()],
 
   server: {
-    host: tauriDevHost || false,
+    // LAN-reachable development UI; the daemon/server remain loopback-only.
+    // Browser encryption still requires HTTPS or a localhost SSH tunnel.
+    host: tauriDevHost || "0.0.0.0",
     port: 5173,
     strictPort: true,
     watch: {
