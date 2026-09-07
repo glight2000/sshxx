@@ -39,8 +39,8 @@ README 只保留项目级介绍。完整功能和全量截图请查看
 **[功能指南](https://github.com/glight2000/sshxx/wiki/Features)**，或从
 **[sshxx Wiki 首页](https://github.com/glight2000/sshxx/wiki)** 开始阅读。
 
-**v0.13.0**
-改善手机画布拖拽流畅度，将单击聚焦与全屏浏览分开，增加终端方向键、控制键及不附加回车的发送方式，并优化便利贴文本选择和排版。参见[模块版本与升级注意事项](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0130-upgrade-notes)。相对 v0.12.0，本次仅更新客户端；daemon、server 和 terminal-host 版本不变，无需重启 terminal-host。
+**v0.13.1**
+改善手机画布拖拽流畅度，将单击聚焦与全屏浏览分开，增加终端方向键、控制键及不附加回车的发送方式，并优化便利贴文本选择和排版。参见[模块版本与升级注意事项](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0131-upgrade-notes)。相对 v0.12.0，本次仅更新客户端；daemon、server 和 terminal-host 版本不变，无需重启 terminal-host。
 
 ## 架构
 

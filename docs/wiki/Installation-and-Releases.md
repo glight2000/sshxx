@@ -358,6 +358,21 @@ Windows x64.
 Release checksums and GitHub attestations provide build provenance and integrity
 checks, but do not replace trusted platform code signing.
 
+## v0.13.1 upgrade notes
+
+The v0.13.0 tag was pushed, but its Release quality gate failed and no download
+Release was published. v0.13.1 retains that tag and retries the complete release
+pipeline after stabilizing the hosted-runner integration tests: derive the
+session key once instead of running Argon2 on every output chunk, accumulate
+split output markers, and report a closed output channel without spinning. The
+original I/O timeouts and process/history assertions remain in place.
+
+Only the suite archive version advances to **0.13.1**. The Web/Tauri client
+remains **0.13.0**, daemon/server/core **0.11.1**, and terminal-host **0.10.1**;
+test-only changes do not alter shipped runtime behavior. The features and
+upgrade guidance below apply unchanged. No terminal-host restart is required
+when upgrading from v0.12.0.
+
 ## v0.13.0 upgrade notes
 
 | Module                  | Version | Changes                                                        |

@@ -757,6 +757,8 @@ async fn echo_task(
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    use anyhow::Context;
+    #[cfg(unix)]
     use std::time::Duration;
 
     use sshx_core::proto::{SshAuthMethod, SshProfile};
@@ -952,6 +954,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn hosted_shell_survives_runner_restart_until_explicit_close() -> anyhow::Result<()> {
+        // Derive once, as a real session does. Repeating Argon2 for each PTY
+        // chunk blocks this single-thread runtime and consumes the I/O timeout.
+        let encrypt = Encrypt::new("hosted-runner-test");
         let state = tempfile::tempdir()?;
         let endpoint = state
             .path()
@@ -982,11 +987,12 @@ mod tests {
         let (first_tx, first_rx) = mpsc::channel(4);
         let (first_output_tx, _first_output_rx) = mpsc::channel(16);
         let first_runner = runner.clone();
+        let first_encrypt = encrypt.clone();
         let first_task = tokio::spawn(async move {
             first_runner
                 .run(
                     Sid(7),
-                    Encrypt::new("hosted-runner-test"),
+                    first_encrypt,
                     first_rx,
                     first_output_tx,
                     test_shell_options(),
@@ -1002,11 +1008,12 @@ mod tests {
 
         let (second_tx, second_rx) = mpsc::channel(4);
         let (second_output_tx, mut second_output_rx) = mpsc::channel(16);
+        let second_encrypt = encrypt.clone();
         let second_task = tokio::spawn(async move {
             runner
                 .run(
                     Sid(7),
-                    Encrypt::new("hosted-runner-test"),
+                    second_encrypt,
                     second_rx,
                     second_output_tx,
                     test_shell_options(),
@@ -1022,29 +1029,24 @@ mod tests {
         let output = tokio::time::timeout(Duration::from_secs(3), async {
             let mut received = String::new();
             loop {
-                if let Some(sshx_core::proto::client_update::ClientMessage::Data(data)) =
-                    second_output_rx.recv().await
+                if let sshx_core::proto::client_update::ClientMessage::Data(data) = second_output_rx
+                    .recv()
+                    .await
+                    .context("reattached runner output closed")?
                 {
-                    let plaintext = Encrypt::new("hosted-runner-test").segment(
-                        0x100000000 | 7,
-                        data.seq,
-                        &data.data,
-                    );
+                    let plaintext = encrypt.segment(0x100000000 | 7, data.seq, &data.data);
                     // PTY/transport boundaries need not coincide with a line.
                     received.push_str(&String::from_utf8_lossy(&plaintext));
                     if received
                         .contains("RUNNER_REATTACHED TERM=xterm-256color COLORTERM=truecolor")
                     {
-                        break;
+                        return Ok::<_, anyhow::Error>(());
                     }
                 }
             }
         })
         .await;
-        assert!(
-            output.is_ok(),
-            "reattached runner did not receive PTY output"
-        );
+        output.context("reattached runner did not receive PTY output")??;
         assert_eq!(wait_for_terminal_pid(&endpoint, &token).await?, first_pid);
         let history_path = host.history_path(7);
         let saved = tokio::time::timeout(Duration::from_secs(3), async {
@@ -1080,6 +1082,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn ssh_preset_restarts_after_terminal_host_state_loss() -> anyhow::Result<()> {
+        let encrypt = Encrypt::new("host-recovery-test");
         let state = tempfile::tempdir()?;
         let endpoint = state
             .path()
@@ -1111,15 +1114,10 @@ mod tests {
         // The durable profile identity is what distinguishes an SSH preset
         // from a default local terminal during host-loss recovery.
         options.ssh_profile_id = "saved-ssh-profile".into();
+        let runner_encrypt = encrypt.clone();
         let task = tokio::spawn(async move {
             runner
-                .run(
-                    Sid(11),
-                    Encrypt::new("host-recovery-test"),
-                    shell_rx,
-                    output_tx,
-                    options,
-                )
+                .run(Sid(11), runner_encrypt, shell_rx, output_tx, options)
                 .await
         });
         let first_pid = wait_for_terminal_pid(&endpoint, &token).await?;
@@ -1158,22 +1156,22 @@ mod tests {
             ))
             .await?;
         tokio::time::timeout(Duration::from_secs(3), async {
+            let mut received = String::new();
             loop {
-                if let Some(sshx_core::proto::client_update::ClientMessage::Data(data)) =
-                    output_rx.recv().await
+                if let sshx_core::proto::client_update::ClientMessage::Data(data) = output_rx
+                    .recv()
+                    .await
+                    .context("recovered runner output closed")?
                 {
-                    let plaintext = Encrypt::new("host-recovery-test").segment(
-                        0x100000000 | 11,
-                        data.seq,
-                        &data.data,
-                    );
-                    if String::from_utf8_lossy(&plaintext).contains("SSH_PRESET_RECOVERED") {
-                        break;
+                    let plaintext = encrypt.segment(0x100000000 | 11, data.seq, &data.data);
+                    received.push_str(&String::from_utf8_lossy(&plaintext));
+                    if received.contains("SSH_PRESET_RECOVERED") {
+                        return Ok::<_, anyhow::Error>(());
                     }
                 }
             }
         })
-        .await?;
+        .await??;
 
         shell_tx.send(ShellData::Close).await?;
         tokio::time::timeout(Duration::from_secs(3), task).await???;

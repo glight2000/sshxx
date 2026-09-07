@@ -44,10 +44,10 @@ The README intentionally stays at project level. See the
 for the full capability set and screenshots, or start from the
 **[sshxx Wiki](https://github.com/glight2000/sshxx/wiki)**.
 
-**v0.13.0** improves phone canvas responsiveness, separates tap-to-focus from
+**v0.13.1** improves phone canvas responsiveness, separates tap-to-focus from
 fullscreen viewing, adds terminal arrow/control keys and send-without-Enter
 modes, and refines note text selection and typography. See
-[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0130-upgrade-notes).
+[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0131-upgrade-notes).
 This is a client-only update from v0.12.0: daemon, server and terminal-host
 versions are unchanged, and no terminal-host restart is required.
 
