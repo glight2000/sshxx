@@ -384,6 +384,8 @@ pub enum WsServer {
     SystemActionResult(String, String, bool, String),
     /// Active host version after a verified process restart.
     TerminalHostVersion(String),
+    /// Live process versions and administrator-configured update job status.
+    RuntimeInfo(sshx_core::proto::RuntimeInfo),
     /// Transient custom-component click for non-triggering clients.
     CustomClick(Uid, Sid, u32, u16, u16),
     /// Echo back a timestamp, for the the client's own latency measurement.

@@ -44,6 +44,9 @@ README 只保留项目级介绍。完整功能和全量截图请查看
 
 ## 架构
 
+**v0.13.3**
+增加 Runtime/host 版本实时上报、管理员配置的 Linux/systemd 后台任务对应的“一键更新 Runtime 并重启”，以及聊天和 note 的纯文本 Emoji/颜文字选择器。配置和权限边界参见[网页触发更新](docs/wiki/Installation-and-Releases.md#web-triggered-updates)。设置中同时区分 Release/安装包版本和各模块独立版本，客户端模块号不必与 Runtime 安装包号相同。
+
 | 组件                  | 源码位置                     | 职责                                            |
 | --------------------- | ---------------------------- | ----------------------------------------------- |
 | `sshxx-terminal-host` | `crates/sshxx-terminal-host` | 跨 daemon 重启持有 PTY/ConPTY 与 Shell/SSH 进程 |

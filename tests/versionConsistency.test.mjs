@@ -45,6 +45,8 @@ function lockfileVersion(packageName) {
 }
 
 test("suite release version is independent and drives the release tag", () => {
+  assert.match(viteConfig, /__RELEASE_VERSION__:/);
+  assert.match(viteConfig, /new URL\("\.\/release\.json", import\.meta\.url\)/);
   assert.match(releaseJson.version, /^\d+\.\d+\.\d+$/);
   assert.match(releaseWorkflow, /require\("\.\/release\.json"\)\.version/);
   const workspacePackage = requiredMatch(
@@ -67,7 +69,7 @@ test("Web and packaged clients share the client component version", () => {
     tauriConfig: tauriConfig.version,
     vite: requiredMatch(
       viteConfig,
-      /__APP_VERSION__:\s*JSON\.stringify\("([^"]+)-"/,
+      /__APP_VERSION__:\s*JSON\.stringify\(\s*"([^"]+)-"/,
       "Vite client version",
     ),
     cargoLock: lockfileVersion("sshxx-client"),

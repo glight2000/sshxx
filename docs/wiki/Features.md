@@ -22,6 +22,11 @@ name to rename it inline.
 
 ## Workspace chat and attachments
 
+Release v0.13.3 adds an **Emoji / 颜文字** picker to chat and notes. Choose a
+symbol to insert it at the saved text cursor/selection; it remains ordinary
+Unicode text, so existing copy, synchronization, persistence and note undo work
+unchanged. No sticker downloads, tracking requests or new media format are used.
+
 Chat opens as a right sidebar on desktop and a full-screen surface on phones.
 The room shares its latest 500 messages across all pages and viewers. Names and
 timestamps are retained; reconnecting, refreshing, or restarting the daemon can

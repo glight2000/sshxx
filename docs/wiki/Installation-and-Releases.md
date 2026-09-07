@@ -296,6 +296,92 @@ first and save/finish tasks, or operate from an independent SSH/system terminal.
 See
 [lifecycle, handoff, and failure boundaries](Architecture-and-State.md#terminal-host-lifecycle-and-upgrades).
 
+### Web-triggered updates
+
+Settings separates the client build's Release version, the running daemon's
+Runtime archive version, and independent client/server/daemon/host versions.
+Host versions refresh automatically after external restarts; a failed probe
+shows `unknown`. Runtime status updates approximately every 15 seconds.
+
+**Update Runtime & restart** starts an independently managed Linux/systemd job.
+It installs using the existing checksum-verifying updater, restarts server and
+daemon, and **must not restart terminal-host**. Closing a browser or restarting
+daemon does not stop the job. Settings shows ready/updating/completed/failed;
+after completion, use **Reload Web client**. Separately packaged apps still
+require their own installation update. macOS, Windows, source/foreground builds
+and installations without an authorized job use the existing manual updater.
+
+This is deliberately opt-in. An administrator must first provision a fixed
+`sshxx-update.service` and enable the daemon's `SSHXX_WEB_UPDATE` environment
+variable. The client cannot supply an executable, arguments or a download URL.
+Do not grant unrestricted passwordless sudo or let the daemon edit a privileged
+job, updater, its dependencies, or their parent directories (including ACLs).
+
+For a **system service**, adapt this unit to the existing installation and
+service account, and install it as a root-owned file at
+`/etc/systemd/system/sshxx-update.service`:
+
+```ini
+[Unit]
+Description=sshxx authorized Runtime update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=HOME=/home/sshxx
+Environment=SUDO_USER=sshxx
+ExecStart=/opt/sshxx/bin/sshxx-service update
+TimeoutStartSec=30min
+StandardInput=null
+# Existing deployment updaters may print protected session URLs to stdout.
+StandardOutput=null
+StandardError=journal
+```
+
+`ExecStart` may instead call the deployment's **existing** trusted updater with
+its fixed noninteractive arguments. Do not duplicate its implementation. Verify
+that it preserves the host and returns failure on an unsuccessful deployment.
+Keep `RemainAfterExit=yes` so completed results survive systemd garbage
+collection and daemon restarts. The daemon restarts this job only when it is not
+updating; conflicting queued systemd jobs are rejected, not replaced. Do not
+enable this unit at boot or bind its lifetime to the daemon service.
+
+Use `sudo visudo -f /etc/sudoers.d/sshxx-web-update` to authorize only the fixed
+operation for the actual daemon account (replace `sshxx`):
+
+```sudoers
+sshxx ALL=(root) NOPASSWD: /usr/bin/systemctl restart --no-block --job-mode=fail sshxx-update.service
+```
+
+Use `sudo systemctl edit sshxx-daemon.service` to add:
+
+```ini
+[Service]
+Environment=SSHXX_WEB_UPDATE=system
+```
+
+Then run `sudo systemctl daemon-reload` and restart **daemon only** to load the
+new environment. This setup requires the new daemon/server implementation to be
+installed first; older releases cannot bootstrap this feature from the Web.
+
+For **user services**, place the analogous job in
+`~/.config/systemd/user/sshxx-update.service`, use the existing user
+installation's absolute `sshxx-service update` path, omit `SUDO_USER`, set
+`SSHXX_WEB_UPDATE=user` in the user daemon's drop-in, and use
+`systemctl --user`. No sudo rule is needed. Its job must target that user's
+service deployment only.
+
+Inspect job results with
+`systemctl show sshxx-update.service -p ActiveState -p Result -p ExecMainStatus`
+and protected local logs with `journalctl -u sshxx-update.service` (add `--user`
+for user scope). Repeated starts while the oneshot is running do not create
+parallel updates. A failed update is not automatically retried; inspect it
+before retrying. Remove the environment opt-in and sudo rule to revoke
+Web-triggered updates. Do not remove/stop an actively running job merely to hide
+its button.
+
 ### Uninstall managed Runtime
 
 ```shell
@@ -375,6 +461,28 @@ Windows x64.
 
 Release checksums and GitHub attestations provide build provenance and integrity
 checks, but do not replace trusted platform code signing.
+
+## v0.13.3 upgrade notes
+
+| Component               | Version | Changes                                                         |
+| ----------------------- | ------- | --------------------------------------------------------------- |
+| Suite / Runtime archive | 0.13.3  | Version reporting and opt-in managed Web updates                |
+| Web / Tauri client      | 0.13.2  | Live versions, update controls, emoji/kaomoji in chat and notes |
+| Daemon                  | 0.11.3  | Live host probes and administrator-managed update job bridge    |
+| Server                  | 0.11.3  | Live Runtime status for existing and newly connected viewers    |
+| Internal core           | 0.11.3  | Compatible Runtime status and update-action protocol additions  |
+| Terminal host           | 0.10.2  | Unchanged; no host restart required                             |
+
+Update server and daemon together, then reload the Web client. A host upgraded
+externally is now reported live instead of retaining the daemon's startup
+version. Settings labels the suite and module versions separately; different
+numbers are expected.
+
+The first installation of this release still uses the existing manual updater.
+Web-triggered updates require the administrator setup described above and do not
+automatically grant privileges. The fixed Linux/systemd job survives a browser
+disconnect or daemon restart and must preserve the running terminal host.
+Standalone packaged clients are updated separately.
 
 ## v0.13.2 upgrade notes
 

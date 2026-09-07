@@ -2,6 +2,7 @@
 
 // Injected by vite.config.ts
 declare const __APP_VERSION__: string;
+declare const __RELEASE_VERSION__: string;
 
 // See https://kit.svelte.dev/docs/types#the-app-namespace
 // for information about these interfaces

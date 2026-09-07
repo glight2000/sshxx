@@ -11,6 +11,16 @@ import {
   serializeParagraphs,
 } from "../src/lib/paragraphs.ts";
 
+test("emoji and kaomoji stay plain text through paragraph clipboard and reordering", () => {
+  const values = ["你好 😊", "(๑•̀ㅂ•́)و✧\n❤️ 👨‍👩‍👧‍👦", "<b>not HTML</b>"];
+  assert.deepEqual(deserializeParagraphs(serializeParagraphs(values)), values);
+  assert.deepEqual(reorderParagraphs(values, [0, 1], 3).paragraphs, [
+    values[2],
+    values[0],
+    values[1],
+  ]);
+});
+
 test("moves multiple paragraphs as one stable block", () => {
   assert.deepEqual(reorderParagraphs(["a", "b", "c", "d"], [1, 2], 4), {
     paragraphs: ["a", "d", "b", "c"],

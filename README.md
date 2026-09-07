@@ -53,6 +53,14 @@ terminal host can stay running; restarting it disconnects all hosted tasks.
 
 ## Architecture
 
+**v0.13.3** adds live Runtime/host version reporting, an opt-in **Update Runtime
+& restart** control for administrator-configured Linux/systemd jobs, and
+plain-text emoji/kaomoji pickers in chat and notes. Setup and privilege
+boundaries are documented in
+[Web-triggered updates](docs/wiki/Installation-and-Releases.md#web-triggered-updates).
+The Release/archive version and independently versioned modules are both shown
+in Settings; a client module version need not equal the Runtime archive version.
+
 | Component             | Source                       | Responsibility                                                               |
 | --------------------- | ---------------------------- | ---------------------------------------------------------------------------- |
 | `sshxx-terminal-host` | `crates/sshxx-terminal-host` | Owns PTY/ConPTY handles and shell/SSH processes across daemon restarts       |

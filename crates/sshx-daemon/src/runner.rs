@@ -79,6 +79,37 @@ pub enum ShellData {
 }
 
 impl Runner {
+    /// Revalidate independently of terminal output and browser lifecycle actions.
+    pub(crate) async fn report_host_version(
+        &self,
+        tx: &mpsc::Sender<sshx_core::proto::ClientUpdate>,
+    ) -> Result<()> {
+        let mut previous = None;
+        loop {
+            let version = time::timeout(Duration::from_secs(2), self.terminal_host_version())
+                .await
+                .unwrap_or_default();
+            let version = if version.is_empty() {
+                "unknown".to_owned()
+            } else {
+                version
+            };
+            let info = sshx_core::proto::RuntimeInfo {
+                terminal_host_version: version,
+                release_version: crate::runtime_update::running_release(),
+                update_status: crate::runtime_update::status().await,
+            };
+            if previous.as_ref() != Some(&info) {
+                tx.send(sshx_core::proto::ClientUpdate {
+                    client_message: Some(ClientMessage::RuntimeInfo(info.clone())),
+                })
+                .await?;
+                previous = Some(info);
+            }
+            time::sleep(Duration::from_secs(15)).await;
+        }
+    }
+
     /// Return the version negotiated with the active terminal-host process.
     /// Legacy embedded and test runners do not have an independent host.
     pub(crate) async fn terminal_host_version(&self) -> String {

@@ -7,6 +7,27 @@ synchronization scope.
 
 ## Runtime ownership
 
+Release v0.13.3 reports live host versions and Runtime update-job state every 15
+seconds (only changes are sent). Probes have bounded timeouts, are cancelled
+with their connection, and never resize/terminate terminals. An unavailable host
+reports `unknown` rather than indefinitely retaining its old version. The server
+sends the latest observation to existing and newly connected viewers. The
+Runtime archive is derived from the running daemon executable's version
+directory, not the installer's selected-but-not-yet-running pointer. Source
+builds are labeled explicitly.
+
+Web-triggered updates are writer-only, opt-in lifecycle actions. The daemon can
+start only the locally provisioned `sshxx-update.service` unit in the configured
+user/system scope; browsers cannot provide commands, arguments, service names,
+paths or release URLs. An independent systemd job owns the actual update, so a
+viewer/daemon disconnect does not cancel it. Job result is read back from
+systemd after reconnect and is not inferred from WebSocket connectivity. The
+administrator owns job code and permissions; root jobs must not execute files or
+dependencies writable by the daemon account. Do not grant arbitrary sudo. The
+job must preserve the running host; host restart remains separately confirmed
+and destructive. A job can update only its explicitly configured deployment, not
+an unrelated remote server or packaged desktop app.
+
 | Component             | Owns                                                                                                                                                             |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sshxx-terminal-host` | PTY/ConPTY handles, local shell/OpenSSH client processes, and a bounded in-memory terminal-output replay buffer                                                  |

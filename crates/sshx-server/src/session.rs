@@ -95,6 +95,7 @@ pub struct Session {
     /// Static metadata for this session.
     metadata: Metadata,
     terminal_host_version: RwLock<String>,
+    runtime_info: RwLock<Option<sshx_core::proto::RuntimeInfo>>,
 
     /// In-memory state for the session.
     shells: RwLock<HashMap<Sid, State>>,
@@ -195,6 +196,7 @@ impl Session {
         let (update_tx, update_rx) = async_channel::bounded(256);
         Session {
             terminal_host_version: RwLock::new(metadata.terminal_host_version.clone()),
+            runtime_info: RwLock::new(None),
             metadata,
             shells: RwLock::new(HashMap::new()),
             users: RwLock::new(HashMap::new()),
@@ -234,9 +236,26 @@ impl Session {
         self.terminal_host_version.read().clone()
     }
 
+    /// Latest daemon-observed versions and independent update-job state.
+    pub fn runtime_info(&self) -> Option<sshx_core::proto::RuntimeInfo> {
+        self.runtime_info.read().clone()
+    }
+
+    /// Refresh live metadata and inform every connected viewer.
+    pub fn set_runtime_info(&self, info: sshx_core::proto::RuntimeInfo) {
+        self.set_terminal_host_version(info.terminal_host_version.clone());
+        *self.runtime_info.write() = Some(info.clone());
+        self.broadcast.send(WsServer::RuntimeInfo(info)).ok();
+    }
+
     /// Publish the host version verified by the daemon's new handshake.
     pub fn set_terminal_host_version(&self, version: String) {
-        *self.terminal_host_version.write() = version.clone();
+        let mut current = self.terminal_host_version.write();
+        if *current == version {
+            return;
+        }
+        *current = version.clone();
+        drop(current);
         self.broadcast
             .send(WsServer::TerminalHostVersion(version))
             .ok();

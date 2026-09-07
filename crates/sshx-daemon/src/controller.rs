@@ -508,8 +508,16 @@ impl Controller {
         let mut interval = time::interval(HEARTBEAT_INTERVAL);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut reconnect = pin!(time::sleep(RECONNECT_INTERVAL));
+        let version_runner = self.runner.clone();
+        let mut host_versions = pin!(version_runner.report_host_version(&tx));
+        let mut update_jobs = tokio::task::JoinSet::new();
         loop {
             let message = tokio::select! {
+                Some(result) = update_jobs.join_next(), if !update_jobs.is_empty() => {
+                    if let Err(error) = result { warn!(?error, "update request task failed"); }
+                    continue;
+                }
+                result = &mut host_versions => { return result; }
                 _ = interval.tick() => {
                     tx.send(ClientUpdate::default()).await?;
                     continue;
@@ -728,6 +736,34 @@ impl Controller {
                     let action =
                         SystemAction::try_from(request.action).unwrap_or(SystemAction::Unspecified);
                     match action {
+                        SystemAction::UpdateRuntime => {
+                            if !update_jobs.is_empty() {
+                                send_msg(&tx, ClientMessage::SystemActionResponse(SystemActionResponse {
+                                    request_id: request.request_id, action: action.into(), ok: false,
+                                    message: "An update request is already being submitted; check its status before retrying.".into(),
+                                    terminal_host_version: String::new(),
+                                })).await?;
+                                continue;
+                            }
+                            let output_tx = self.output_tx.clone();
+                            update_jobs.spawn(async move {
+                                let result = crate::runtime_update::start().await;
+                                let ok = result.is_ok();
+                                let message = match result {
+                                    Ok(()) => "Update requested from the independent system service. Viewers may reconnect; terminal-host is not restarted. Check Settings for the final result.".into(),
+                                    Err(error) => format!("Could not start update: {error}"),
+                                };
+                                output_tx.send(
+                                    ClientMessage::SystemActionResponse(SystemActionResponse {
+                                        request_id: request.request_id,
+                                        action: action.into(),
+                                        ok,
+                                        message,
+                                        terminal_host_version: String::new(),
+                                    }),
+                                ).await.ok();
+                            });
+                        }
                         SystemAction::RestartDaemon => {
                             let restart = self.prepare_process_restart().await;
                             let (ok, message) = match &restart {

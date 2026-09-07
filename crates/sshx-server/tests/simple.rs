@@ -9,6 +9,86 @@ use crate::common::*;
 pub mod common;
 
 #[tokio::test]
+async fn external_host_restart_refreshes_live_and_new_viewers() -> Result<()> {
+    use client_update::ClientMessage;
+    use tokio::{
+        sync::mpsc,
+        time::{sleep, timeout, Duration},
+    };
+    use tokio_stream::wrappers::ReceiverStream;
+    let server = TestServer::new().await;
+    let mut grpc = server.grpc_client().await;
+    let key = "synthetic-live-version";
+    let opened = grpc
+        .open(OpenRequest {
+            origin: "http://example.test".into(),
+            encrypted_zeros: Encrypt::new(key).zeros().into(),
+            terminal_host_version: "0.10.0".into(),
+            ..Default::default()
+        })
+        .await?
+        .into_inner();
+    let (tx, rx) = mpsc::channel(8);
+    tx.send(ClientUpdate {
+        client_message: Some(ClientMessage::Hello(format!(
+            "{},{}",
+            opened.name, opened.token
+        ))),
+    })
+    .await?;
+    let _channel = grpc.channel(ReceiverStream::new(rx)).await?.into_inner();
+    let mut viewer = ClientSocket::connect(&server.ws_endpoint(&opened.name), key, None).await?;
+    let info = RuntimeInfo {
+        terminal_host_version: "0.10.2".into(),
+        release_version: "0.13.2".into(),
+        update_status: "ready".into(),
+    };
+    tx.send(ClientUpdate {
+        client_message: Some(ClientMessage::RuntimeInfo(info.clone())),
+    })
+    .await?;
+    let session = server.state().lookup(&opened.name).unwrap();
+    timeout(Duration::from_secs(3), async {
+        while session.runtime_info().as_ref() != Some(&info) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    viewer.flush().await;
+    assert_eq!(viewer.terminal_host_version, "0.10.2");
+    assert_eq!(viewer.runtime_info.as_ref(), Some(&info));
+    let mut fresh = ClientSocket::connect(&server.ws_endpoint(&opened.name), key, None).await?;
+    fresh.flush().await;
+    assert_eq!(fresh.terminal_host_version, "0.10.2");
+    assert_eq!(fresh.runtime_info.as_ref(), Some(&info));
+    let invalid = RuntimeInfo {
+        terminal_host_version: "bad\nversion".into(),
+        ..info.clone()
+    };
+    tx.send(ClientUpdate {
+        client_message: Some(ClientMessage::RuntimeInfo(invalid)),
+    })
+    .await?;
+    // A subsequent valid message proves the preceding invalid one was processed.
+    let next = RuntimeInfo {
+        update_status: "updating".into(),
+        ..info
+    };
+    tx.send(ClientUpdate {
+        client_message: Some(ClientMessage::RuntimeInfo(next.clone())),
+    })
+    .await?;
+    timeout(Duration::from_secs(3), async {
+        while session.runtime_info().as_ref() != Some(&next) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    assert_eq!(session.terminal_host_version(), "0.10.2");
+    Ok(())
+}
+
+#[tokio::test]
 async fn chat_history_and_note_attachments_restore_without_geometry_overwrites() -> Result<()> {
     use sshx_core::{Sid, Uid};
     use sshx_daemon::{controller::Controller, runner::Runner};

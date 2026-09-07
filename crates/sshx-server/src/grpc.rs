@@ -305,6 +305,19 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
         Some(ClientMessage::FileResponse(response)) => {
             session.send_file_response(response.request_id, response.stream_num, response.data);
         }
+        Some(ClientMessage::RuntimeInfo(info)) => {
+            if [
+                &info.terminal_host_version,
+                &info.release_version,
+                &info.update_status,
+            ]
+            .iter()
+            .all(|value| {
+                !value.is_empty() && value.len() <= 160 && !value.chars().any(char::is_control)
+            }) {
+                session.set_runtime_info(info);
+            }
+        }
         Some(ClientMessage::SystemActionResponse(response)) => {
             if response.ok
                 && response.action == SystemAction::RestartTerminalHost as i32
@@ -317,6 +330,7 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
             let action = match SystemAction::try_from(response.action) {
                 Ok(SystemAction::RestartDaemon) => "restartDaemon",
                 Ok(SystemAction::RestartTerminalHost) => "restartTerminalHost",
+                Ok(SystemAction::UpdateRuntime) => "updateRuntime",
                 _ => "unknown",
             };
             session.send_system_action_response(

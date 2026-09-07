@@ -217,6 +217,11 @@ export type WsServer = {
   fileResponse?: [string, bigint, Uint8Array];
   systemActionResult?: [string, string, boolean, string];
   terminalHostVersion?: string;
+  runtimeInfo?: {
+    terminalHostVersion: string;
+    releaseVersion: string;
+    updateStatus: string;
+  };
   customClick?: [Uid, Sid, number, number, number];
   pong?: number | bigint;
   error?: string;
@@ -352,7 +357,10 @@ export type WsClient = {
     boolean,
   ];
   fileRequest?: [Sid, number, string, bigint, bigint, Uint8Array];
-  systemAction?: [string, "restartDaemon" | "restartTerminalHost"];
+  systemAction?: [
+    string,
+    "restartDaemon" | "restartTerminalHost" | "updateRuntime",
+  ];
   subscribe?: [Sid, number, number];
   subscribeFlowControlled?: [Sid, number, number];
   subscribeGeneration?: [Sid, number, number, number];

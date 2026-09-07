@@ -5,6 +5,7 @@
   import type { WorkspaceMedia } from "$lib/workspaceMedia";
   import { containWheel, scrollWheel } from "$lib/action/containWheel";
   import MediaAttachments from "./MediaAttachments.svelte";
+  import ExpressionPicker from "./ExpressionPicker.svelte";
   export let messages: ChatRecord[];
   export let media: WorkspaceMedia | null;
   export let canUpload: boolean;
@@ -18,6 +19,15 @@
   let uploader: MediaAttachments;
   let uploading = false;
   let text = "";
+  let expressionRange = [0, 0];
+  async function insertExpression(value: string) {
+    const [start, end] = expressionRange;
+    if (text.length - (end - start) + value.length > 2000) return;
+    text = text.slice(0, start) + value + text.slice(end);
+    await tick();
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(start + value.length, start + value.length);
+  }
   let attachments: WorkspaceAttachment[] = [];
   let follow = true;
   let alive = true;
@@ -115,6 +125,12 @@
     {/each}
   </div>
   <form on:submit|preventDefault={submit} on:paste={paste}>
+    <ExpressionPicker
+      disabled={!connected}
+      on:open={() =>
+        (expressionRange = [input.selectionStart, input.selectionEnd])}
+      on:select={(event) => insertExpression(event.detail)}
+    />
     <MediaAttachments
       bind:this={uploader}
       bind:busy={uploading}

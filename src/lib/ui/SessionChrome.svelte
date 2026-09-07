@@ -37,6 +37,11 @@
   export let daemonVersion: string;
   export let terminalHostVersion: string;
   export let systemActionsAvailable: boolean;
+  export let runtimeInfo: {
+    terminalHostVersion: string;
+    releaseVersion: string;
+    updateStatus: string;
+  } | null;
   export let systemActionPending: boolean;
   export let pages: WsPage[];
   export let activePageId: number;
@@ -58,6 +63,7 @@
     closeChat: void;
     closeSettings: void;
     restartDaemon: void;
+    updateRuntime: void;
     restartTerminalHost: void;
     selectPage: number;
     createPage: void;
@@ -136,9 +142,11 @@
   {terminalHostVersion}
   {hasWriteAccess}
   {systemActionsAvailable}
+  {runtimeInfo}
   {systemActionPending}
   on:close={() => dispatch("closeSettings")}
   on:restartDaemon={() => dispatch("restartDaemon")}
+  on:updateRuntime={() => dispatch("updateRuntime")}
   on:restartTerminalHost={() => dispatch("restartTerminalHost")}
 />
 

@@ -12,6 +12,7 @@ mod file_browser;
 mod media;
 mod restart_identity;
 pub mod runner;
+mod runtime_update;
 mod safe_file;
 mod ssh_profiles;
 pub mod terminal;

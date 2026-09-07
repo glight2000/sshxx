@@ -239,6 +239,11 @@
   let serverVersion = "unknown";
   let daemonVersion = "unknown";
   let terminalHostVersion = "unknown";
+  let runtimeInfo: {
+    terminalHostVersion: string;
+    releaseVersion: string;
+    updateStatus: string;
+  } | null = null;
   let terminalRenderFlowControl = false;
   let terminalGenerationProtocol = false;
   let terminalRecoveryProtocol = false;
@@ -779,7 +784,7 @@
   }
 
   function requestSystemAction(
-    action: "restartDaemon" | "restartTerminalHost",
+    action: "restartDaemon" | "restartTerminalHost" | "updateRuntime",
   ) {
     if (!srocket?.connected || !systemActionsAvailable) {
       makeToast({
@@ -798,11 +803,12 @@
       systemActionTimer = null;
       makeToast({
         kind: "error",
-        message: "The runtime restart request timed out.",
+        message:
+          "The runtime request timed out. Check Settings for the current update status before retrying.",
       });
     }, 15_000);
     srocket.send({ systemAction: [requestId, action] });
-    makeToast({ kind: "info", message: "Restart request sent…" });
+    makeToast({ kind: "info", message: "Runtime request sent…" });
   }
 
   function reportConnectionIssue(message: string, stage: "server" | "session") {
@@ -2034,6 +2040,9 @@
         } else if (message.fileResponse) {
           const [requestId, stream, data] = message.fileResponse;
           fileRequests?.handleResponse(requestId, BigInt(stream), data);
+        } else if (message.runtimeInfo) {
+          runtimeInfo = message.runtimeInfo;
+          terminalHostVersion = runtimeInfo.terminalHostVersion;
         } else if (message.terminalHostVersion) {
           terminalHostVersion = message.terminalHostVersion;
         } else if (message.systemActionResult) {
@@ -2082,6 +2091,7 @@
         terminalGenerationProtocol = false;
         terminalRecoveryProtocol = false;
         systemActionsAvailable = false;
+        runtimeInfo = null;
         customComponentsAvailable = false;
         fileRequests?.rejectAll(
           "Connection closed before the filesystem request completed.",
@@ -3895,6 +3905,7 @@
     {serverVersion}
     {daemonVersion}
     {terminalHostVersion}
+    {runtimeInfo}
     {systemActionsAvailable}
     systemActionPending={pendingSystemActionId !== null}
     {pages}
@@ -3933,6 +3944,7 @@
     on:closeChat={() => (showChat = false)}
     on:closeSettings={() => (settingsOpen = false)}
     on:restartDaemon={() => requestSystemAction("restartDaemon")}
+    on:updateRuntime={() => requestSystemAction("updateRuntime")}
     on:restartTerminalHost={() => requestSystemAction("restartTerminalHost")}
     on:selectPage={(event) => switchPage(event.detail)}
     on:createPage={() => {

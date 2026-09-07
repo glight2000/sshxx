@@ -99,6 +99,7 @@ pub struct ClientSocket {
     pub server_version: String,
     pub daemon_version: String,
     pub terminal_host_version: String,
+    pub runtime_info: Option<sshx_core::proto::RuntimeInfo>,
     pub users: BTreeMap<Uid, WsUser>,
     pub shells: BTreeMap<Sid, WsWinsize>,
     pub notes: BTreeMap<Sid, WsNote>,
@@ -130,6 +131,7 @@ impl ClientSocket {
             server_version: String::new(),
             daemon_version: String::new(),
             terminal_host_version: String::new(),
+            runtime_info: None,
             users: BTreeMap::new(),
             shells: BTreeMap::new(),
             notes: BTreeMap::new(),
@@ -310,6 +312,7 @@ impl ClientSocket {
                         self.messages.push((id, name, msg));
                     }
                     WsServer::ChatHistory(_) | WsServer::ChatMessage(_) => {}
+                    WsServer::RuntimeInfo(info) => self.runtime_info = Some(info),
                     WsServer::ShellLatency(_) => {}
                     WsServer::FileResponse(_, _, _) => {}
                     WsServer::SystemActionResult(request_id, action, ok, message) => {

@@ -34,6 +34,7 @@
   } from "./CanvasRelations.svelte";
   import BackgroundPicker from "./BackgroundPicker.svelte";
   import MediaAttachments from "./MediaAttachments.svelte";
+  import ExpressionPicker from "./ExpressionPicker.svelte";
   import type { WorkspaceMedia } from "$lib/workspaceMedia";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
@@ -115,6 +116,36 @@
   let movedParagraphTimer: number | null = null;
   let editorViewport: HTMLElement;
   const editors: Record<number, HTMLTextAreaElement> = {};
+  let expressionTarget = { index: 0, start: 0, end: 0 };
+  function rememberExpressionTarget() {
+    const index = activeParagraphIndex ?? paragraphs.length - 1;
+    const editor = editors[index];
+    expressionTarget = {
+      index,
+      start: editor?.selectionStart ?? paragraphs[index].length,
+      end: editor?.selectionEnd ?? paragraphs[index].length,
+    };
+  }
+  async function insertExpression(value: string) {
+    if (!(await ensureEditing())) return;
+    const { index, start, end } = expressionTarget;
+    if (index >= paragraphs.length) return;
+    if (
+      paragraphPlainText(paragraphs).length - (end - start) + value.length >
+      10_000
+    ) {
+      makeToast({
+        kind: "error",
+        message: "This note has reached its text limit.",
+      });
+      return;
+    }
+    recordHistory(index, editors[index]);
+    paragraphs[index] =
+      paragraphs[index].slice(0, start) + value + paragraphs[index].slice(end);
+    emitText();
+    await focusParagraph(index, start + value.length);
+  }
   type HistoryEntry = {
     paragraphs: string[];
     paragraphIndex: number;
@@ -1318,6 +1349,12 @@
       Ctrl/Cmd+Enter adds a paragraph
     </div>
     <div class="px-3 pt-3">
+      <ExpressionPicker
+        disabled={!hasWriteAccess ||
+          (editingBy !== null && editingBy !== userId)}
+        on:open={rememberExpressionTarget}
+        on:select={(event) => insertExpression(event.detail)}
+      />
       <MediaAttachments
         bind:this={attachmentsEditor}
         {media}

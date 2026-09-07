@@ -409,6 +409,9 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
         capabilities.push("workspace-media-v1".into());
     }
     send(socket, WsServer::Capabilities(capabilities)).await?;
+    if let Some(info) = session.runtime_info() {
+        send(socket, WsServer::RuntimeInfo(info)).await?;
+    }
     send(socket, WsServer::ChatHistory(session.chat_history())).await?;
     send(socket, WsServer::Users(session.list_users())).await?;
     for (id, page_id, editor) in session.list_note_editors() {
@@ -1802,6 +1805,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 let action_value = match action.as_str() {
                     "restartDaemon" => SystemAction::RestartDaemon,
                     "restartTerminalHost" => SystemAction::RestartTerminalHost,
+                    "updateRuntime" => SystemAction::UpdateRuntime,
                     _ => {
                         send(socket, WsServer::Error("Invalid system action.".into())).await?;
                         continue;

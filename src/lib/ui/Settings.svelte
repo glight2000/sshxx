@@ -19,10 +19,16 @@
   export let terminalHostVersion: string;
   export let hasWriteAccess: boolean | undefined;
   export let systemActionsAvailable: boolean;
+  export let runtimeInfo: {
+    terminalHostVersion: string;
+    releaseVersion: string;
+    updateStatus: string;
+  } | null;
   export let systemActionPending: boolean;
 
   const dispatch = createEventDispatcher<{
     restartDaemon: void;
+    updateRuntime: void;
     restartTerminalHost: void;
   }>();
 
@@ -99,12 +105,42 @@
       <div>
         <p class="item-title">Runtime</p>
         <p class="item-subtitle">
-          Reload installed daemon or host programs. This does not download
-          updates or restart the server. Daemon restart preserves terminal
-          tasks; host restart ends them.
+          Update Runtime downloads and restarts through an authorized background
+          service. The two restart-only controls reload already installed
+          programs. Daemon restart preserves terminal tasks; host restart ends
+          them.
         </p>
       </div>
       <div class="runtime-actions">
+        <button
+          type="button"
+          class="runtime-button"
+          disabled={hasWriteAccess !== true ||
+            !systemActionsAvailable ||
+            systemActionPending ||
+            !runtimeInfo ||
+            !/^(ready|completed|failed)/.test(runtimeInfo.updateStatus)}
+          on:click={() => {
+            if (
+              window.confirm(
+                "Install the latest official Runtime using the administrator-configured update service? Server and daemon will restart and viewers will reconnect. The running terminal-host and its tasks will be preserved. This does not update a separately installed desktop app.",
+              )
+            )
+              dispatch("updateRuntime");
+          }}><RefreshCwIcon size="15" /> Update Runtime &amp; restart</button
+        >
+        <span class="runtime-hint"
+          >Update service: {runtimeInfo?.updateStatus ??
+            "awaiting runtime status"}. Updates require administrator setup;
+          unsupported installations use the existing manual updater.</span
+        >
+        {#if runtimeInfo?.updateStatus.startsWith("completed")}
+          <button
+            type="button"
+            class="runtime-button"
+            on:click={() => window.location.reload()}>Reload Web client</button
+          >
+        {/if}
         <button
           type="button"
           class="runtime-button"
@@ -274,6 +310,9 @@
   <!-- svelte-ignore missing-declaration -->
   <div class="mt-6 flex flex-col items-end text-xs leading-5 text-zinc-400">
     <div class="inline-flex flex-col items-end">
+      <span>Client build · Release v{__RELEASE_VERSION__}</span>
+      <span>Daemon Runtime · {runtimeInfo?.releaseVersion ?? "unknown"}</span>
+      <span>Independent module versions:</span>
       <span>sshxx-client v{__APP_VERSION__}</span>
       <span>sshxx-server v{serverVersion}</span>
       <span>sshxx-daemon v{daemonVersion}</span>
