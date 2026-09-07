@@ -13,29 +13,79 @@ const TOKEN: [u8; 32] = [0x5a; 32];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authenticated_restart_rebinds_the_same_endpoint() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+
     let state = tempfile::tempdir()?;
-    let endpoint = state.path().join("restart.sock");
+    let endpoint = state.path().join("host.sock");
     let endpoint = endpoint.to_string_lossy().into_owned();
-    let server_endpoint = endpoint.clone();
-    let server = tokio::spawn(async move {
-        sshxx_terminal_host::server::serve(&server_endpoint, TOKEN.to_vec()).await
-    });
+    let old_bin = state.path().join("versions/old/bin");
+    let new_bin = state.path().join("versions/new/bin");
+    std::fs::create_dir_all(&old_bin)?;
+    std::fs::create_dir_all(&new_bin)?;
+    let executable = env!("CARGO_BIN_EXE_sshxx-terminal-host");
+    std::fs::copy(executable, old_bin.join("sshxx-terminal-host"))?;
+    std::fs::write(state.path().join("host.token"), TOKEN)?;
+    std::fs::write(state.path().join("current-version"), "old")?;
+    let mut server = tokio::process::Command::new(old_bin.join("sshxx-terminal-host"))
+        .args(["serve", "--state-dir", "."])
+        .current_dir(state.path())
+        .env("SSHXX_TEST_HOST_BINARY", executable)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
 
     let mut first = connect_when_ready(&endpoint).await?;
+    assert!(first.process_restart_supported());
+    let create = first
+        .create_terminal(CreateTerminal {
+            terminal_id: "restart-test".into(),
+            program: "/bin/sh".into(),
+            rows: 24,
+            columns: 80,
+            ..Default::default()
+        })
+        .await?;
+    expect_ack(&mut first, create).await?;
     let restart = first.restart(false).await?;
+    assert_eq!(
+        expect_error(&mut first, restart).await?.code,
+        "ACTIVE_TERMINALS"
+    );
+
+    // A broken new installation must not destroy any terminal.
+    std::fs::write(state.path().join("current-version"), "new")?;
+    let restart = first.restart(true).await?;
+    assert_eq!(
+        expect_error(&mut first, restart).await?.code,
+        "RESTART_UNAVAILABLE"
+    );
+    let list = first.list_terminals().await?;
+    assert_eq!(expect_terminal_list(&mut first, list).await?.len(), 1);
+
+    let replacement = new_bin.join("sshxx-terminal-host");
+    std::fs::write(&replacement, "#!/bin/sh\nif [ \"${1-}\" != --version ]; then pwd > restart.loaded; fi\nexec \"$SSHXX_TEST_HOST_BINARY\" \"$@\"\n")?;
+    std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o755))?;
+    let restart = first.restart(true).await?;
     expect_ack(&mut first, restart).await?;
     drop(first);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let mut second = connect_when_ready(&endpoint).await?;
+    assert_eq!(
+        std::fs::read_to_string(state.path().join("restart.loaded"))?.trim(),
+        state.path().to_str().unwrap()
+    );
     let list = second.list_terminals().await?;
     assert!(expect_terminal_list(&mut second, list).await?.is_empty());
     let shutdown = second.shutdown(false).await?;
     expect_ack(&mut second, shutdown).await?;
     drop(second);
-    tokio::time::timeout(Duration::from_secs(5), server)
+    let status = tokio::time::timeout(Duration::from_secs(5), server.wait())
         .await
-        .context("terminal host did not stop after restart")???;
+        .context("terminal host did not stop after restart")??;
+    assert!(status.success());
     Ok(())
 }
 

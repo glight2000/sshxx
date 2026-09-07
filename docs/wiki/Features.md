@@ -20,6 +20,35 @@ initial avatars. Additional users are available from the overflow menu. The
 bottom pager creates and switches independent canvas pages. Double-click a page
 name to rename it inline.
 
+## Workspace chat and attachments
+
+Chat opens as a right sidebar on desktop and a full-screen surface on phones.
+The room shares its latest 500 messages across all pages and viewers. Names and
+timestamps are retained; reconnecting, refreshing, or restarting the daemon can
+restore history from the daemon workspace. Closing the chat surface does not
+delete sent messages. Unsent drafts are temporary and are discarded on close.
+
+Use **Attach files**, paste an image, or drop files onto the chat or note
+content. Images and MP4/WebM videos can be opened with **Preview**; other files
+are offered as downloads and are never executed. Media is loaded only when
+requested, and videos do not autoplay. This version does not include audio
+sending or recording. Notes retain attachments independently from paragraph
+editing and window layout. Moving a note or editing its title does not replace
+its attachment list.
+
+Limits are 20 MiB per file, 8 attachments per chat message, 32 per note, and 512
+MiB in the daemon attachment store. Browser attachment previews/downloads share
+a 64 MiB source-data budget and at most four open resources; close a preview to
+free space. Browser decoder memory is additional to this source-data budget.
+Chat text is limited to 2,000 input characters and 8 KiB on the server.
+
+Authenticated readers can read room history and attachments and send text,
+following existing chat permissions. Uploading files or changing note
+attachments requires write access. See
+[Architecture and State](Architecture-and-State) for encryption and retention
+boundaries. Upgrade both server and daemon for durable chat and attachments; a
+client-only upgrade is insufficient.
+
 ## Persistent terminals
 
 - Terminal processes belong to `sshxx-terminal-host`; closing or refreshing a

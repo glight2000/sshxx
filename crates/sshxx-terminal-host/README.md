@@ -51,6 +51,13 @@ Before upgrading the host, users must inspect `status`, recover or close their
 terminal processes, and acknowledge that application-specific state (for example
 a Codex or nested SSH session) may require manual recovery.
 
+Starting with 0.10.2, authenticated restart reloads the executable rather than
+rebuilding state inside the old process. Unix re-exec keeps the service PID;
+Windows installed command wrappers supervise an explicit restart exit code. The
+handshake advertises this capability and a runtime generation so the daemon can
+verify the replacement. See the canonical
+[upgrade and restart contract](../../docs/wiki/Architecture-and-State.md#terminal-host-lifecycle-and-upgrades).
+
 ## Protocol and security boundary
 
 - Protocol: length-prefixed protobuf with explicit version negotiation.

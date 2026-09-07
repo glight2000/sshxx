@@ -51,6 +51,10 @@ here.
 
 ## Module boundaries and loading
 
+- Fix existing installation, update, and verification scripts in place. Do not
+  leave parallel repair scripts or alternate maintenance entry points; discuss
+  any necessary new entry point with the user first. Integrate regression checks
+  into existing tests and remove task-local repair artifacts after use.
 - Svelte components render one coherent surface. Move reusable algorithms,
   validation, transport, persistence, and state machines into typed modules;
   split independently testable visual regions into child components.

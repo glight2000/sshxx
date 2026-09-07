@@ -278,6 +278,24 @@ reports no terminals, an operator may explicitly activate the installed host:
 sshxx-daemon terminal-host restart
 ```
 
+### Settings restart versus installation
+
+Starting with Release v0.13.2 (client 0.13.1, daemon/server 0.11.2, host
+0.10.2), Settings can reload the installed daemon or host executable. These
+controls do not download a release and do not restart server. After a manual
+download/install, they can activate the corresponding installed program;
+`sshxx-service update` already restarts server and daemon, so another daemon
+restart is unnecessary.
+
+The first upgrade from earlier controls needs a real external service/process
+restart; the old buttons only reset runtime connections/state. On Windows, rerun
+the installer to refresh the restart-aware command wrappers too. Do not restart
+host while an installation command is still running inside one of its terminals:
+that terminates the command along with every hosted task. Complete the install
+first and save/finish tasks, or operate from an independent SSH/system terminal.
+See
+[lifecycle, handoff, and failure boundaries](Architecture-and-State.md#terminal-host-lifecycle-and-upgrades).
+
 ### Uninstall managed Runtime
 
 ```shell
@@ -357,6 +375,41 @@ Windows x64.
 
 Release checksums and GitHub attestations provide build provenance and integrity
 checks, but do not replace trusted platform code signing.
+
+## v0.13.2 upgrade notes
+
+| Module                  | Version | Changes                                                     |
+| ----------------------- | ------- | ----------------------------------------------------------- |
+| Suite / Runtime archive | 0.13.2  | Updated runtime, desktop client, installers and manuals     |
+| Web / Tauri client      | 0.13.1  | Persistent chat, note attachments and real restart controls |
+| Daemon                  | 0.11.2  | Attachment storage, chat persistence and executable restart |
+| Server                  | 0.11.2  | Chat history, attachment routing and restart coordination   |
+| Terminal host           | 0.10.2  | Explicit restart can reload the installed host executable   |
+| Internal core           | 0.11.2  | Compatible chat, attachment and restart protocol additions  |
+
+Chat is a desktop sidebar or phone fullscreen surface with the latest 500
+messages persisted by the daemon. Chat and notes accept image, video and file
+attachments; audio sending/recording is not included. See the
+[feature guide](Features#workspace-chat-and-attachments) for limits, permissions
+and cleanup behavior.
+
+Upgrade server and daemon together and reload the Web client (or update the
+desktop client). Existing workspaces load without a manual migration. Runtime
+archive and component versions are deliberately independent: do not reject a
+checksum-verified archive merely because a binary reports a different version
+from its archive name.
+
+Settings now reloads the installed daemon/host executable, rather than merely
+reconnecting or clearing in-memory state. The first upgrade from older releases
+requires an external service/process restart; on Windows, rerun the installer to
+refresh command wrappers. See
+[restart versus installation](#settings-restart-versus-installation).
+
+Installing this Runtime does not require immediately restarting a compatible
+host. Keep it running to preserve PTYs; chat and attachments do not depend on
+the new host. Activating the host restart implementation requires a planned host
+restart, which disconnects **all hosted processes**. Finish or save tasks first
+and do not restart the host from a terminal still running the update command.
 
 ## v0.13.1 upgrade notes
 

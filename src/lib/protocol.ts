@@ -22,6 +22,7 @@ export type WsWinsize = {
 
 /** Shared state for a note on the infinite canvas. */
 export type WsNote = {
+  attachments?: WorkspaceAttachment[];
   x: number;
   y: number;
   width: number;
@@ -154,6 +155,30 @@ export type WsUser = {
   canWrite: boolean;
 };
 
+export type WorkspaceAttachment = {
+  id: string;
+  name: string;
+  mediaType: string;
+  size: number;
+};
+export type ChatRecord = {
+  id: string;
+  name: string;
+  text: string;
+  sentAt: number;
+  attachments: WorkspaceAttachment[];
+};
+export type WireChatRecord = Omit<ChatRecord, "sentAt"> & {
+  sentAt: number | bigint;
+};
+export type AttachmentRequest = {
+  operation: "read" | "write";
+  path: string;
+  offset: number;
+  total?: number;
+  content?: string;
+};
+
 /** Server message type, see the Rust version. */
 export type WsServer = {
   hello?: [Uid, string, string, string, string?];
@@ -186,9 +211,12 @@ export type WsServer = {
   ];
   terminalStalled?: [Sid, number, number, number];
   hear?: [Uid, string, string];
+  chatHistory?: WireChatRecord[];
+  chatMessage?: WireChatRecord;
   shellLatency?: number | bigint;
   fileResponse?: [string, bigint, Uint8Array];
   systemActionResult?: [string, string, boolean, string];
+  terminalHostVersion?: string;
   customClick?: [Uid, Sid, number, number, number];
   pong?: number | bigint;
   error?: string;
@@ -333,5 +361,8 @@ export type WsClient = {
   subscribeRecoverable?: [Sid, number, number, number, number];
   renderedBatch?: [Sid, number, number, number];
   chat?: string;
+  chatWithAttachments?: [string, WorkspaceAttachment[]];
+  noteAttachments?: [Sid, number, WorkspaceAttachment[]];
+  attachmentRequest?: [string, bigint, bigint, Uint8Array, boolean];
   ping?: bigint;
 };

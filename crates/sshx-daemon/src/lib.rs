@@ -9,6 +9,8 @@
 pub mod controller;
 pub mod encrypt;
 mod file_browser;
+mod media;
+mod restart_identity;
 pub mod runner;
 mod safe_file;
 mod ssh_profiles;

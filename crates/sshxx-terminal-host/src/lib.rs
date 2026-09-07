@@ -7,6 +7,7 @@
 use std::path::Path;
 
 pub mod client;
+pub mod process_restart;
 pub mod protocol;
 #[cfg(feature = "host")]
 pub mod server;

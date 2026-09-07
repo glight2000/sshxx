@@ -93,6 +93,9 @@ impl Default for WsWinsize {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WsNote {
+    /// Omitted by legacy clients; omission must preserve existing attachments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<sshx_core::proto::WorkspaceAttachment>>,
     /// Top-left x-coordinate on the canvas.
     pub x: i32,
     /// Top-left y-coordinate on the canvas.
@@ -369,12 +372,18 @@ pub enum WsServer {
     TerminalStalled(Sid, u32, u32, u32),
     /// Get a chat message tuple `(uid, name, text)` from the room.
     Hear(Uid, String, String),
+    /// Bounded durable room history and idempotent live records.
+    ChatHistory(Vec<sshx_core::proto::WorkspaceChatMessage>),
+    /// One persisted chat record, keyed by a server-assigned unique ID.
+    ChatMessage(sshx_core::proto::WorkspaceChatMessage),
     /// Forward a latency measurement between the server and backend shell.
     ShellLatency(u64),
     /// End-to-end encrypted filesystem response from sshxx-daemon.
     FileResponse(String, u64, Bytes),
     /// Result of an authenticated daemon-owned lifecycle action.
     SystemActionResult(String, String, bool, String),
+    /// Active host version after a verified process restart.
+    TerminalHostVersion(String),
     /// Transient custom-component click for non-triggering clients.
     CustomClick(Uid, Sid, u32, u16, u16),
     /// Echo back a timestamp, for the the client's own latency measurement.
@@ -518,6 +527,12 @@ pub enum WsClient {
     RenderedChunks(Sid),
     /// Send a a chat message to the room.
     Chat(String),
+    /// Send text with already-uploaded workspace attachments.
+    ChatWithAttachments(String, Vec<sshx_core::proto::WorkspaceAttachment>),
+    /// Change only a note's attachments on the specified page.
+    NoteAttachments(Sid, u32, Vec<sshx_core::proto::WorkspaceAttachment>),
+    /// Request ID, request/response encryption streams, encrypted body, read-only.
+    AttachmentRequest(String, u64, u64, Bytes, bool),
     /// Send a ping to the server, for latency measurement.
     Ping(u64),
 }

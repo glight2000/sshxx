@@ -8,6 +8,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
+use crate::process_restart::Restart;
 use crate::protocol::frame::Message;
 use crate::protocol::wire::{
     Ack, Error, Frame, HelloAck, TerminalExited, TerminalList, TerminalOutput, WorkingDirectory,
@@ -20,14 +21,15 @@ use crate::{HOST_VERSION, PROTOCOL_VERSION};
 
 const CONNECTION_QUEUE_CAPACITY: usize = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HostExit {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostExit {
     Stop,
-    Restart,
+    Restart(Restart),
 }
 
 #[derive(Clone)]
 struct Host {
+    process_generation: u64,
     authentication_token: Arc<[u8]>,
     sessions: SessionMap,
     shutdown_tx: watch::Sender<Option<HostExit>>,
@@ -54,6 +56,7 @@ impl Host {
             bail!("terminal-host authentication token must contain at least 32 bytes");
         }
         Ok(Self {
+            process_generation: rand::random(),
             authentication_token: authentication_token.into(),
             sessions: Arc::new(tokio::sync::RwLock::new(Default::default())),
             shutdown_tx,
@@ -114,6 +117,8 @@ impl Host {
                     selected_protocol_version: PROTOCOL_VERSION,
                     host_version: HOST_VERSION.into(),
                     host_restart_is_disruptive: true,
+                    process_restart_supported: true,
+                    process_generation: self.process_generation,
                 }),
             ),
         )
@@ -320,6 +325,10 @@ impl Host {
                         .ok();
                 }
                 Message::ShutdownHost(request) => {
+                    if request.restart {
+                        send_error(&outgoing_tx, request_id, "RESTART_UNAVAILABLE", "In-memory reset is no longer supported; upgrade the daemon to request a process restart.", "").await;
+                        continue;
+                    }
                     let active = self
                         .sessions
                         .read()
@@ -339,6 +348,24 @@ impl Host {
                         )
                         .await;
                     } else {
+                        let exit = if request.process_restart {
+                            match Restart::prepare("sshxx-terminal-host").await {
+                                Ok(restart) => HostExit::Restart(restart),
+                                Err(error) => {
+                                    send_error(
+                                        &outgoing_tx,
+                                        request_id,
+                                        "RESTART_UNAVAILABLE",
+                                        error.to_string(),
+                                        "",
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            HostExit::Stop
+                        };
                         if request.force {
                             let sessions = std::mem::take(&mut *self.sessions.write().await);
                             for session in sessions.into_values() {
@@ -347,11 +374,6 @@ impl Host {
                         }
                         send_ack(&outgoing_tx, request_id, "").await;
                         let shutdown_tx = self.shutdown_tx.clone();
-                        let exit = if request.restart {
-                            HostExit::Restart
-                        } else {
-                            HostExit::Stop
-                        };
                         tokio::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             shutdown_tx.send(Some(exit)).ok();
@@ -612,15 +634,10 @@ fn tokens_equal(left: &[u8], right: &[u8]) -> bool {
 /// Serve the local terminal-host endpoint until an authenticated client asks
 /// for shutdown. The host never exits merely because all daemon connections
 /// have disconnected.
-pub async fn serve(endpoint: &str, authentication_token: Vec<u8>) -> Result<()> {
-    loop {
-        let (shutdown_tx, shutdown_rx) = watch::channel(None);
-        let host = Host::new(authentication_token.clone(), shutdown_tx)?;
-        match serve_transport(endpoint, host, shutdown_rx).await? {
-            HostExit::Stop => return Ok(()),
-            HostExit::Restart => info!("restarting terminal host runtime"),
-        }
-    }
+pub async fn serve(endpoint: &str, authentication_token: Vec<u8>) -> Result<HostExit> {
+    let (shutdown_tx, shutdown_rx) = watch::channel(None);
+    let host = Host::new(authentication_token, shutdown_tx)?;
+    serve_transport(endpoint, host, shutdown_rx).await
 }
 
 #[cfg(unix)]
@@ -664,7 +681,7 @@ async fn serve_transport(
                     while connections.join_next().await.is_some() {}
                     return Ok(HostExit::Stop);
                 }
-                let exit = *shutdown_rx.borrow();
+                let exit = shutdown_rx.borrow().clone();
                 if let Some(exit) = exit {
                     connections.abort_all();
                     while connections.join_next().await.is_some() {}
@@ -719,7 +736,7 @@ async fn serve_transport(
                     while connections.join_next().await.is_some() {}
                     return Ok(HostExit::Stop);
                 }
-                let exit = *shutdown_rx.borrow();
+                let exit = shutdown_rx.borrow().clone();
                 if let Some(exit) = exit {
                     connections.abort_all();
                     while connections.join_next().await.is_some() {}

@@ -44,12 +44,12 @@ The README intentionally stays at project level. See the
 for the full capability set and screenshots, or start from the
 **[sshxx Wiki](https://github.com/glight2000/sshxx/wiki)**.
 
-**v0.13.1** improves phone canvas responsiveness, separates tap-to-focus from
-fullscreen viewing, adds terminal arrow/control keys and send-without-Enter
-modes, and refines note text selection and typography. See
-[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0131-upgrade-notes).
-This is a client-only update from v0.12.0: daemon, server and terminal-host
-versions are unchanged, and no terminal-host restart is required.
+**v0.13.2** adds desktop sidebar/phone fullscreen chat, 500 persisted messages,
+and image/video/file attachments in chat and notes (no audio sending). Settings
+can now restart the actual installed daemon or terminal-host program. See
+[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0132-upgrade-notes).
+Update server and daemon together for these features. A compatible running
+terminal host can stay running; restarting it disconnects all hosted tasks.
 
 ## Architecture
 
@@ -77,6 +77,14 @@ In the default single-server mode, a server restart briefly disconnects viewers;
 the daemon automatically recreates a missing server session from its durable
 workspace and reattaches the hosted terminals. A configured fixed session name
 preserves the URL. Without one, the replacement receives a new random URL.
+
+Chat history and attachment references are persisted in the daemon workspace;
+attachment files live in its private `cache/attachments` directory. See the
+[feature guide](docs/wiki/Features.md#workspace-chat-and-attachments) for limits
+and the
+[restart and first-upgrade requirements](docs/wiki/Installation-and-Releases.md#settings-restart-versus-installation)
+before using the new restart controls. Releases through v0.13.1 have the older
+controls and need an external service/process restart for the first upgrade.
 
 ## Install and run
 

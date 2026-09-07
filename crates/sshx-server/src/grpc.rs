@@ -50,15 +50,32 @@ impl SshxService for GrpcServer {
             return Err(Status::invalid_argument("origin is empty"));
         }
         let fixed_session = self.0.session_name().is_some();
-        let name = self
-            .0
-            .session_name()
-            .map(str::to_owned)
-            .unwrap_or_else(|| rand_alphanumeric(10));
+        let resuming = !request.resume_name.is_empty();
+        let name = if resuming {
+            if request.resume_name.len() > 128 || request.resume_token.len() > 128 {
+                return Err(Status::invalid_argument("invalid restart identity"));
+            }
+            validate_token(self.0.mac(), &request.resume_name, &request.resume_token)?;
+            if self
+                .0
+                .session_name()
+                .is_some_and(|name| name != request.resume_name)
+            {
+                return Err(Status::invalid_argument(
+                    "restart session does not match fixed session",
+                ));
+            }
+            request.resume_name
+        } else {
+            self.0
+                .session_name()
+                .map(str::to_owned)
+                .unwrap_or_else(|| rand_alphanumeric(10))
+        };
         info!(%name, "creating new session");
 
         if self.0.lookup(&name).is_some() {
-            if !fixed_session {
+            if !fixed_session && !resuming {
                 return Err(Status::already_exists("generated duplicate ID"));
             }
             info!(%name, "replacing fixed session for a reconnecting daemon");
@@ -97,6 +114,7 @@ impl SshxService for GrpcServer {
             name,
             token: BASE64_STANDARD.encode(token.into_bytes()),
             url,
+            process_restart_supported: true,
         }))
     }
 
@@ -288,6 +306,14 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
             session.send_file_response(response.request_id, response.stream_num, response.data);
         }
         Some(ClientMessage::SystemActionResponse(response)) => {
+            if response.ok
+                && response.action == SystemAction::RestartTerminalHost as i32
+                && !response.terminal_host_version.is_empty()
+                && response.terminal_host_version.len() <= 64
+                && !response.terminal_host_version.chars().any(char::is_control)
+            {
+                session.set_terminal_host_version(response.terminal_host_version.clone());
+            }
             let action = match SystemAction::try_from(response.action) {
                 Ok(SystemAction::RestartDaemon) => "restartDaemon",
                 Ok(SystemAction::RestartTerminalHost) => "restartTerminalHost",

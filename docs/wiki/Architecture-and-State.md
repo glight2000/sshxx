@@ -91,15 +91,55 @@ local shells, nested SSH connections, full-screen applications, and agents such
 as Codex or Claude Code. `restart --force` is an explicit destructive
 acknowledgement and disconnects all of them.
 
-Write-capable viewers also have two explicit controls in Settings. **Restart
-daemon** recreates the daemon-to-server control channel while leaving the
-terminal host and its PTYs untouched. **Restart terminal host** always requires
-a browser confirmation, terminates every hosted PTY, and rebuilds the host
-runtime on the same authenticated local endpoint. The latter is a recovery
-control, not a zero-downtime host-binary upgrade: saved SSH-profile windows can
-relaunch, while default local terminals and nested application state are lost.
-Read-only viewers cannot invoke either action. The server returns a lifecycle
-result only to the requesting WebSocket.
+Write-capable viewers have two confirmed process controls in Settings (client
+0.13.1, daemon/server 0.11.2, host 0.10.2 and later):
+
+- **Restart daemon** reloads its executable, retaining the host, PTYs,
+  workspace, session URL, encryption identity, and reader/writer capabilities.
+  Viewers briefly reconnect. The server validates the existing daemon token
+  before replacing that session; its stream state is rebuilt from the host.
+- **Restart terminal host** terminates every hosted PTY and reloads the host
+  executable on the same authenticated endpoint. Completion requires a new host
+  generation, not just a reachable socket. The active host version updates for
+  all viewers. Saved SSH-profile windows may relaunch; local terminals, nested
+  SSH connections, and application state cannot be recovered automatically.
+
+Neither button downloads updates or restarts server. The executable is validated
+before acknowledging a restart; missing/broken replacements are rejected before
+tearing down the running runtime. This cannot guarantee recovery from a crash or
+an executable changed again after validation. Avoid simultaneous installs and
+restart actions. Read-only viewers cannot invoke either action. The result goes
+only to the requesting WebSocket; the process change affects every viewer.
+
+For official versioned installations, restart resolves `current-version` again;
+for direct executable launches it reloads the same executable path. Unix uses
+`exec`, so the PID and service-manager ownership are preserved even though all
+daemon/host code is loaded anew. Windows runtime command wrappers supervise an
+explicit restart exit code (75), reload the selected executable, and keep the
+existing Task Scheduler job alive. Direct Windows executable launches spawn a
+successor after releasing runtime handles; the original foreground command
+returns. No browser-supplied command/path or OS service-management permission is
+introduced.
+
+Daemon-initiated restart temporarily saves `.sshx-restart` alongside the
+workspace. It contains a versioned, AES-GCM-authenticated encrypted identity
+handoff, reusing the existing `.sshx-connections.key` encryption key. It is
+limited to 16 KiB, scoped to the server origin, expires after ten minutes, and
+is deleted after the replacement daemon successfully reopens the session. It is
+not normal session persistence or a crash-recovery credential store, and is not
+synchronized to viewers, written to logs, or inherited by terminal processes.
+Unix staging files are owner-only. Invalid/expired handoffs fail explicitly
+rather than silently creating another identity; remove `.sshx-restart` to
+abandon the handoff and start a new session. Preserve the existing key and
+restrict workspace access on all platforms. This handoff and the associated keys
+are ignored by Git.
+
+Older Settings controls only reconnected the daemon channel or rebuilt the host
+in memory. New clients require the process-restart capability; new daemons
+refuse to invoke the old host reset as a binary upgrade. The first upgrade
+enabling these controls requires an external service/process restart, after
+saving tasks before the host restart. Compatible old hosts can remain running if
+this disruptive upgrade is deferred.
 
 For a systemd system deployment, first run the status command as the service
 account. Only when it reports no terminals should an operator restart the
@@ -297,6 +337,49 @@ session name; a random-name deployment necessarily receives a new URL.
   establishes a collaboration contract.
 
 ## Daemon-local files
+
+### Chat history and note attachments (unreleased source)
+
+The server orders room chat and retains its latest 500 records. It includes them
+in the existing workspace snapshots written by the daemon to `.sshx-workspace`.
+History is session-wide, not page-scoped. Notes store attachment references in
+their own metadata; attachment changes carry note ID and page ID and are
+independent of paragraph editing and layout mutations. Existing geometry
+updates, including updates from older clients, cannot replace an attachment
+list. Old protobuf workspaces without these fields load with empty
+history/attachments.
+
+Attachment bodies live in private daemon-local `cache/attachments/`, separate
+from the expiring terminal-image paste cache. Bodies cross the existing
+encrypted file request/response channel in 64 KiB chunks. The attachment route
+accepts only random IDs and read/write chunk operations, never arbitrary
+filesystem paths or SSH terminal IDs. Viewer reads are marked read-only by the
+server and enforced again by the daemon; uploads and note attachment changes
+require write permission. Responses go only to the requesting browser. Other
+clients receive metadata and load bodies on demand, not through workspace
+broadcasts.
+
+Chat text, names, timestamps, and attachment names/types/sizes are workspace
+metadata visible to the server, like existing note text. Attachment body files
+are plaintext at rest with owner-only permissions, like terminal image uploads;
+transport encryption does not encrypt daemon backups or protect against a daemon
+machine administrator. Do not present chat as end-to-end encrypted messaging.
+
+Storage is capped at 512 MiB with eight in-progress uploads and 20 MiB per file.
+When another upload begins, files unreferenced by the saved chat/notes and older
+than one hour are collected. The grace period protects in-flight metadata saves.
+Referenced note attachments are not subject to the terminal-image 24-hour
+expiry. Abandoned partial uploads become eligible after one hour. Hitting a
+limit returns an error without deleting referenced attachments. Browser source
+buffers/object URLs are capped at 64 MiB/four open attachments, with
+cancellation and URL cleanup on close or teardown; browser image/video decoding
+has additional memory costs.
+
+Chat/sidebar visibility, pending drafts, preview selection, playback, download,
+and scroll position remain local and temporary. Sending text preserves the prior
+chat permission rule (authenticated readers can chat). A daemon/server upgrade
+is required for persistence and attachments; terminal-host needs no changes for
+this feature. No recording or audio sending is provided.
 
 The daemon writes these paths relative to its current working directory:
 

@@ -289,7 +289,7 @@ async fn start(args: Args) -> Result<()> {
     let exit_signal = wait_for_shutdown();
     tokio::pin!(exit_signal);
     tokio::select! {
-        _ = controller.run() => unreachable!(),
+        result = controller.run() => return result,
         Ok(()) = &mut exit_signal => (),
     };
     controller.close().await?;
@@ -364,6 +364,13 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
+            let err = match err.downcast::<sshxx_terminal_host::process_restart::Restart>() {
+                Ok(restart) => match restart.execute() {
+                    Ok(code) => return code,
+                    Err(error) => error,
+                },
+                Err(error) => error,
+            };
             error!("{err:?}");
             ExitCode::FAILURE
         }

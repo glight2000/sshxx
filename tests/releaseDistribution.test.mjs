@@ -88,3 +88,19 @@ test("managed installers preserve the independent terminal-host lifecycle", () =
     /"daemon" \{\s+Wait-Host \$Configuration\s+Wait-Web \$Configuration/,
   );
 });
+
+test("Windows runtime launchers reload only on an explicit process restart", () => {
+  for (const role of ["Daemon", "Host"]) {
+    const wrapper = windowsInstaller.match(
+      new RegExp(`\\$${role}Wrapper = @'([\\s\\S]*?)'@`),
+    )?.[1];
+    assert.ok(wrapper);
+    assert.match(wrapper, /setlocal/);
+    assert.match(wrapper, /SSHXX_RESTART_SUPERVISED=1/);
+    assert.match(wrapper, /:sshxx_restart\s+set \/p VERSION=/);
+    assert.match(
+      wrapper,
+      /if errorlevel 76 exit \/b %errorlevel%\s+if errorlevel 75 goto sshxx_restart/,
+    );
+  }
+});

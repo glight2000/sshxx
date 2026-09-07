@@ -9,6 +9,86 @@ use crate::common::*;
 pub mod common;
 
 #[tokio::test]
+async fn chat_history_and_note_attachments_restore_without_geometry_overwrites() -> Result<()> {
+    use sshx_core::{Sid, Uid};
+    use sshx_daemon::{controller::Controller, runner::Runner};
+    use sshx_server::session::Session;
+    use tokio_stream::StreamExt;
+    let server = TestServer::new().await;
+    let controller = Controller::new(&server.endpoint(), "media-test", Runner::Echo, false).await?;
+    let session = server.state().lookup(controller.name()).unwrap();
+    let _user = session.user_scope(Uid(99), true)?;
+    session.update_user(Uid(99), |user| user.name = "Tester".into())?;
+    for i in 0..550 {
+        session.send_chat(Uid(99), &format!("message {i}"))?;
+    }
+    assert_eq!(session.chat_history().len(), 500);
+    assert_eq!(session.chat_history()[0].text, "message 50");
+    assert!(session.send_chat(Uid(99), &"x".repeat(8193)).is_err());
+    let attachment = WorkspaceAttachment {
+        id: "a".repeat(32),
+        name: "image.png".into(),
+        media_type: "image/png".into(),
+        size: 12,
+    };
+    session.add_note(Sid(1), (0, 0), 1, None)?;
+    let mut old_note = session.subscribe_notes().next().await.unwrap()[0].1.clone();
+    session.update_note_attachments(Sid(1), 1, vec![attachment.clone()])?;
+    old_note.x = 200;
+    session.update_note(Sid(1), 1, Some(old_note))?;
+    assert_eq!(
+        session.workspace_state().notes[0].attachments,
+        vec![attachment]
+    );
+    assert!(session.update_note_attachments(Sid(1), 2, vec![]).is_err());
+    let restored = Session::new(session.metadata().clone());
+    restored.restore_workspace(session.workspace_state())?;
+    assert_eq!(restored.chat_history(), session.chat_history());
+    assert_eq!(
+        restored.workspace_state().notes,
+        session.workspace_state().notes
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn restart_resume_preserves_url_and_requires_the_daemon_token() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut client = server.grpc_client().await;
+    let request = OpenRequest {
+        origin: "https://sshxx.example".into(),
+        encrypted_zeros: vec![7; 16].into(),
+        write_password_hash: Some(vec![8; 16].into()),
+        daemon_version: "old".into(),
+        ..Default::default()
+    };
+    let original = client.open(request.clone()).await?.into_inner();
+    assert!(original.process_restart_supported);
+    let old_session = server.state().lookup(&original.name).unwrap();
+    let mut resume = OpenRequest {
+        resume_name: original.name.clone(),
+        resume_token: "invalid".into(),
+        daemon_version: "new".into(),
+        ..request
+    };
+    assert!(client.open(resume.clone()).await.is_err());
+    assert!(std::sync::Arc::ptr_eq(
+        &old_session,
+        &server.state().lookup(&original.name).unwrap()
+    ));
+    resume.resume_token = original.token.clone();
+    let restored = client.open(resume).await?.into_inner();
+    assert_eq!(restored.name, original.name);
+    assert_eq!(restored.url, original.url);
+    assert_eq!(restored.token, original.token);
+    assert!(!std::sync::Arc::ptr_eq(
+        &old_session,
+        &server.state().lookup(&original.name).unwrap()
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_rpc() -> Result<()> {
     let server = TestServer::new().await;
     let mut client = server.grpc_client().await;
@@ -23,6 +103,7 @@ async fn test_rpc() -> Result<()> {
         workspace: None,
         ssh_profiles: None,
         capabilities: Vec::new(),
+        ..Default::default()
     };
     let resp = client.open(req).await?;
     assert!(!resp.into_inner().name.is_empty());
@@ -83,6 +164,7 @@ async fn test_fixed_session_name() -> Result<()> {
             workspace: None,
             ssh_profiles: None,
             capabilities: Vec::new(),
+            ..Default::default()
         })
         .await?
         .into_inner();
@@ -102,6 +184,7 @@ async fn test_fixed_session_name() -> Result<()> {
             workspace: None,
             ssh_profiles: None,
             capabilities: Vec::new(),
+            ..Default::default()
         })
         .await?;
     let replacement_session = server.state().lookup("dev").unwrap();
@@ -121,6 +204,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
     let server = TestServer::new().await;
     let mut client = server.grpc_client().await;
     let workspace = WorkspaceState {
+        chat_history: Vec::new(),
         format_version: sshx_core::WORKSPACE_FORMAT_VERSION,
         shells: vec![WorkspaceShell {
             id: 7,
@@ -139,6 +223,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             minimized: true,
         }],
         notes: vec![WorkspaceNote {
+            attachments: Vec::new(),
             id: 8,
             x: 360,
             y: 480,
@@ -202,6 +287,7 @@ async fn test_restore_daemon_workspace() -> Result<()> {
             workspace: Some(workspace.clone()),
             ssh_profiles: None,
             capabilities: Vec::new(),
+            ..Default::default()
         })
         .await?
         .into_inner();
@@ -286,6 +372,7 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
                 profiles: vec![profile.clone()],
             }),
             capabilities: Vec::new(),
+            ..Default::default()
         })
         .await?
         .into_inner();
@@ -322,6 +409,7 @@ async fn test_restore_and_validate_ssh_profiles() -> Result<()> {
                 profiles: vec![profile],
             }),
             capabilities: Vec::new(),
+            ..Default::default()
         })
         .await?
         .into_inner();

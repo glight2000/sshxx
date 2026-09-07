@@ -143,9 +143,8 @@ impl Runner {
     }
 
     /// Restart the independent terminal-host runtime, explicitly terminating
-    /// every PTY it owns. The host process keeps supervising its local endpoint
-    /// so this works without OS service-manager privileges.
-    pub(crate) async fn restart_terminal_host(&self) -> Result<()> {
+    /// every PTY it owns and loading its installed executable again.
+    pub(crate) async fn restart_terminal_host(&self) -> Result<String> {
         let Self::HostedShell { host, .. } = self else {
             bail!("terminal-host is unavailable for the active runner");
         };
@@ -155,6 +154,10 @@ impl Runner {
             env!("CARGO_PKG_VERSION"),
         )
         .await?;
+        if !client.process_restart_supported() {
+            bail!("This terminal host only supports an in-memory reset. Upgrade and restart its process from an independent system terminal first; no terminals were stopped.");
+        }
+        let previous_generation = client.process_generation();
         let request_id = client.restart(true).await?;
         match receive_host_response(&mut client, request_id).await? {
             HostMessage::Ack(_) => {}
@@ -176,7 +179,13 @@ impl Runner {
             )
             .await
             {
-                Ok(_) => return Ok(()),
+                Ok(client) if client.process_generation() != previous_generation => {
+                    return Ok(client.host_version().to_owned())
+                }
+                Ok(_) if time::Instant::now() < deadline => {
+                    time::sleep(Duration::from_millis(50)).await
+                }
+                Ok(_) => bail!("terminal host is still running the previous process generation"),
                 Err(error) if time::Instant::now() < deadline => {
                     warn!(?error, "waiting for restarted terminal host");
                     time::sleep(Duration::from_millis(50)).await;

@@ -26,6 +26,7 @@ use crate::web::protocol::{
     WsCustomWindow, WsFileWindow, WsNote, WsPage, WsServer, WsSshProfile, WsUser, WsWinsize,
 };
 
+mod chat;
 mod output;
 mod pages;
 mod snapshot;
@@ -93,12 +94,14 @@ pub struct Metadata {
 pub struct Session {
     /// Static metadata for this session.
     metadata: Metadata,
+    terminal_host_version: RwLock<String>,
 
     /// In-memory state for the session.
     shells: RwLock<HashMap<Sid, State>>,
 
     /// Metadata for currently connected users.
     users: RwLock<HashMap<Uid, WsUser>>,
+    chat_history: Mutex<Vec<sshx_core::proto::WorkspaceChatMessage>>,
 
     /// Atomic counter to get new, unique IDs.
     counter: IdCounter,
@@ -191,9 +194,11 @@ impl Session {
         let now = Instant::now();
         let (update_tx, update_rx) = async_channel::bounded(256);
         Session {
+            terminal_host_version: RwLock::new(metadata.terminal_host_version.clone()),
             metadata,
             shells: RwLock::new(HashMap::new()),
             users: RwLock::new(HashMap::new()),
+            chat_history: Mutex::new(Vec::new()),
             counter: IdCounter::default(),
             last_accessed: Mutex::new(now),
             source: watch::channel(Vec::new()).0,
@@ -222,6 +227,20 @@ impl Session {
     /// Returns the metadata for this session.
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
+    }
+
+    /// Active version may change after a host-only process restart.
+    pub fn terminal_host_version(&self) -> String {
+        self.terminal_host_version.read().clone()
+    }
+
+    /// Publish the host version verified by the daemon's new handshake.
+    pub fn set_terminal_host_version(&self, version: String) {
+        *self.terminal_host_version.write() = version.clone();
+        self.broadcast
+            .send(WsServer::TerminalHostVersion(version))
+            .ok();
+        self.sync_now();
     }
 
     /// Gives access to the ID counter for obtaining new IDs.
@@ -423,6 +442,7 @@ impl Session {
         let pages = self.pages.borrow();
         WorkspaceState {
             format_version: WORKSPACE_FORMAT_VERSION,
+            chat_history: self.chat_history(),
             shells: self
                 .source
                 .borrow()
@@ -455,6 +475,7 @@ impl Session {
                 .iter()
                 .map(|(id, note)| WorkspaceNote {
                     id: id.0,
+                    attachments: note.attachments.clone().unwrap_or_default(),
                     x: note.x,
                     y: note.y,
                     width: note.width.into(),
@@ -666,6 +687,7 @@ impl Session {
             let linked_shell_ids =
                 normalize_linked_shell_ids(note.linked_shell_ids, page_id, &source);
             let note_state = WsNote {
+                attachments: (!note.attachments.is_empty()).then_some(note.attachments),
                 x: note.x,
                 y: note.y,
                 width: note.width.try_into().context("note width overflow")?,
@@ -807,6 +829,7 @@ impl Session {
         *self.shell_ssh_profiles.write() = shell_ssh_profiles;
         self.source.send_replace(source);
         self.notes.send_replace(notes);
+        self.restore_chat_history(workspace.chat_history)?;
         self.file_windows.send_replace(file_windows);
         self.custom_windows.send_replace(custom_windows);
         *self.next_page_id.lock() = pages
@@ -1384,6 +1407,7 @@ impl Session {
                 id,
                 WsNote {
                     x: position.0,
+                    attachments: None,
                     y: position.1,
                     width,
                     height,
@@ -1458,6 +1482,8 @@ impl Session {
             if let Some(idx) = notes.iter().position(|(note_id, _)| *note_id == id) {
                 let (_, old_note) = notes.remove(idx);
                 let mut next_note = note.unwrap_or_else(|| old_note.clone());
+                // Geometry/style events must not overwrite newer attachment edits.
+                next_note.attachments = old_note.attachments.clone();
                 if preserve_live_text {
                     next_note.text = old_note.text;
                     next_note.paragraphs = old_note.paragraphs;
@@ -1893,15 +1919,7 @@ impl Session {
 
     /// Send a chat message into the room.
     pub fn send_chat(&self, id: Uid, msg: &str) -> Result<()> {
-        // Populate the message with the current name in case it's not known later.
-        let name = {
-            let users = self.users.read();
-            users.get(&id).context("user not found")?.name.clone()
-        };
-        self.broadcast
-            .send(WsServer::Hear(id, name, msg.into()))
-            .ok();
-        Ok(())
+        self.send_chat_with_attachments(id, msg, Vec::new())
     }
 
     /// Broadcast a transient custom-component click without replaying the

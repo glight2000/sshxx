@@ -35,7 +35,8 @@
   import { makeToast } from "./toast";
   import { TerminalHistory } from "./terminalHistory";
   import { constrainTerminalResize } from "./terminalGeometry";
-  import type { ChatMessage } from "./ui/Chat.svelte";
+  import type { ChatRecord } from "./protocol";
+  import { WorkspaceMedia, mergeChatHistory } from "./workspaceMedia";
   import CanvasContextMenu from "./ui/CanvasContextMenu.svelte";
   import Note from "./ui/Note.svelte";
   import ResizeHandles, {
@@ -121,7 +122,7 @@
   const CUSTOM_MIN_HEIGHT = gridSpanSize(3);
   const TERMINAL_RENDER_ACK_CAPABILITY = "terminal-render-ack-v1";
   const TERMINAL_GENERATION_CAPABILITY = "terminal-generation-v1";
-  const SYSTEM_ACTION_CAPABILITY = "system-action-v1";
+  const SYSTEM_ACTION_CAPABILITY = "system-process-restart-v1";
   const CUSTOM_COMPONENT_CAPABILITY = "custom-component-v1";
   let fileExplorerModulePromise: Promise<
     typeof import("./ui/FileExplorer.svelte")
@@ -743,6 +744,9 @@
 
   let encrypt: Encrypt;
   let fileRequests: FileRequestClient | null = null;
+  let media: WorkspaceMedia | null = null;
+  let mediaAvailable = false;
+  let chatHistoryAvailable = false;
   let srocket: Srocket<WsServer, WsClient> | null = null;
   const sendCursor = throttle((message: WsClient) => {
     srocket?.send(message);
@@ -1705,7 +1709,7 @@
     canvasDropPreviewOffsets = {};
   }
 
-  let chatMessages: ChatMessage[] = [];
+  let chatMessages: ChatRecord[] = [];
   let newMessages = false;
 
   let serverLatencies: number[] = [];
@@ -1734,6 +1738,7 @@
       () => Boolean(srocket?.connected),
       (message) => srocket?.send(message),
     );
+    media = new WorkspaceMedia(fileRequests);
     scheduleReadinessWarning();
     srocket = new Srocket<WsServer, WsClient>(`/api/s/${id}`, {
       onMessage(message) {
@@ -1751,6 +1756,7 @@
           exitReason = null;
           failureStage = null;
         } else if (message.capabilities) {
+          mediaAvailable = message.capabilities.includes("workspace-media-v1");
           terminalRecoveryProtocol = message.capabilities.includes(
             "terminal-recovery-v1",
           );
@@ -2003,10 +2009,24 @@
               customClickPopupTimers.add(timer);
             }
           }
-        } else if (message.hear) {
-          const [uid, name, msg] = message.hear;
-          chatMessages.push({ uid, name, msg, sentAt: new Date() });
-          chatMessages = chatMessages;
+        } else if (message.chatHistory) {
+          chatHistoryAvailable = true;
+          chatMessages = mergeChatHistory([], message.chatHistory);
+        } else if (message.chatMessage) {
+          chatMessages = mergeChatHistory(chatMessages, [message.chatMessage]);
+          if (!showChat) newMessages = true;
+        } else if (message.hear && !chatHistoryAvailable) {
+          const [, name, msg] = message.hear;
+          chatMessages = [
+            ...chatMessages,
+            {
+              id: randomHex(16),
+              name,
+              text: msg,
+              sentAt: Date.now(),
+              attachments: [],
+            },
+          ].slice(-500);
           if (!showChat) newMessages = true;
         } else if (message.shellLatency !== undefined) {
           const shellLatency = Number(message.shellLatency);
@@ -2014,6 +2034,8 @@
         } else if (message.fileResponse) {
           const [requestId, stream, data] = message.fileResponse;
           fileRequests?.handleResponse(requestId, BigInt(stream), data);
+        } else if (message.terminalHostVersion) {
+          terminalHostVersion = message.terminalHostVersion;
         } else if (message.systemActionResult) {
           const [requestId, , ok, resultMessage] = message.systemActionResult;
           if (requestId !== pendingSystemActionId) return;
@@ -2044,6 +2066,8 @@
       },
 
       onDisconnect() {
+        mediaAvailable = false;
+        chatHistoryAvailable = false;
         connected = false;
         sessionReady = false;
         userId = 0;
@@ -2095,6 +2119,7 @@
     for (const timer of customClickPopupTimers) window.clearTimeout(timer);
     customClickPopupTimers.clear();
     fileRequests?.dispose();
+    media?.dispose();
     srocket?.dispose();
   });
 
@@ -3865,6 +3890,7 @@
     {showChat}
     {userId}
     {chatMessages}
+    media={mediaAvailable ? media : null}
     {settingsOpen}
     {serverVersion}
     {daemonVersion}
@@ -3893,7 +3919,17 @@
     }}
     on:selectSearch={(event) => selectCanvasItem(event.detail)}
     on:toggleNetwork={() => (showNetworkInfo = !showNetworkInfo)}
-    on:chat={(event) => srocket?.send({ chat: event.detail })}
+    on:chat={(event) =>
+      srocket?.send(
+        chatHistoryAvailable
+          ? {
+              chatWithAttachments: [
+                event.detail.text,
+                event.detail.attachments,
+              ],
+            }
+          : { chat: event.detail.text },
+      )}
     on:closeChat={() => (showChat = false)}
     on:closeSettings={() => (settingsOpen = false)}
     on:restartDaemon={() => requestSystemAction("restartDaemon")}
@@ -4269,6 +4305,11 @@
                 bind:this={noteWrappers[id]}
               >
                 <Note
+                  media={mediaAvailable ? media : null}
+                  on:attachments={(event) =>
+                    srocket?.send({
+                      noteAttachments: [id, note.pageId, event.detail],
+                    })}
                   noteId={id}
                   note={displayNote}
                   {hasWriteAccess}

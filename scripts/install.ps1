@@ -129,15 +129,27 @@ try {
 
   $DaemonWrapper = @'
 @echo off
+setlocal
 set "ROOT=%~dp0.."
+set "SSHXX_RESTART_SUPERVISED=1"
+:sshxx_restart
 set /p VERSION=<"%ROOT%\current-version"
 "%ROOT%\versions\%VERSION%\bin\sshxx-daemon.exe" %*
+if errorlevel 76 exit /b %errorlevel%
+if errorlevel 75 goto sshxx_restart
+exit /b %errorlevel%
 '@
   $HostWrapper = @'
 @echo off
+setlocal
 set "ROOT=%~dp0.."
+set "SSHXX_RESTART_SUPERVISED=1"
+:sshxx_restart
 set /p VERSION=<"%ROOT%\current-version"
 "%ROOT%\versions\%VERSION%\bin\sshxx-terminal-host.exe" %*
+if errorlevel 76 exit /b %errorlevel%
+if errorlevel 75 goto sshxx_restart
+exit /b %errorlevel%
 '@
   $ServerWrapper = @'
 @echo off

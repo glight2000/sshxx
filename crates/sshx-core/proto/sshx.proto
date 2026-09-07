@@ -62,6 +62,10 @@ message OpenRequest {
   optional SshProfileCollection ssh_profiles = 7; // Locally persisted SSH connection profiles.
   repeated string capabilities = 8;        // Optional daemon protocol capabilities.
   string terminal_host_version = 9;        // Version reported by the active terminal-host process.
+  // Preserve the session URL across a requested daemon process restart. The
+  // server must validate resume_token before replacing this named session.
+  string resume_name = 10;
+  string resume_token = 11;
 }
 
 // Details of a newly-created sshxx session.
@@ -69,6 +73,7 @@ message OpenResponse {
   string name = 1;  // Name of the session.
   string token = 2; // Signed verification token for the client.
   string url = 3;   // Public web URL to view the session.
+  bool process_restart_supported = 4;
 }
 
 // Sequence numbers for all active shells, used for synchronization.
@@ -103,6 +108,8 @@ message FileRequest {
   uint64 request_stream = 3; // Unique AES-CTR stream for the request body.
   uint64 response_stream = 4; // Unique AES-CTR stream reserved for the response.
   bytes data = 5; // Encrypted JSON request body.
+  bool workspace_attachment = 6; // Restricted daemon attachment store, not a terminal filesystem.
+  bool read_only = 7; // Enforced by the daemon for attachment reads from viewers.
 }
 
 // End-to-end encrypted filesystem result returned to the requesting browser.
@@ -129,6 +136,7 @@ message SystemActionResponse {
   SystemAction action = 2;
   bool ok = 3;
   string message = 4;
+  string terminal_host_version = 5; // Present after a verified host process restart.
 }
 
 // Bidirectional streaming update from the client.
@@ -173,6 +181,22 @@ message WorkspaceState {
   repeated WorkspacePage pages = 4;
   repeated WorkspaceFileWindow file_windows = 5;
   repeated WorkspaceCustomWindow custom_windows = 6;
+  repeated WorkspaceChatMessage chat_history = 7;
+}
+
+message WorkspaceAttachment {
+  string id = 1; // Random lowercase hex identifier; never a filesystem path.
+  string name = 2;
+  string media_type = 3;
+  uint32 size = 4;
+}
+
+message WorkspaceChatMessage {
+  string id = 1;
+  string name = 2;
+  string text = 3;
+  uint64 sent_at = 4; // Unix milliseconds, assigned by the server.
+  repeated WorkspaceAttachment attachments = 5;
 }
 
 message WorkspaceShell {
@@ -208,6 +232,7 @@ message WorkspaceNote {
   repeated uint32 linked_file_window_ids = 13;
   string title = 14;
   bool minimized = 15;
+  repeated WorkspaceAttachment attachments = 16;
 }
 
 message WorkspacePage {
@@ -311,6 +336,7 @@ message SerializedSession {
   repeated string daemon_capabilities = 12;
   repeated SerializedCustomWindow custom_windows = 13;
   string terminal_host_version = 14;
+  repeated WorkspaceChatMessage chat_history = 15;
 }
 
 message SerializedShell {
@@ -348,6 +374,7 @@ message SerializedNote {
   repeated uint32 linked_file_window_ids = 12;
   string title = 13;
   bool minimized = 14;
+  repeated WorkspaceAttachment attachments = 15;
 }
 
 message SerializedPage {

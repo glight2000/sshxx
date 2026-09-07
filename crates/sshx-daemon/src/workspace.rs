@@ -102,6 +102,7 @@ mod tests {
         tokio::fs::create_dir(&directory).await?;
         let path = directory.join(FILE_NAME);
         let workspace = WorkspaceState {
+            chat_history: Vec::new(),
             format_version: WORKSPACE_FORMAT_VERSION,
             shells: vec![WorkspaceShell {
                 id: 7,
@@ -120,6 +121,7 @@ mod tests {
                 minimized: true,
             }],
             notes: vec![WorkspaceNote {
+                attachments: Vec::new(),
                 id: 8,
                 x: 36,
                 y: 48,

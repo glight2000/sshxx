@@ -14,9 +14,13 @@ Compatibility rules:
 5. A semantic change to process, input, resize, replay, or close behavior
    requires a new protocol version.
 6. Daemon upgrades must not restart a compatible running host.
-7. An authenticated restart request may rebuild the host runtime on the same
-   endpoint. It is destructive when forced and does not activate a different
-   executable image; binary upgrades remain an explicit operator action.
+7. Process restart is a new optional `ShutdownHost.process_restart` action,
+   gated by `HelloAck.process_restart_supported`. It reloads the executable on
+   the same endpoint after validating the replacement. New hosts reject the
+   legacy in-memory `restart` flag without stopping terminals; they do not
+   silently reinterpret it. The new client refuses process restart on old hosts.
+   `HelloAck.process_generation` changes on initialization, allowing the daemon
+   to distinguish a replacement from the old listener during shutdown.
 8. Host replacement is always treated as destructive while terminals are active.
 
 Output sequence numbers count raw PTY bytes. A daemon may request its last known

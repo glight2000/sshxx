@@ -42,6 +42,10 @@ message HelloAck {
   // Applying a different host executable requires stopping this process and
   // therefore disconnects all processes owned by it.
   bool host_restart_is_disruptive = 3;
+  // Restart exits/reloads the executable, not just its in-memory runtime.
+  bool process_restart_supported = 4;
+  // Changes only when the process-owned runtime is newly initialized.
+  uint64 process_generation = 5;
 }
 
 message CreateTerminal {
@@ -82,8 +86,11 @@ message ListTerminals {}
 message ShutdownHost {
   // A non-forced shutdown is rejected while any terminal process is active.
   bool force = 1;
-  // Restart the host runtime after shutdown instead of exiting the process.
+  // Legacy in-memory restart. New hosts reject this instead of silently
+  // changing its meaning to executable replacement.
   bool restart = 2;
+  // Requires the process_restart_supported handshake capability.
+  bool process_restart = 3;
 }
 
 message GetWorkingDirectory {

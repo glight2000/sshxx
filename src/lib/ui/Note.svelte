@@ -14,7 +14,7 @@
     Trash2Icon,
   } from "svelte-feather-icons";
   import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
-  import type { WsNote } from "$lib/protocol";
+  import type { WsNote, WorkspaceAttachment } from "$lib/protocol";
   import { makeToast } from "$lib/toast";
   import {
     deleteParagraphs,
@@ -33,12 +33,16 @@
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";
   import BackgroundPicker from "./BackgroundPicker.svelte";
+  import MediaAttachments from "./MediaAttachments.svelte";
+  import type { WorkspaceMedia } from "$lib/workspaceMedia";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
   import InlineTitle from "./InlineTitle.svelte";
   import ResizeHandles, { type ResizeDirection } from "./ResizeHandles.svelte";
 
   export let note: WsNote;
+  export let media: WorkspaceMedia | null = null;
+  let attachmentsEditor: MediaAttachments;
   export let noteId: number;
   export let hasWriteAccess: boolean | undefined;
   export let userId: number;
@@ -54,6 +58,7 @@
   const dispatch = createEventDispatcher<{
     close: void;
     update: WsNote;
+    attachments: WorkspaceAttachment[];
     bringToFront: void;
     startMove: MouseEvent;
     startResize: { event: MouseEvent; direction: ResizeDirection };
@@ -768,6 +773,12 @@
   function handlePaste(event: ClipboardEvent) {
     if (event.target instanceof HTMLInputElement) return;
     if (!event.clipboardData) return;
+    if (event.clipboardData.files.length && hasWriteAccess && media) {
+      event.preventDefault();
+      event.stopPropagation();
+      void attachmentsEditor.addFiles(Array.from(event.clipboardData.files));
+      return;
+    }
     const values = readParagraphClipboard(event.clipboardData);
     if (!values) return;
     event.preventDefault();
@@ -940,6 +951,13 @@
     return rows.length;
   }
   function handleInternalParagraphDrop(event: DragEvent) {
+    if (event.dataTransfer?.files.length) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (hasWriteAccess && media)
+        void attachmentsEditor.addFiles(Array.from(event.dataTransfer.files));
+      return;
+    }
     if (!draggingParagraphIndexes.length) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1157,6 +1175,9 @@
     on:mousedown|stopPropagation
     on:scroll={positionParagraphMenu}
     on:drop={handleInternalParagraphDrop}
+    on:dragover={(event) => {
+      if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+    }}
   >
     {#each paragraphs as paragraph, index (index)}
       <div
@@ -1295,6 +1316,16 @@
     <div class="paragraph-hint" aria-hidden="true">
       Drag across paragraphs to select · Drag a selected handle to move ·
       Ctrl/Cmd+Enter adds a paragraph
+    </div>
+    <div class="px-3 pt-3">
+      <MediaAttachments
+        bind:this={attachmentsEditor}
+        {media}
+        attachments={note.attachments ?? []}
+        editable={Boolean(hasWriteAccess && media)}
+        limit={32}
+        on:change={(event) => dispatch("attachments", event.detail)}
+      />
     </div>
   </div>
   <footer class="note-relations">

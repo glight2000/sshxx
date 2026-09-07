@@ -136,6 +136,8 @@ impl TerminalSession {
         for (key, value) in &request.environment {
             command.env(key, value);
         }
+        // A shell is not supervised by the host's Windows runtime launcher.
+        command.env_remove("SSHXX_RESTART_SUPERVISED");
 
         let child = pair
             .slave

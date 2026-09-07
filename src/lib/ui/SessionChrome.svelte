@@ -3,7 +3,9 @@
   import { EyeIcon } from "svelte-feather-icons";
 
   import type { WsPage, WsSshProfile, WsUser } from "$lib/protocol";
-  import Chat, { type ChatMessage } from "./Chat.svelte";
+  import Chat from "./Chat.svelte";
+  import type { ChatRecord, WorkspaceAttachment } from "$lib/protocol";
+  import type { WorkspaceMedia } from "$lib/workspaceMedia";
   import ChooseName from "./ChooseName.svelte";
   import NetworkInfo from "./NetworkInfo.svelte";
   import PagePager from "./PagePager.svelte";
@@ -28,7 +30,8 @@
   export let shellLatency: number | null;
   export let showChat: boolean;
   export let userId: number;
-  export let chatMessages: ChatMessage[];
+  export let chatMessages: ChatRecord[];
+  export let media: WorkspaceMedia | null;
   export let settingsOpen: boolean;
   export let serverVersion: string;
   export let daemonVersion: string;
@@ -51,7 +54,7 @@
     toggleSearch: void;
     selectSearch: CanvasSearchItem;
     toggleNetwork: void;
-    chat: string;
+    chat: { text: string; attachments: WorkspaceAttachment[] };
     closeChat: void;
     closeSettings: void;
     restartDaemon: void;
@@ -114,11 +117,11 @@
 </div>
 
 {#if showChat}
-  <div
-    class="absolute flex flex-col justify-end inset-y-4 right-4 z-10 w-80 pointer-events-none"
-  >
+  <div class="chat-surface">
     <Chat
-      {userId}
+      {media}
+      {connected}
+      canUpload={Boolean(hasWriteAccess && media)}
       messages={chatMessages}
       on:chat={(event) => dispatch("chat", event.detail)}
       on:close={() => dispatch("closeChat")}
@@ -164,3 +167,22 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .chat-surface {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 40;
+    width: min(390px, 100%);
+    pointer-events: auto;
+  }
+  :global(.mobile-mode) .chat-surface {
+    position: fixed;
+    inset: auto;
+    top: var(--mobile-viewport-top, 0px);
+    left: var(--mobile-viewport-left, 0px);
+    width: var(--mobile-viewport-width, 100vw);
+    height: var(--mobile-viewport-height, 100dvh);
+    z-index: 100;
+  }
+</style>

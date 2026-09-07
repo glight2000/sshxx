@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -45,13 +45,31 @@ enum HostCommand {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+    let result = run();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let error = match error.downcast::<sshxx_terminal_host::process_restart::Restart>() {
+                Ok(restart) => match restart.execute() {
+                    Ok(code) => return code,
+                    Err(error) => error,
+                },
+                Err(error) => error,
+            };
+            tracing::error!("{error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[tokio::main]
+async fn run() -> Result<()> {
     match Args::parse().command {
         HostCommand::Start { state_dir } => start(&state_dir).await,
         HostCommand::Serve { state_dir } => serve(&state_dir).await,
@@ -82,6 +100,7 @@ async fn start(state_dir: &Path) -> Result<()> {
         .arg("serve")
         .arg("--state-dir")
         .arg(state_dir)
+        .env_remove("SSHXX_RESTART_SUPERVISED")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -106,7 +125,12 @@ async fn start(state_dir: &Path) -> Result<()> {
 
 async fn serve(state_dir: &Path) -> Result<()> {
     let token = ensure_token(state_dir)?;
-    sshxx_terminal_host::server::serve(&endpoint_for_state_directory(state_dir), token).await
+    match sshxx_terminal_host::server::serve(&endpoint_for_state_directory(state_dir), token)
+        .await?
+    {
+        sshxx_terminal_host::server::HostExit::Stop => Ok(()),
+        sshxx_terminal_host::server::HostExit::Restart(restart) => Err(restart.into()),
+    }
 }
 
 async fn status(state_dir: &Path) -> Result<()> {

@@ -34,6 +34,7 @@ const TERMINAL_RECOVERY_CAPABILITY: &str = "terminal-recovery-v1";
 const TERMINAL_RENDER_ACK_TIMEOUT: Duration = Duration::from_secs(75);
 const TERMINAL_GENERATION_CAPABILITY: &str = "terminal-generation-v1";
 const SYSTEM_ACTION_CAPABILITY: &str = "system-action-v1";
+const PROCESS_RESTART_CAPABILITY: &str = "system-process-restart-v1";
 const CUSTOM_COMPONENT_CAPABILITY: &str = "custom-component-v1";
 const CUSTOM_CLICK_MIN_INTERVAL: Duration = Duration::from_millis(40);
 
@@ -334,7 +335,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
             metadata.name.clone(),
             env!("CARGO_PKG_VERSION").into(),
             metadata.daemon_version.clone(),
-            metadata.terminal_host_version.clone(),
+            session.terminal_host_version(),
         ),
     )
     .await?;
@@ -385,6 +386,13 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
         .any(|capability| capability == SYSTEM_ACTION_CAPABILITY)
     {
         capabilities.push(SYSTEM_ACTION_CAPABILITY.into());
+        if metadata
+            .daemon_capabilities
+            .iter()
+            .any(|capability| capability == PROCESS_RESTART_CAPABILITY)
+        {
+            capabilities.push(PROCESS_RESTART_CAPABILITY.into());
+        }
     }
     if metadata
         .daemon_capabilities
@@ -393,7 +401,15 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     {
         capabilities.push(CUSTOM_COMPONENT_CAPABILITY.into());
     }
+    if metadata
+        .daemon_capabilities
+        .iter()
+        .any(|c| c == "workspace-media-v1")
+    {
+        capabilities.push("workspace-media-v1".into());
+    }
     send(socket, WsServer::Capabilities(capabilities)).await?;
+    send(socket, WsServer::ChatHistory(session.chat_history())).await?;
     send(socket, WsServer::Users(session.list_users())).await?;
     for (id, page_id, editor) in session.list_note_editors() {
         send(socket, WsServer::NoteEditing(id, page_id, Some(editor))).await?;
@@ -407,6 +423,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     let mut pending_file_requests = HashMap::<String, Instant>::new();
     let mut pending_system_actions = HashMap::<String, Instant>::new();
     let mut last_custom_click = Instant::now() - CUSTOM_CLICK_MIN_INTERVAL;
+    let mut last_chat = Instant::now() - Duration::from_millis(250);
     let (chunks_tx, mut chunks_rx) = mpsc::channel::<TerminalChunks>(1);
 
     let mut shells_stream = session.subscribe_shells();
@@ -1700,10 +1717,66 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 update_tx
                     .send(ServerMessage::FileRequest(ProtoFileRequest {
                         id: id.0,
+                        workspace_attachment: false,
+                        read_only: false,
                         request_id,
                         request_stream,
                         response_stream,
                         data,
+                    }))
+                    .await?;
+            }
+            WsClient::AttachmentRequest(
+                request_id,
+                request_stream,
+                response_stream,
+                data,
+                read_only,
+            ) => {
+                if !metadata
+                    .daemon_capabilities
+                    .iter()
+                    .any(|c| c == "workspace-media-v1")
+                {
+                    send(
+                        socket,
+                        WsServer::Error("Upgrade the daemon to use workspace attachments.".into()),
+                    )
+                    .await?;
+                    continue;
+                }
+                if !read_only {
+                    if let Err(error) = session.check_write_permission(user_id) {
+                        send(socket, WsServer::Error(error.to_string())).await?;
+                        continue;
+                    }
+                }
+                pending_file_requests
+                    .retain(|_, created| created.elapsed() < Duration::from_secs(40));
+                if !valid_file_request(&request_id, request_stream, response_stream, data.len())
+                    || data.len() > 96 << 10
+                    || pending_file_requests.len() >= 8
+                    || pending_file_requests.contains_key(&request_id)
+                {
+                    send(
+                        socket,
+                        WsServer::Error(
+                            "Invalid attachment request or too many pending requests.".into(),
+                        ),
+                    )
+                    .await?;
+                    continue;
+                }
+                pending_file_requests.insert(request_id.clone(), Instant::now());
+                update_tx
+                    .send(ServerMessage::FileRequest(ProtoFileRequest {
+                        id: 0,
+                        request_id,
+                        request_stream,
+                        response_stream,
+                        data,
+                        workspace_attachment: true,
+                        read_only,
                     }))
                     .await?;
             }
@@ -1896,8 +1969,34 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     sender.try_send(()).ok();
                 }
             }
+            WsClient::Chat(_) | WsClient::ChatWithAttachments(_, _)
+                if last_chat.elapsed() < Duration::from_millis(250) =>
+            {
+                send(
+                    socket,
+                    WsServer::Error("Please wait before sending another chat message.".into()),
+                )
+                .await?;
+            }
             WsClient::Chat(msg) => {
-                session.send_chat(user_id, &msg)?;
+                last_chat = Instant::now();
+                if let Err(error) = session.send_chat(user_id, &msg) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::NoteAttachments(id, page_id, attachments) => {
+                if let Err(error) = session
+                    .check_write_permission(user_id)
+                    .and_then(|_| session.update_note_attachments(id, page_id, attachments))
+                {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::ChatWithAttachments(msg, attachments) => {
+                last_chat = Instant::now();
+                if let Err(error) = session.send_chat_with_attachments(user_id, &msg, attachments) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
             }
             WsClient::Ping(ts) => {
                 send(socket, WsServer::Pong(ts)).await?;

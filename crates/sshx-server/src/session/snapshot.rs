@@ -32,6 +32,7 @@ impl Session {
         let ids = self.counter.get_current_values();
         let winsizes: BTreeMap<Sid, WsWinsize> = self.source.borrow().iter().cloned().collect();
         let message = SerializedSession {
+            chat_history: self.chat_history(),
             encrypted_zeros: self.metadata().encrypted_zeros.clone(),
             shells: self
                 .shells
@@ -81,7 +82,7 @@ impl Session {
             name: self.metadata().name.clone(),
             write_password_hash: self.metadata().write_password_hash.clone(),
             daemon_version: self.metadata().daemon_version.clone(),
-            terminal_host_version: self.metadata().terminal_host_version.clone(),
+            terminal_host_version: self.terminal_host_version(),
             daemon_capabilities: self.metadata().daemon_capabilities.clone(),
             notes: self
                 .notes
@@ -91,6 +92,7 @@ impl Session {
                     (
                         id.0,
                         SerializedNote {
+                            attachments: note.attachments.clone().unwrap_or_default(),
                             x: note.x,
                             y: note.y,
                             width: note.width.into(),
@@ -266,6 +268,7 @@ impl Session {
                 let page_id = note.page_id.max(1);
                 let paragraphs = normalize_note_paragraphs(&note.text, note.paragraphs);
                 let note = WsNote {
+                    attachments: (!note.attachments.is_empty()).then_some(note.attachments),
                     x: note.x,
                     y: note.y,
                     width: if note.width == 0 {
@@ -427,6 +430,7 @@ impl Session {
             .counter
             .set_current_values(Sid(message.next_sid), Uid(message.next_uid));
 
+        session.restore_chat_history(message.chat_history)?;
         Ok(session)
     }
 }

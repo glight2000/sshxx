@@ -29,6 +29,7 @@ id_ed25519
 /build
 /cache/
 .sshx-workspace
+.sshx-restart
 .sshx-workspace.tmp
 .sshx-workspace.invalid-*
 .sshx-connections

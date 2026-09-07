@@ -370,7 +370,7 @@ async fn test_fixed_encryption_key() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_writer_can_restart_daemon_control_channel() -> Result<()> {
+async fn test_restart_failure_is_reported_only_to_requesting_writer() -> Result<()> {
     let server = TestServer::new().await;
     let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
     let name = controller.name().to_owned();
@@ -402,10 +402,19 @@ async fn test_writer_can_restart_daemon_control_channel() -> Result<()> {
     let (received_id, action, ok, message) = &writer.system_action_results[0];
     assert_eq!(received_id, request_id);
     assert_eq!(action, "restartDaemon");
-    assert!(*ok);
-    assert!(message.contains("remain running"));
+    assert!(!*ok);
+    assert!(message.contains("persistent daemon state"));
     observer.flush().await;
     assert!(observer.system_action_results.is_empty());
+    let session = server.state().lookup(&name).unwrap();
+    session.set_terminal_host_version("updated-host".into());
+    writer.flush().await;
+    observer.flush().await;
+    assert_eq!(writer.terminal_host_version, "updated-host");
+    assert_eq!(observer.terminal_host_version, "updated-host");
+    let mut reconnected = ClientSocket::connect(&server.ws_endpoint(&name), &key, None).await?;
+    reconnected.flush().await;
+    assert_eq!(reconnected.terminal_host_version, "updated-host");
     Ok(())
 }
 

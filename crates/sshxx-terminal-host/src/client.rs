@@ -24,6 +24,8 @@ pub struct Client {
     next_request_id: u64,
     host_version: String,
     host_restart_is_disruptive: bool,
+    process_restart_supported: bool,
+    process_generation: u64,
 }
 
 impl Client {
@@ -40,6 +42,8 @@ impl Client {
             next_request_id: 1,
             host_version: String::new(),
             host_restart_is_disruptive: true,
+            process_restart_supported: false,
+            process_generation: 0,
         };
         let request_id = client.next_request_id();
         client
@@ -64,6 +68,8 @@ impl Client {
             {
                 client.host_version = ack.host_version;
                 client.host_restart_is_disruptive = ack.host_restart_is_disruptive;
+                client.process_restart_supported = ack.process_restart_supported;
+                client.process_generation = ack.process_generation;
             }
             Some(Message::Error(error)) => bail!("{}: {}", error.code, error.message),
             _ => bail!("terminal host returned an invalid handshake response"),
@@ -77,6 +83,14 @@ impl Client {
 
     pub fn host_restart_is_disruptive(&self) -> bool {
         self.host_restart_is_disruptive
+    }
+
+    pub fn process_restart_supported(&self) -> bool {
+        self.process_restart_supported
+    }
+
+    pub fn process_generation(&self) -> u64 {
+        self.process_generation
     }
 
     pub async fn create_terminal(&mut self, request: CreateTerminal) -> Result<u64> {
@@ -139,14 +153,20 @@ impl Client {
         self.send(Message::ShutdownHost(ShutdownHost {
             force,
             restart: false,
+            process_restart: false,
         }))
         .await
     }
 
     pub async fn restart(&mut self, force: bool) -> Result<u64> {
+        anyhow::ensure!(
+            self.process_restart_supported,
+            "terminal host does not support process restart"
+        );
         self.send(Message::ShutdownHost(ShutdownHost {
             force,
-            restart: true,
+            restart: false,
+            process_restart: true,
         }))
         .await
     }

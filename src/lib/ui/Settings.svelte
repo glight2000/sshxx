@@ -29,7 +29,7 @@
   function restartDaemon() {
     if (
       window.confirm(
-        "Restart the daemon control channel? Hosted terminal processes will remain running.",
+        "Restart the daemon process and load its installed executable? All viewers will briefly reconnect. Hosted terminal processes will remain running.",
       )
     ) {
       dispatch("restartDaemon");
@@ -39,7 +39,7 @@
   function restartTerminalHost() {
     if (
       window.confirm(
-        "Restart terminal host? This will terminate every running terminal process. Saved SSH terminals can be recreated, but local terminal processes cannot be recovered.",
+        "Restart the terminal-host process and load its installed executable? This will terminate every running terminal process for all viewers. Saved SSH terminals can be recreated, but local terminal processes cannot be recovered. Finish any upgrade commands running inside these terminals first.",
       )
     ) {
       dispatch("restartTerminalHost");
@@ -99,8 +99,9 @@
       <div>
         <p class="item-title">Runtime</p>
         <p class="item-subtitle">
-          Restart daemon-owned runtime services without granting the browser
-          operating-system service permissions.
+          Reload installed daemon or host programs. This does not download
+          updates or restart the server. Daemon restart preserves terminal
+          tasks; host restart ends them.
         </p>
       </div>
       <div class="runtime-actions">
@@ -128,7 +129,7 @@
         </button>
         {#if !systemActionsAvailable}
           <span class="runtime-hint"
-            >Update server and daemon to use runtime controls.</span
+            >Upgrade and restart server and daemon to enable process restart.</span
           >
         {:else if hasWriteAccess !== true}
           <span class="runtime-hint">Write access is required.</span>

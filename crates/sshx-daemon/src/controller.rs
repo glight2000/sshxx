@@ -13,6 +13,7 @@ use sshx_core::proto::{
     OpenRequest, SystemAction, SystemActionResponse, WorkspacePage, WorkspaceState,
 };
 use sshx_core::{rand_alphanumeric, Sid, MAX_GRPC_MESSAGE_BYTES, WORKSPACE_FORMAT_VERSION};
+use sshxx_terminal_host::process_restart::Restart;
 use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task;
 use tokio::time::{self, Duration, Instant, MissedTickBehavior};
@@ -31,6 +32,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 /// Interval to automatically reestablish connections.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
 const SYSTEM_ACTION_CAPABILITY: &str = "system-action-v1";
+const PROCESS_RESTART_CAPABILITY: &str = "system-process-restart-v1";
 const CUSTOM_COMPONENT_CAPABILITY: &str = "custom-component-v1";
 
 /// Returns the host portion of an HTTP(S) origin without adding a URL parser
@@ -87,11 +89,14 @@ pub struct Controller {
 
     workspace_path: Option<std::path::PathBuf>,
     workspace_tx: Option<watch::Sender<WorkspaceState>>,
+    workspace_writer: Option<task::JoinHandle<()>>,
     ssh_profiles_path: Option<std::path::PathBuf>,
     ssh_profiles_encrypt: Option<Encrypt>,
     uploads: Option<crate::uploads::UploadManager>,
+    media: Option<Arc<tokio::sync::Mutex<crate::media::Store>>>,
     remote_profiles: HashMap<Sid, sshx_core::proto::SshProfile>,
     file_tasks: Arc<Semaphore>,
+    process_restart_supported: bool,
 }
 
 impl Controller {
@@ -161,8 +166,22 @@ impl Controller {
             ),
             None => (None, None, None),
         };
+        let restart_identity = match &workspace_path {
+            Some(path) => {
+                crate::restart_identity::Identity::load(
+                    path.parent()
+                        .context("workspace needs a parent directory")?,
+                    origin,
+                )
+                .await?
+            }
+            None => None,
+        };
         debug!(%origin, "connecting to server");
-        let encryption_key = encryption_key
+        let encryption_key = restart_identity
+            .as_ref()
+            .map(|identity| identity.encryption_key.as_str())
+            .or(encryption_key)
             .map(str::to_owned)
             .unwrap_or_else(|| rand_alphanumeric(14)); // 83.3 bits of entropy by default
 
@@ -171,8 +190,11 @@ impl Controller {
             task::spawn_blocking(move || Encrypt::new(&encryption_key))
         };
 
-        let (write_password, kdf_write_password_task) = if enable_readers {
-            let write_password = rand_alphanumeric(14); // 83.3 bits of entropy
+        let password = match &restart_identity {
+            Some(identity) => identity.write_password.clone(),
+            None => enable_readers.then(|| rand_alphanumeric(14)),
+        };
+        let (write_password, kdf_write_password_task) = if let Some(write_password) = password {
             let task = {
                 let write_password = write_password.clone();
                 task::spawn_blocking(move || Encrypt::new(&write_password))
@@ -253,6 +275,12 @@ impl Controller {
             None => None,
         };
         let terminal_host_version = runner.terminal_host_version().await;
+        let media = match workspace_path.as_ref() {
+            Some(path) => Some(Arc::new(tokio::sync::Mutex::new(
+                crate::media::Store::new(path).await?,
+            ))),
+            None => None,
+        };
 
         let req = OpenRequest {
             origin: origin.into(),
@@ -264,11 +292,33 @@ impl Controller {
             ssh_profiles: ssh_profile_state,
             capabilities: vec![
                 SYSTEM_ACTION_CAPABILITY.into(),
+                PROCESS_RESTART_CAPABILITY.into(),
                 CUSTOM_COMPONENT_CAPABILITY.into(),
+                "workspace-media-v1".into(),
             ],
             terminal_host_version,
+            resume_name: restart_identity
+                .as_ref()
+                .map(|identity| identity.name.clone())
+                .unwrap_or_default(),
+            resume_token: restart_identity
+                .as_ref()
+                .map(|identity| identity.token.clone())
+                .unwrap_or_default(),
         };
         let mut resp = client.open(req).await?.into_inner();
+        if let Some(identity) = &restart_identity {
+            anyhow::ensure!(
+                resp.process_restart_supported && resp.name == identity.name,
+                "server did not restore the requested restart session"
+            );
+            let directory = workspace_path
+                .as_ref()
+                .and_then(|path| path.parent())
+                .context("restart handoff directory is unavailable")?;
+            std::fs::remove_file(directory.join(crate::restart_identity::FILE_NAME))
+                .context("could not consume restart handoff")?;
+        }
         resp.url = resp.url + "#" + &encryption_key;
 
         let write_url = write_password
@@ -276,8 +326,10 @@ impl Controller {
             .map(|write_password| resp.url.clone() + "," + write_password);
 
         let (output_tx, output_rx) = mpsc::channel(64);
+        let mut workspace_writer = None;
         let workspace_tx = workspace_path.as_ref().map(|path| {
             let initial = workspace_state.unwrap_or(WorkspaceState {
+                chat_history: Vec::new(),
                 format_version: WORKSPACE_FORMAT_VERSION,
                 shells: Vec::new(),
                 notes: Vec::new(),
@@ -289,7 +341,7 @@ impl Controller {
                 }],
             });
             let (tx, rx) = watch::channel(initial);
-            tokio::spawn(workspace::writer(path.clone(), rx));
+            workspace_writer = Some(tokio::spawn(workspace::writer(path.clone(), rx)));
             tx
         });
         Ok(Self {
@@ -309,11 +361,14 @@ impl Controller {
             output_rx,
             workspace_path,
             workspace_tx,
+            workspace_writer,
             ssh_profiles_path,
             ssh_profiles_encrypt,
             uploads,
+            media,
             remote_profiles: HashMap::new(),
             file_tasks: Arc::new(Semaphore::new(4)),
+            process_restart_supported: resp.process_restart_supported,
         })
     }
 
@@ -352,12 +407,15 @@ impl Controller {
         &self.encryption_key
     }
 
-    /// Run the controller forever, listening for requests from the server.
-    pub async fn run(&mut self) -> ! {
+    /// Reconnect until a validated process restart is requested.
+    pub async fn run(&mut self) -> Result<()> {
         let mut last_retry = Instant::now();
         let mut retries = 0;
         loop {
             if let Err(err) = self.try_channel().await {
+                if err.is::<Restart>() {
+                    return Err(err);
+                }
                 if is_session_not_found(&err) {
                     warn!(session = %self.name, "server session was lost; reopening from daemon state");
                     match self.reopen_session().await {
@@ -410,12 +468,17 @@ impl Controller {
             ssh_profiles,
             capabilities: vec![
                 SYSTEM_ACTION_CAPABILITY.into(),
+                PROCESS_RESTART_CAPABILITY.into(),
                 CUSTOM_COMPONENT_CAPABILITY.into(),
+                "workspace-media-v1".into(),
             ],
             terminal_host_version: self.runner.terminal_host_version().await,
+            resume_name: String::new(),
+            resume_token: String::new(),
         };
         let mut client = Self::connect(&self.origin).await?;
         let response = client.open(request).await?.into_inner();
+        self.process_restart_supported = response.process_restart_supported;
         let previous_name = std::mem::replace(&mut self.name, response.name);
         self.token = response.token;
         self.url = format!("{}#{}", response.url, self.encryption_key);
@@ -532,6 +595,56 @@ impl Controller {
                     }
                 }
                 ServerMessage::FileRequest(file_request) => {
+                    if file_request.workspace_attachment {
+                        let media = self.media.clone();
+                        let encrypt = self.encrypt.clone();
+                        let output = self.output_tx.clone();
+                        let permit = Arc::clone(&self.file_tasks).try_acquire_owned();
+                        task::spawn(async move {
+                            let result = async {
+                                let _permit =
+                                    permit.context("too many pending attachment requests")?;
+                                let media = media
+                                    .context("persistent workspace attachments are unavailable")?;
+                                anyhow::ensure!(
+                                    file_request.data.len() <= 96 << 10,
+                                    "attachment request is too large"
+                                );
+                                let body = encrypt.segment(
+                                    file_request.request_stream,
+                                    0,
+                                    &file_request.data,
+                                );
+                                let request =
+                                    serde_json::from_slice::<crate::media::Request>(&body)?;
+                                let mut store = media.lock().await;
+                                store.execute(request, file_request.read_only).await
+                            };
+                            let result = time::timeout(Duration::from_secs(30), result)
+                                .await
+                                .map_err(|_| anyhow::anyhow!("attachment request timed out"))
+                                .and_then(|r| r);
+                            let response = match result {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    serde_json::json!({"ok":false,"operation":"read","path":"","error":error.to_string()})
+                                }
+                            };
+                            if let Ok(body) = serde_json::to_vec(&response) {
+                                output
+                                    .send(ClientMessage::FileResponse(FileResponse {
+                                        request_id: file_request.request_id,
+                                        stream_num: file_request.response_stream,
+                                        data: encrypt
+                                            .segment(file_request.response_stream, 0, &body)
+                                            .into(),
+                                    }))
+                                    .await
+                                    .ok();
+                            }
+                        });
+                        continue;
+                    }
                     let id = Sid(file_request.id);
                     let plaintext =
                         self.encrypt
@@ -616,30 +729,39 @@ impl Controller {
                         SystemAction::try_from(request.action).unwrap_or(SystemAction::Unspecified);
                     match action {
                         SystemAction::RestartDaemon => {
+                            let restart = self.prepare_process_restart().await;
+                            let (ok, message) = match &restart {
+                                Ok(_) => (true, "Daemon process is restarting; hosted terminal processes remain running.".to_owned()),
+                                Err(error) => (false, format!("Could not restart daemon: {error}")),
+                            };
                             send_msg(
                                 &tx,
                                 ClientMessage::SystemActionResponse(SystemActionResponse {
                                     request_id: request.request_id,
                                     action: action.into(),
-                                    ok: true,
-                                    message: "Daemon control channel is restarting; hosted terminal processes remain running."
-                                        .into(),
+                                    ok,
+                                    message,
+                                    terminal_host_version: String::new(),
                                 }),
                             )
                             .await?;
                             // Give tonic's outbound stream time to deliver the
                             // acknowledgement before this channel is dropped.
                             time::sleep(Duration::from_millis(100)).await;
-                            // Returning from this channel recreates the daemon's
-                            // authenticated server bridge without disturbing PTYs.
-                            return Ok(());
+                            if let Ok(restart) = restart {
+                                // Unwind and drop the async runtime before re-exec;
+                                // do not close the server session or hosted PTYs.
+                                return Err(restart.into());
+                            }
                         }
                         SystemAction::RestartTerminalHost => {
                             let result = self.runner.restart_terminal_host().await;
+                            let terminal_host_version =
+                                result.as_ref().ok().cloned().unwrap_or_default();
                             let (ok, message) = match result {
-                                Ok(()) => (
+                                Ok(_) => (
                                     true,
-                                    "Terminal host is restarting; all terminal processes were terminated."
+                                    "Terminal host process restarted; all previous terminal processes were terminated."
                                         .to_owned(),
                                 ),
                                 Err(error) => (false, format!("Could not restart terminal host: {error}")),
@@ -651,6 +773,7 @@ impl Controller {
                                     action: action.into(),
                                     ok,
                                     message,
+                                    terminal_host_version,
                                 }),
                             )
                             .await?;
@@ -663,6 +786,7 @@ impl Controller {
                                     action: action.into(),
                                     ok: false,
                                     message: "Unsupported system action.".into(),
+                                    terminal_host_version: String::new(),
                                 }),
                             )
                             .await?;
@@ -921,6 +1045,58 @@ impl Controller {
         let mut client = Self::connect(&self.origin).await?;
         client.close(req).await?;
         Ok(())
+    }
+
+    /// Drain the debounced writer before a final save so two writes cannot
+    /// race on the same staging file during process replacement.
+    async fn flush_workspace(&mut self) -> Result<()> {
+        if let (Some(path), Some(tx)) = (&self.workspace_path, self.workspace_tx.take()) {
+            let state = tx.borrow().clone();
+            drop(tx);
+            let writer_result = match self.workspace_writer.take() {
+                Some(writer) => writer.await.context("workspace writer failed"),
+                None => Ok(()),
+            };
+            let result = workspace::save(path, &state).await;
+            let (tx, rx) = watch::channel(state);
+            self.workspace_tx = Some(tx);
+            self.workspace_writer = Some(tokio::spawn(workspace::writer(path.clone(), rx)));
+            writer_result?;
+            result?;
+        }
+        Ok(())
+    }
+
+    async fn prepare_process_restart(&mut self) -> Result<Restart> {
+        anyhow::ensure!(
+            self.process_restart_supported,
+            "upgrade and restart server first to support session-preserving process restart"
+        );
+        anyhow::ensure!(
+            self.workspace_path.is_some() && self.ssh_profiles_encrypt.is_some(),
+            "process restart requires persistent daemon state"
+        );
+        let restart = Restart::prepare("sshxx-daemon").await?;
+        self.flush_workspace().await?;
+        let directory = self
+            .workspace_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .context("restart handoff directory is unavailable")?;
+        crate::restart_identity::Identity::new(
+            self.origin.clone(),
+            self.name.clone(),
+            self.token.clone(),
+            self.encryption_key.clone(),
+            self.write_password.clone(),
+        )
+        .save(
+            directory,
+            self.ssh_profiles_encrypt
+                .as_ref()
+                .context("restart handoff encryption is unavailable")?,
+        )?;
+        Ok(restart)
     }
 }
 

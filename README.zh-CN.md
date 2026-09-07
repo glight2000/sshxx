@@ -39,8 +39,8 @@ README 只保留项目级介绍。完整功能和全量截图请查看
 **[功能指南](https://github.com/glight2000/sshxx/wiki/Features)**，或从
 **[sshxx Wiki 首页](https://github.com/glight2000/sshxx/wiki)** 开始阅读。
 
-**v0.13.1**
-改善手机画布拖拽流畅度，将单击聚焦与全屏浏览分开，增加终端方向键、控制键及不附加回车的发送方式，并优化便利贴文本选择和排版。参见[模块版本与升级注意事项](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0131-upgrade-notes)。相对 v0.12.0，本次仅更新客户端；daemon、server 和 terminal-host 版本不变，无需重启 terminal-host。
+**v0.13.2**
+增加桌面侧栏/手机全屏聊天、持久化的最近 500 条消息，以及聊天和 note 的图片、视频和文件附件（不含语音发送）。设置现在可以真正重启已安装的 daemon 或 terminal-host 程序。参见[模块版本与升级注意事项](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0132-upgrade-notes)。这些功能需要一起更新 server 和 daemon；兼容的 terminal-host 可以继续运行，重启它会中断全部托管任务。
 
 ## 架构
 
@@ -59,6 +59,10 @@ README 只保留项目级介绍。完整功能和全量截图请查看
 仍会中断全部托管进程，因此永远不会随 daemon 自动重启。如果 host 状态仍因异常或显式强制操作而丢失，持久化的 SSH 配置终端会在原窗口中重新执行其 SSH 启动配置；默认本地终端会关闭，嵌套连接及应用状态不会被重建。
 
 默认单 server 模式下，server 重启会让浏览端短暂断线；daemon 会从持久化工作区自动重建已丢失的 server 会话，并重新挂接 host 中的终端。配置固定会话名时 URL 保持不变；未配置时，替代会话会得到新的随机 URL。
+
+聊天记录和附件引用持久化在 daemon 工作区中，附件文件存放于其私有
+`cache/attachments`
+目录。限制参见[功能指南](docs/wiki/Features.md#workspace-chat-and-attachments)；使用新重启按钮前，请阅读[重启与首次升级要求](docs/wiki/Installation-and-Releases.md#settings-restart-versus-installation)。v0.13.1 及更早版本的按钮仍是旧行为，首次升级需要从外部重启对应的服务或进程。
 
 ## 安装并运行
 

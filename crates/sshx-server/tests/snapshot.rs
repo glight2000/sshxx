@@ -49,6 +49,7 @@ async fn test_basic_restore() -> Result<()> {
         minimized: true,
     };
     let note = WsNote {
+        attachments: None,
         x: 120,
         y: 240,
         width: 512,

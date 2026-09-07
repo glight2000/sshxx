@@ -309,6 +309,7 @@ impl ClientSocket {
                     WsServer::Hear(id, name, msg) => {
                         self.messages.push((id, name, msg));
                     }
+                    WsServer::ChatHistory(_) | WsServer::ChatMessage(_) => {}
                     WsServer::ShellLatency(_) => {}
                     WsServer::FileResponse(_, _, _) => {}
                     WsServer::SystemActionResult(request_id, action, ok, message) => {
@@ -319,6 +320,7 @@ impl ClientSocket {
                         self.custom_clicks.push((user_id, id, page_id, x, y));
                     }
                     WsServer::Pong(_) => {}
+                    WsServer::TerminalHostVersion(version) => self.terminal_host_version = version,
                     WsServer::Error(err) => self.errors.push(err),
                 }
             }

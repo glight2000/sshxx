@@ -1,6 +1,7 @@
 import type { Encrypt } from "./encrypt";
 import type {
   FileOperationRequest,
+  AttachmentRequest,
   FileOperationResponse,
   WsClient,
 } from "./protocol";
@@ -76,6 +77,34 @@ export class FileRequestClient {
     pageId: number,
     request: FileOperationRequest,
   ): Promise<FileOperationResponse> {
+    return this.perform(request, (id, input, output, data) => ({
+      fileRequest: [shellId, pageId, id, input, output, data],
+    }));
+  }
+
+  requestAttachment(
+    request: AttachmentRequest,
+  ): Promise<FileOperationResponse> {
+    return this.perform(request, (id, input, output, data) => ({
+      attachmentRequest: [
+        id,
+        input,
+        output,
+        data,
+        request.operation === "read",
+      ],
+    }));
+  }
+
+  private async perform(
+    request: FileOperationRequest | AttachmentRequest,
+    message: (
+      id: string,
+      input: bigint,
+      output: bigint,
+      data: Uint8Array,
+    ) => WsClient,
+  ): Promise<FileOperationResponse> {
     if (!this.isConnected()) throw new Error("The daemon is not connected.");
     const requestId = randomHex(16);
     const requestStream = randomEncryptedStream();
@@ -84,6 +113,8 @@ export class FileRequestClient {
       responseStream = randomEncryptedStream();
     const plaintext = new TextEncoder().encode(JSON.stringify(request));
     const data = await this.encrypt.segment(requestStream, 0n, plaintext);
+    if (this.pending.size >= 8)
+      throw new Error("Too many pending file requests. Try again shortly.");
     const response = new Promise<FileOperationResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
@@ -96,16 +127,7 @@ export class FileRequestClient {
         timer,
       });
     });
-    this.send({
-      fileRequest: [
-        shellId,
-        pageId,
-        requestId,
-        requestStream,
-        responseStream,
-        data,
-      ],
-    });
+    this.send(message(requestId, requestStream, responseStream, data));
     return response;
   }
 

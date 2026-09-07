@@ -132,6 +132,7 @@ pub(super) fn validate_paragraphs(paragraphs: &[String]) -> Result<()> {
 }
 
 pub(super) fn validate_note_content(note: &WsNote) -> Result<()> {
+    super::chat::validate_attachments(note.attachments.as_deref().unwrap_or_default(), 32)?;
     validate_title(&note.title)?;
     validate_paragraphs(&note.paragraphs)?;
     if note.text != note.paragraphs.join("\n") {
