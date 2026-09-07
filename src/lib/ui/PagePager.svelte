@@ -72,7 +72,7 @@
 
 <nav
   aria-label="Canvas pages"
-  class="panel fixed bottom-4 left-1/2 z-30 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-1 p-1.5 shadow-2xl"
+  class="page-pager panel fixed bottom-4 left-1/2 z-30 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-1 p-1.5 shadow-2xl"
 >
   <div class="flex max-w-[min(70vw,52rem)] items-center gap-1 overflow-x-auto">
     {#each pages as page (page.id)}

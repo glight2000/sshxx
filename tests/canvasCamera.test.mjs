@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canvasCameraCss,
+  previewCanvasCamera,
   canvasToScreenPosition,
   canvasViewportAnchor,
   screenToCanvasPosition,
@@ -33,4 +34,21 @@ test("shared camera CSS updates the world and grid from one style value", () => 
       "--canvas-grid-step:40px",
     ].join(";"),
   );
+});
+
+test("touch previews change only the world transform and the childless grid", () => {
+  const world = { style: { transform: "" } };
+  const grid = { style: { cssText: "" } };
+  for (const zoom of [0.35, 0.94317, 1, 2]) {
+    previewCanvasCamera(world, grid, [10, -20], zoom, 378, 240, 80);
+    assert.deepEqual(Object.keys(world.style), ["transform"]);
+    assert.equal(
+      world.style.transform,
+      `translate3d(calc(${zoom * 50}vw - ${zoom * 388}px), calc(${zoom * 50}vh - ${zoom * 220}px), 0) scale(${zoom})`,
+    );
+    assert.equal(
+      grid.style.cssText,
+      canvasCameraCss([10, -20], zoom, 378, 240, 80),
+    );
+  }
 });

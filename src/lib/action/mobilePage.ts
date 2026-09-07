@@ -1,5 +1,26 @@
 export function mobileViewport(node: HTMLElement, active: boolean) {
   const viewport = window.visualViewport;
+  const preventZoom = (event: Event) => {
+    if (!active) return;
+    if (
+      event.type.startsWith("gesture") ||
+      (event as TouchEvent).touches?.length > 1 ||
+      (event.type === "wheel" && (event as WheelEvent).ctrlKey)
+    )
+      event.preventDefault();
+  };
+  const zoomEvents = [
+    "touchstart",
+    "touchmove",
+    "gesturestart",
+    "gesturechange",
+    "wheel",
+  ];
+  for (const name of zoomEvents)
+    window.addEventListener(name, preventZoom, {
+      capture: true,
+      passive: false,
+    });
   const measure = () => {
     if (!active) return;
     node.style.setProperty(
@@ -29,6 +50,8 @@ export function mobileViewport(node: HTMLElement, active: boolean) {
       measure();
     },
     destroy() {
+      for (const name of zoomEvents)
+        window.removeEventListener(name, preventZoom, true);
       viewport?.removeEventListener("resize", measure);
       viewport?.removeEventListener("scroll", measure);
       window.removeEventListener("resize", measure);

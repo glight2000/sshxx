@@ -239,6 +239,8 @@
     const editor = event.currentTarget as HTMLTextAreaElement;
     const selectionStart = editor.selectionStart;
     const selectionEnd = editor.selectionEnd;
+    // Reading/selecting text is not an edit or an ownership request.
+    if (selectionStart !== selectionEnd) return;
     rangeSelection = null;
     closeParagraphMenu();
     activeParagraphIndex = index;
@@ -410,6 +412,8 @@
       return;
     finishEditing(false);
     closeParagraphMenu();
+    selectedParagraphIndexes = [];
+    selectionAnchor = null;
     rangeSelection = {
       anchor: index,
       startX: event.clientX,
@@ -447,6 +451,17 @@
       ) < 5
     )
       return;
+    // Keep native selection within one paragraph, even before editing starts.
+    // Only crossing into another paragraph hands the gesture to block selection.
+    if (
+      !rangeSelection.active &&
+      paragraphIndexAt(event.clientY) === rangeSelection.anchor
+    )
+      return;
+    if (!rangeSelection.active) {
+      const editor = editors[rangeSelection.anchor];
+      editor.setSelectionRange(editor.selectionEnd, editor.selectionEnd);
+    }
     event.preventDefault();
     rangeSelection.active = true;
     window.getSelection()?.removeAllRanges();
@@ -677,7 +692,8 @@
     const active = document.activeElement;
     if (
       active instanceof HTMLTextAreaElement &&
-      active === editors[activeParagraphIndex ?? -1]
+      (active.selectionStart !== active.selectionEnd ||
+        active === editors[activeParagraphIndex ?? -1])
     )
       return;
     event.preventDefault();
@@ -765,12 +781,7 @@
   function handleSelectStart(event: Event) {
     const target = event.target;
     if (target instanceof HTMLInputElement) return;
-    if (
-      target instanceof HTMLTextAreaElement &&
-      editing &&
-      activeParagraphIndex !== null &&
-      target === editors[activeParagraphIndex]
-    )
+    if (target instanceof HTMLTextAreaElement && !rangeSelection?.active)
       return;
     event.preventDefault();
   }
@@ -1140,7 +1151,7 @@
   <div
     bind:this={editorViewport}
     role="presentation"
-    class="note-editor h-[calc(100%-2.25rem)] overflow-y-auto py-3 pr-3"
+    class="note-editor h-[calc(100%-2.25rem)] overflow-y-auto px-1 py-3"
     class:editing
     class:block-selecting={rangeSelection?.active}
     on:mousedown|stopPropagation
@@ -1256,6 +1267,7 @@
           bind:this={editors[index]}
           value={paragraph}
           rows="1"
+          spellcheck={false}
           readonly={!editing || activeParagraphIndex !== index}
           aria-label={`Note paragraph ${index + 1}`}
           placeholder={!editing && paragraphs.length === 1 && !paragraph
@@ -1264,7 +1276,6 @@
               : "Click to edit this note"
             : ""}
           class="paragraph-input"
-          class:text-editing={editing && activeParagraphIndex === index}
           use:autoResizeParagraph={paragraph}
           on:mousedown={(event) => startRangeSelection(index, event)}
           on:click={(event) => beginEditing(index, event)}
@@ -1347,10 +1358,8 @@
     flex-direction: column;
   }
   .paragraph-input {
-    @apply block min-h-7 w-full resize-none overflow-hidden bg-transparent px-2 py-1 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-300/40;
-    user-select: none;
-  }
-  .paragraph-input.text-editing {
+    @apply block min-h-7 w-full resize-none overflow-hidden bg-transparent px-2 py-1.5 font-sans text-[15px] leading-[26px] outline-none placeholder:text-zinc-300/40;
+    color: var(--app-text);
     user-select: text;
   }
   .note-editor.editing .paragraph-input:focus {
@@ -1366,7 +1375,6 @@
   .paragraph-row {
     @apply mx-1 rounded-md border transition-[border-color,background-color,opacity,transform] duration-150;
     border-color: var(--surface-subtle);
-    background: var(--surface-subtle);
   }
   .paragraph-row:hover {
     border-color: var(--surface-border);
@@ -1382,7 +1390,7 @@
     animation: paragraph-settle 220ms ease-out;
   }
   .paragraph-row + .paragraph-row {
-    @apply mt-1.5;
+    @apply mt-2.5;
   }
   .paragraph-hint {
     @apply pointer-events-none mx-3 mt-2 select-none text-[10px];

@@ -358,6 +358,37 @@ Windows x64.
 Release checksums and GitHub attestations provide build provenance and integrity
 checks, but do not replace trusted platform code signing.
 
+## v0.13.0 upgrade notes
+
+| Module                  | Version | Changes                                                        |
+| ----------------------- | ------- | -------------------------------------------------------------- |
+| Suite / Runtime archive | 0.13.0  | Updated client, bundle and manuals                             |
+| Web / Tauri client      | 0.13.0  | Phone gestures, fullscreen, special keys and note improvements |
+| Daemon                  | 0.11.1  | Unchanged from v0.12.0                                         |
+| Server                  | 0.11.1  | Unchanged from v0.12.0                                         |
+| Terminal host           | 0.10.1  | Unchanged from v0.12.0                                         |
+| Internal core           | 0.11.1  | Unchanged from v0.12.0                                         |
+
+- Phone taps focus components without moving the canvas or entering fullscreen.
+  Fullscreen is explicit, with a top-left Restore button and keyboard-aware
+  content layout. Standard toolbar/search and page tabs remain in canvas view.
+- Two-finger canvas pan/zoom works over focused content. Fullscreen blocks
+  canvas and outer browser zoom while preserving content scrolling. Movement
+  previews avoid changing CSS variables inherited by every component; all pages
+  and subscriptions stay mounted.
+- Phone terminals provide arrow/control keys and Text + Enter, Paste only and
+  Direct keys modes. Fullscreen and canvas view reuse one keypad implementation.
+- Selecting text within a note paragraph preserves native selection and copy;
+  crossing paragraphs still selects blocks. Notes disable browser spellchecking
+  and use lighter paragraph styling with 15px text and 26px line spacing.
+
+From v0.12.0, update the served Web build (or install the matching desktop
+client) and reload the browser. The runtime archive includes this updated Web
+build with the unchanged backend binaries. No protocol or workspace migration is
+needed, and **do not restart terminal-host for this client-only update**. If
+upgrading from an older release, also read the v0.12.0 notes below. Experimental
+Electron and Godot clients remain at 0.1.0, outside the standard release matrix.
+
 ## v0.12.0 upgrade notes
 
 | Module                  | Version | Changes                                                                                                                       |

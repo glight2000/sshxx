@@ -90,15 +90,21 @@ for platform-specific browser bindings.
 
 ## Phone navigation
 
-- Touch-primary screens up to 1024 CSS pixels use a separate phone navigation
-  surface. Expand/collapse pages in **Pages and components**, then tap a
-  component to close the list and open its edge-to-edge detail page. **Back**
-  returns to the originating list or canvas without resetting the camera. From
-  the list, **Show canvas** opens the overview; **Pages** reopens the list.
-- In the phone overview, one finger pans and two fingers pinch to zoom,
-  including gestures starting over component content. A tap opens the component;
-  a drag never selects or moves a shared window. Once full-screen, content
-  receives its normal scrolling/editing input instead of canvas gestures.
+- Touch-primary screens up to 1024 CSS pixels use dedicated touch controls with
+  the same top toolbar, search and bottom page tabs as desktop. Tapping a window
+  only focuses it, without recentering or resizing. **Fullscreen** on the
+  focused window's floating controls opens its adaptive view; **Restore**
+  returns to the unchanged canvas. There is no separate Pages list or Back
+  toolbar.
+- In the normal canvas, one finger pans over blank space or unfocused windows;
+  focused content keeps its own scrolling/editing. Two fingers always control
+  canvas scale and midpoint movement, regardless of focus. Drags never select or
+  move shared windows. In fullscreen, canvas gestures and outer browser zoom are
+  disabled; one-finger content scrolling/editing remains available.
+- Embedded pages receive interaction in fullscreen. On the normal canvas their
+  iframe is touch-shielded so gestures reach the canvas. Cross-origin page
+  scripts and their internal gesture handling remain outside the parent's
+  control.
 - Viewing a minimized component temporarily reveals its content locally. It does
   not restore the shared window or resize the terminal PTY. Terminal detail
   pages show a selectable, wrapping text view above a multiline input box. Hold
@@ -123,15 +129,29 @@ for platform-specific browser bindings.
 - The detail page follows the visible viewport when the keyboard opens or the
   phone rotates. It scrolls locally and keeps the input box available; the
   original xterm painter remains mounted but hidden in terminal detail mode.
-- Tap association icons to open their target's detail page. Hold for the full
-  name and **Open component** / **Remove association** actions; dismiss with an
-  outside tap, Close, or Escape. Horizontal dragging scrolls the icon strip. The
-  note's **+** opens a list of available same-page targets; Cancel or an outside
-  tap leaves associations unchanged. Only add/remove operations sync.
-- Detail pages hide the component's own titlebar controls; use the page header's
-  **Back** button to leave. Desktop and canvas-overview controls are unchanged.
+- Tap association icons to locate and focus their target on the canvas. Hold for
+  the full name and **Open component** / **Remove association** actions; dismiss
+  with an outside tap, Close, or Escape. Horizontal dragging scrolls the icon
+  strip. The note's **+** opens a list of available same-page targets; Cancel or
+  an outside tap leaves associations unchanged. Only add/remove operations sync.
+- Phone fullscreen hides the top toolbar, bottom page tabs and the component's
+  own titlebar controls. The content uses the freed space; **Restore** remains
+  available at the top left, above the content, and brings the normal navigation
+  back. Desktop controls are unchanged.
 
 ## Terminal
+
+- The phone composer defaults to **Text + Enter**. **Paste only** appends no
+  Enter; **Direct keys** sends draft text without paste markers or Enter and
+  requires a single line. Arrow buttons are always visible in the focused
+  terminal's controls and the fullscreen reader; both views reuse one keypad
+  component and display it mutually exclusively. **Keys** exposes Enter, Tab,
+  Esc, editing/navigation keys and common Ctrl combinations. These buttons act
+  on the remote terminal immediately, not the local input box, and leave any
+  draft intact. Ctrl+C means interrupt, Ctrl+D may end input or exit the shell,
+  and Ctrl+Z may suspend the foreground job. Close the panel using Keys, an
+  outside tap, or Escape. Disconnected, read-only or replay-blocked terminals
+  cannot send text or special keys.
 
 - If terminal text is selected, `Ctrl+C` copies it and clears the selection.
   Otherwise `Ctrl+C` is sent to the foreground process.
@@ -144,13 +164,18 @@ for platform-specific browser bindings.
 ## Note
 
 - Click a paragraph to edit it. `Escape` or an outside click ends editing.
+- Drag within one paragraph to select native text, even if the note was not
+  focused. The note gains focus without acquiring an editing lock, and the
+  selection remains after release for copying. This also works in read-only mode
+  or while another viewer edits the note.
 - Enter inserts a line break; `Ctrl`/`Cmd` + Enter creates a new paragraph.
 - `Ctrl`/`Cmd` + Z and redo variants apply to the active note editor only.
 - Click a four-dot handle to select its paragraph. `Ctrl`/`Cmd`-click toggles
-  individual paragraphs, while Shift-click selects a range. Drag across the
-  paragraph bodies to select a visual range without creating a browser text
-  selection. Then drag any selected handle to move the group inside the note or
-  copy it to another target.
+  individual paragraphs, while Shift-click selects a range. Starting in a
+  non-editing paragraph and dragging into another paragraph switches to a visual
+  block range instead of a cross-paragraph browser text selection. Then drag any
+  selected handle to move the group inside the note or copy it to another
+  target.
 - The handle menu contains paragraph-local delete, copy, and insertion actions.
   Hover a paragraph and use its right-side send button to choose a linked
   target.

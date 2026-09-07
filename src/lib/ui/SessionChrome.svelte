@@ -64,7 +64,7 @@
 </script>
 
 <div
-  class="absolute top-8 inset-x-0 z-10 flex justify-center pointer-events-none"
+  class="workspace-chrome absolute top-8 inset-x-0 z-10 flex justify-center pointer-events-none"
 >
   <div class="desktop-toolbar contents">
     <Toolbar

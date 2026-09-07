@@ -1,7 +1,12 @@
 <script lang="ts">
+  import MobileTerminalKeypad from "./MobileTerminalKeypad.svelte";
   import { onMount, tick } from "svelte";
   import type { ITheme, Terminal } from "@xterm/xterm";
   import { TerminalIcon, SendIcon } from "svelte-feather-icons";
+  import {
+    mobileTerminalKey,
+    type MobileTerminalSendMode,
+  } from "$lib/mobileTerminalKeys";
   import {
     mobileTerminalThemeCss,
     MOBILE_INPUT_CHARACTERS,
@@ -13,7 +18,7 @@
   export let theme: ITheme = {};
   export let writable: boolean;
   export let blocked = "";
-  export let send: (text: string) => boolean;
+  export let send: (text: string, mode: MobileTerminalSendMode) => boolean;
 
   let snapshot: TerminalTextSnapshot = {
     text: "",
@@ -24,6 +29,14 @@
   };
   let reader: HTMLDivElement;
   let draft = "";
+  let sendMode: MobileTerminalSendMode = "execute";
+  $: invalidKeys = sendMode === "keys" && /[\r\n]/.test(draft);
+  $: sendLabel =
+    sendMode === "execute"
+      ? "Send text and Enter"
+      : sendMode === "paste"
+        ? "Paste text without adding Enter"
+        : "Send direct input without Enter";
   let selected = false;
   let follow = true;
   let interacting = false;
@@ -136,10 +149,11 @@
         !writable ||
         blocked ||
         !draft.length ||
-        draft.length > MOBILE_INPUT_CHARACTERS
+        draft.length > MOBILE_INPUT_CHARACTERS ||
+        invalidKeys
       )
         return;
-      if (send(draft)) draft = "";
+      if (send(draft, sendMode)) draft = "";
     }}
   >
     {#if blocked}<p role="status">{blocked}</p>{:else if !writable}<p>
@@ -150,7 +164,7 @@
       <textarea
         aria-label="Terminal input"
         placeholder="Message or command…"
-        rows="2"
+        rows="1"
         maxlength={MOBILE_INPUT_CHARACTERS}
         bind:value={draft}
         disabled={!writable}
@@ -159,14 +173,43 @@
         spellcheck="false"></textarea>
       <button
         type="submit"
-        disabled={!writable || !!blocked || !draft.length}
-        aria-label="Send text and Enter"
-        title="Send text and Enter"
-        ><SendIcon size="18" /><span>Send</span></button
+        disabled={!writable || !!blocked || !draft.length || invalidKeys}
+        aria-label={sendLabel}
+        title={sendLabel}
+        ><SendIcon size="18" /><span
+          >{sendMode === "execute" ? "Send ↵" : "Send"}</span
+        ></button
       >
     </div>
-    <p>
-      Enter adds a line · Send pastes text then presses Enter · {draft.length}/{MOBILE_INPUT_CHARACTERS}
+    <div class="input-tools">
+      <select aria-label="Terminal send mode" bind:value={sendMode}>
+        <option value="execute">Text + Enter</option>
+        <option value="paste">Paste only · no added Enter</option>
+        <option value="keys">Direct keys · no Enter</option>
+      </select>
+    </div>
+    <MobileTerminalKeypad
+      disabled={!writable || !!blocked}
+      send={(key) => {
+        if (!writable || blocked) return;
+        const sequence = mobileTerminalKey(
+          key,
+          terminal.modes.applicationCursorKeysMode,
+        );
+        if (sequence) send(sequence, "keys");
+      }}
+    />
+    {#if invalidKeys}<p role="status">
+        Direct keys cannot contain line breaks. Remove them or choose Paste
+        only.
+      </p>{/if}
+    <p class="composer-hint">
+      {sendMode === "execute"
+        ? "Enter adds a draft line · Send pastes text then presses Enter"
+        : sendMode === "paste"
+          ? "No extra Enter · pasted line breaks are interpreted by the running program"
+          : "Direct input, not pasted text · use Keys for arrows and control keys"}
+      · {draft.length}/{MOBILE_INPUT_CHARACTERS}
     </p>
   </form>
 </section>
@@ -229,7 +272,7 @@
   }
   form {
     flex-shrink: 0;
-    padding: 10px 12px 8px;
+    padding: 6px 10px;
     border-top: 1px solid var(--reader-border);
     background: var(--reader-subtle);
   }
@@ -237,13 +280,38 @@
     display: flex;
     gap: 8px;
     align-items: stretch;
-    padding: 8px;
+    padding: 4px 8px;
     border: 1px solid var(--reader-border);
     border-radius: 10px;
     background: var(--reader-bg);
   }
   .composer:focus-within {
     border-color: var(--reader-cursor);
+  }
+  form:focus-within .composer-hint {
+    display: none;
+  }
+  .input-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .input-tools select {
+    flex: 1;
+    min-width: 0;
+    min-height: 40px;
+    padding: 4px 8px;
+    border: 1px solid var(--reader-border);
+    border-radius: 8px;
+    color: var(--reader-fg);
+    background: var(--reader-bg);
+    font-size: 12px;
+  }
+
+  option {
+    color: var(--reader-fg);
+    background: var(--reader-bg);
   }
   .prompt {
     padding: 5px 0 0 2px;

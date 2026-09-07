@@ -43,7 +43,7 @@
   } from "./ui/ResizeHandles.svelte";
   import type { CanvasSearchItem } from "./ui/TerminalSearch.svelte";
   import SessionChrome from "./ui/SessionChrome.svelte";
-  import MobileNavigator from "./ui/MobileNavigator.svelte";
+  import MobileWorkspaceControls from "./ui/MobileWorkspaceControls.svelte";
   import { mobileViewport } from "./action/mobilePage";
   import { mobileAssociationTargets } from "./mobileNavigation";
   import {
@@ -61,6 +61,7 @@
   import LiveCursor from "./ui/LiveCursor.svelte";
   import {
     canvasCameraCss,
+    previewCanvasCamera,
     canvasViewportAnchor,
     screenToCanvasPosition,
   } from "./canvasCamera";
@@ -321,6 +322,7 @@
   }
 
   function beginMarqueeSelection(event: MouseEvent) {
+    if (mobileAvailable) return false;
     const selectionButton = canvasSelectionMouseButton;
     if (
       event.button !== selectionButton ||
@@ -514,14 +516,30 @@
       () => !mobileAvailable && activeFullscreenKey() === null,
       () => canvasPanMouseButton,
     );
+    const canvasWorld = fabricEl.querySelector<HTMLElement>(".canvas-world")!;
+    const canvasGrid = fabricEl.querySelector<HTMLElement>(".canvas-grid")!;
     const removeMobileCanvas = installMobileCanvas(
       fabricEl,
-      () => mobileAvailable && activeFullscreenKey() === null,
+      () => mobileAvailable,
       () => ({ center: touchZoom.center, zoom: touchZoom.zoom }),
       (view, settled) => {
-        if (settled) touchZoom.setView(view.center, view.zoom);
-        else
+        if (settled) {
+          // Commit the same camera before removing the preview, with no snap
+          // back while Svelte waits for its reactive view update.
           fabricEl.style.cssText = canvasCameraCss(
+            view.center,
+            view.zoom,
+            CONSTANT_OFFSET_LEFT,
+            CONSTANT_OFFSET_TOP,
+            GRID_SIZE,
+          );
+          canvasWorld.style.removeProperty("transform");
+          canvasGrid.style.cssText = "";
+          touchZoom.setView(view.center, view.zoom);
+        } else
+          previewCanvasCamera(
+            canvasWorld,
+            canvasGrid,
             view.center,
             view.zoom,
             CONSTANT_OFFSET_LEFT,
@@ -531,8 +549,17 @@
       },
       (target) => {
         const key = canvasItemFromTarget(target);
-        if (key) void openMobileItem(key);
+        if (key) focusCanvasItem(key);
         else clearCanvasFocus();
+      },
+      () => activeFullscreenKey() !== null,
+      (target) => {
+        if (!(target instanceof Element)) return false;
+        if (target.closest('button, input, select, a, [role="menu"]'))
+          return true;
+        if (target.closest("[data-canvas-titlebar]")) return false;
+        const key = canvasItemFromTarget(target);
+        return key !== null && key === mobileFocusedKey;
       },
     );
     window.addEventListener("keydown", handleFocusEscape, true);
@@ -596,7 +623,7 @@
       //
       // This makes it so that panning does not stop when the cursor happens to
       // intersect with the textarea, which absorbs wheel and touch events.
-      if (!preservesFocus && document.activeElement) {
+      if (!mobileAvailable && !preservesFocus && document.activeElement) {
         const classList = [...document.activeElement.classList];
         if (classList.includes("xterm-helper-textarea")) {
           (document.activeElement as HTMLElement).blur();
@@ -811,6 +838,7 @@
     number,
     (data: string, execute?: boolean) => void
   > = {};
+  const terminalKeySenders: Record<number, (key: string) => boolean> = {};
   const fileTextSenders: Record<
     number,
     (data: string, position?: TextInsertPosition) => TextInsertResult
@@ -852,9 +880,7 @@
   let terminalTitles: Record<number, string> = {};
   let fullscreenItems: Record<string, boolean> = {};
   let mobileAvailable = false;
-  let mobileListEnabled = true;
   let mobileFullscreenKey: CanvasItemKey | null = null;
-  let mobileReturnToList = true;
   $: mobileOverview =
     mobileAvailable &&
     !canvasSearchItems.some(
@@ -870,26 +896,9 @@
     mobileFullscreenKey = null;
   }
 
-  async function openMobileItem(key: CanvasItemKey) {
-    const item = canvasSearchItems.find(
-      (item) => canvasItemKey(item.kind, item.id) === key,
-    );
-    if (!item) return;
-    if (mobileFullscreenKey === null) mobileReturnToList = mobileListEnabled;
-    closeMobileItem();
-    switchPage(item.pageId);
-    exitActivePageFullscreen();
-    mobileListEnabled = true;
-    mobileFullscreenKey = key;
-    fullscreenItems = { ...fullscreenItems, [key]: true };
-    await tick();
-    if (mobileFullscreenKey === key) focusCanvasItem(key);
-  }
-
   $: if (
     mobileFullscreenKey &&
     (!mobileAvailable ||
-      !mobileListEnabled ||
       !fullscreenItems[mobileFullscreenKey] ||
       !canvasSearchItems.some(
         (item) =>
@@ -954,6 +963,22 @@
   let focusedNoteId: number | null = null;
   let focusedFileWindowId: number | null = null;
   let focusedCustomWindowId: number | null = null;
+  $: mobileFocusedKey =
+    mobileFullscreenKey ??
+    (focusedTerminalId !== null
+      ? canvasItemKey("terminal", focusedTerminalId)
+      : focusedNoteId !== null
+        ? canvasItemKey("note", focusedNoteId)
+        : focusedFileWindowId !== null
+          ? canvasItemKey("file", focusedFileWindowId)
+          : focusedCustomWindowId !== null
+            ? canvasItemKey("custom", focusedCustomWindowId)
+            : null);
+  $: mobileFocusedItem = canvasSearchItems.find(
+    (item) =>
+      item.pageId === activePageId &&
+      canvasItemKey(item.kind, item.id) === mobileFocusedKey,
+  );
   type ParagraphDropTarget = {
     kind: "terminal" | "note" | "file";
     id: number;
@@ -2550,7 +2575,7 @@
     kind: "terminal" | "note" | "file" | "custom",
     itemId: number,
   ) {
-    const key = `${kind}:${itemId}`;
+    const key = canvasItemKey(kind, itemId);
     const entering = !fullscreenItems[key];
     const activeKeys = entering ? activePageFullscreenKeys() : [];
     fullscreenItems = {
@@ -2558,6 +2583,10 @@
       ...Object.fromEntries(activeKeys.map((activeKey) => [activeKey, false])),
       [key]: entering,
     };
+    if (mobileAvailable) {
+      mobileFullscreenKey = entering ? key : null;
+      void tick().then(() => focusCanvasItem(key));
+    }
   }
 
   function setTerminalMinimized(
@@ -2920,11 +2949,6 @@
   ];
 
   async function selectCanvasItem(item: CanvasSearchItem) {
-    if (mobileAvailable) {
-      searchOpen = false;
-      await openMobileItem(canvasItemKey(item.kind, item.id));
-      return;
-    }
     const entry =
       item.kind === "terminal"
         ? shells.find(([id]) => id === item.id)
@@ -2934,11 +2958,16 @@
             ? fileWindows.find(([id]) => id === item.id)
             : customWindows.find(([id]) => id === item.id);
     if (!entry) return;
+    if (mobileAvailable) closeMobileItem();
     searchOpen = false;
     switchPage(item.pageId);
     await tick();
     const state = entry[1];
     await touchZoom.moveTo([state.x, state.y], INITIAL_ZOOM);
+    if (mobileAvailable) {
+      focusCanvasItem(canvasItemKey(item.kind, item.id));
+      return;
+    }
     if (item.kind === "terminal") {
       srocket?.send({ move: [item.id, item.pageId, null] });
     } else if (item.kind === "note") {
@@ -2996,7 +3025,10 @@
 
   function navigateCanvasRelation(item: CanvasRelationItem) {
     if (mobileAvailable) {
-      void openMobileItem(canvasItemKey(item.kind, item.id));
+      const target = canvasSearchItems.find(
+        (entry) => entry.kind === item.kind && entry.id === item.id,
+      );
+      if (target) void selectCanvasItem(target);
       return;
     }
     if (item.kind === "terminal") navigateToTerminal(item.id);
@@ -3767,7 +3799,7 @@
 <!-- Wheel handler stops native macOS Chrome zooming on pinch. -->
 <main
   class="p-8"
-  class:mobile-list-mode={mobileAvailable && mobileListEnabled}
+  class:mobile-mode={mobileAvailable}
   class:mobile-overview={mobileOverview}
   class:mobile-detail={mobileAvailable && mobileFullscreenKey !== null}
   use:mobileViewport={mobileAvailable}
@@ -3784,11 +3816,18 @@
             : undefined}
   on:wheel={(event) => event.preventDefault()}
 >
-  <MobileNavigator
-    {pages}
-    items={canvasSearchItems}
-    {activePageId}
-    currentKey={mobileFullscreenKey}
+  <MobileWorkspaceControls
+    current={mobileFocusedItem}
+    fullscreen={mobileFullscreenKey !== null}
+    writable={!!hasWriteAccess && connected}
+    sendKey={(key) => {
+      if (mobileFocusedItem?.kind === "terminal")
+        terminalKeySenders[mobileFocusedItem.id]?.(key);
+    }}
+    on:toggle={() => {
+      if (mobileFocusedItem)
+        toggleFullscreen(mobileFocusedItem.kind, mobileFocusedItem.id);
+    }}
     associationTargets={mobileAvailable && linkingNoteId !== null
       ? mobileAssociationTargets(
           canvasSearchItems,
@@ -3807,34 +3846,7 @@
           id: event.detail.id,
         });
     }}
-    bind:enabled={mobileListEnabled}
-    on:back={() => {
-      closeMobileItem();
-      clearCanvasFocus();
-      mobileListEnabled = mobileReturnToList;
-    }}
     on:available={(event) => (mobileAvailable = event.detail)}
-    on:mode={(event) => {
-      if (!event.detail) closeMobileItem();
-    }}
-    on:select={(event) =>
-      openMobileItem(canvasItemKey(event.detail.kind, event.detail.id))}
-    on:page={(event) => {
-      closeMobileItem();
-      switchPage(event.detail);
-      mobileListEnabled = false;
-    }}
-    on:actions={(event) => {
-      canvasContextMenuX = event.detail.x;
-      canvasContextMenuY = event.detail.y;
-      canvasContextPosition = screenToCanvasPosition(
-        [event.detail.x, event.detail.y],
-        center,
-        zoom,
-        getConstantOffset(),
-      );
-      canvasContextMenuOpen = true;
-    }}
   />
   <SessionChrome
     {connected}
@@ -4068,6 +4080,7 @@
                   {hasWriteAccess}
                   bind:write={writers[id]}
                   bind:sendText={terminalTextSenders[id]}
+                  bind:sendKey={terminalKeySenders[id]}
                   bind:termEl={termElements[id]}
                   on:data={({ detail: data }) =>
                     hasWriteAccess && queueTerminalInput(id, ws.pageId, data)}

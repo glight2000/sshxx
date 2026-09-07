@@ -68,7 +68,7 @@
 
 <svelte:window on:pointerdown={handleWindowPointer} />
 
-<div class="panel inline-block px-3 py-2">
+<div class="workspace-toolbar panel inline-block px-3 py-2">
   <div class="flex items-center select-none">
     <a href="/" class="flex-shrink-0"
       ><img src={logo} alt="sshxx logo" class="h-8 w-8" /></a

@@ -132,6 +132,21 @@
   export let hasWriteAccess: boolean | undefined;
   export let fullscreen = false;
   export let mobileDetail = false;
+  import { mobileTerminalKey } from "$lib/mobileTerminalKeys";
+  export function sendKey(key: string): boolean {
+    if (!hasWriteAccess || !inputAvailable || !term) return false;
+    if (suppressInput > 0) {
+      notifyReplayInputBlocked();
+      return false;
+    }
+    const sequence = mobileTerminalKey(
+      key,
+      term.modes.applicationCursorKeysMode,
+    );
+    if (!sequence) return false;
+    term.input(sequence);
+    return true;
+  }
   export let inputAvailable = true;
   export let minimized = false;
   export let linkedNotes: CanvasRelationItem[] = [];
@@ -1002,10 +1017,11 @@
         : suppressInput > 0
           ? "Restoring terminal output; wait before sending."
           : ""}
-      send={(text) => {
+      send={(text, mode) => {
         if (!hasWriteAccess || !inputAvailable || suppressInput > 0 || !term)
           return false;
-        sendText(text, true);
+        if (mode === "keys") term.input(text);
+        else sendText(text, mode === "execute");
         return true;
       }}
     />

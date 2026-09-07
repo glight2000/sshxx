@@ -28,29 +28,28 @@ license, then extends the project for a different set of personal workflows.
 
 ## At a glance
 
-| Area                 | What sshxx provides                                                                                             |
-| -------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Persistent terminals | Local and OpenSSH shells owned by an independent local host, not a browser or daemon process                    |
-| Shared canvas        | Page-aware terminals, notes, file windows, custom components, layout, and live presence                         |
-| Structured notes     | Multiline paragraphs, block selection/reordering, structured copy, links, and delivery                          |
-| Files beside shells  | Synchronized folder navigation, previews, CodeMirror editing, uploads, and file operations                      |
-| Custom components    | Shared HTML/JavaScript or URL content with an editor and isolated per-viewer preview                            |
-| Viewer choice        | One Svelte interface for the Web and Tauri-based packaged client                                                |
-| Phone browsing       | Touch canvas and collapsible navigation, focused reading/editing, and a themed terminal reader with local input |
-| Local control        | Browser-local page, viewport, full-screen, theme, focus, and undo/redo state                                    |
+| Area                 | What sshxx provides                                                                                       |
+| -------------------- | --------------------------------------------------------------------------------------------------------- |
+| Persistent terminals | Local and OpenSSH shells owned by an independent local host, not a browser or daemon process              |
+| Shared canvas        | Page-aware terminals, notes, file windows, custom components, layout, and live presence                   |
+| Structured notes     | Multiline paragraphs, block selection/reordering, structured copy, links, and delivery                    |
+| Files beside shells  | Synchronized folder navigation, previews, CodeMirror editing, uploads, and file operations                |
+| Custom components    | Shared HTML/JavaScript or URL content with an editor and isolated per-viewer preview                      |
+| Viewer choice        | One Svelte interface for the Web and Tauri-based packaged client                                          |
+| Phone browsing       | Touch canvas, explicit fullscreen/restore, and a themed terminal reader with local input and special keys |
+| Local control        | Browser-local page, viewport, full-screen, theme, focus, and undo/redo state                              |
 
 The README intentionally stays at project level. See the
 **[complete Feature Guide](https://github.com/glight2000/sshxx/wiki/Features)**
 for the full capability set and screenshots, or start from the
 **[sshxx Wiki](https://github.com/glight2000/sshxx/wiki)**.
 
-**v0.12.0** adds phone-oriented navigation and configurable desktop shortcuts,
-hardens terminal output recovery and paste handling, and avoids redundant page
-repaints. See
-[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0120-upgrade-notes).
-Enabling the bundled terminal-host fixes requires a planned host restart, which
-disconnects its hosted processes; installing the update alone does not restart
-it.
+**v0.13.0** improves phone canvas responsiveness, separates tap-to-focus from
+fullscreen viewing, adds terminal arrow/control keys and send-without-Enter
+modes, and refines note text selection and typography. See
+[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0130-upgrade-notes).
+This is a client-only update from v0.12.0: daemon, server and terminal-host
+versions are unchanged, and no terminal-host restart is required.
 
 ## Architecture
 

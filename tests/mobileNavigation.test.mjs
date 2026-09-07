@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import {
-  groupNavigationItems,
-  navigationItemKey,
-  mobileAssociationTargets,
-} from "../src/lib/mobileNavigation.ts";
+import { mobileAssociationTargets } from "../src/lib/mobileNavigation.ts";
 import {
   installMobileCanvas,
   touchCamera,
@@ -19,8 +15,12 @@ test("only phone detail pages hide the shared component titlebar controls", () =
       "utf8",
     );
   assert.match(
-    read("MobileNavigator"),
+    read("MobileWorkspaceControls"),
     /:global\(main\.mobile-detail \.canvas-fullscreen \[data-canvas-titlebar\]\)\s*\{\s*display: none !important;/,
+  );
+  assert.match(
+    read("MobileWorkspaceControls"),
+    /:global\(main\.mobile-detail \.desktop-toolbar\),\s*:global\(main\.mobile-detail \.desktop-page-pager\)\s*\{\s*display: none;/,
   );
   for (const name of [
     "XTerm",
@@ -56,8 +56,13 @@ test("phone focus and relation navigation do not raise shared desktop windows", 
   assert.match(session, /on:bringToFront=\{\(\) =>\s*!mobileAvailable &&/);
   assert.match(
     session,
-    /function navigateCanvasRelation[^]*?if \(mobileAvailable\) \{\s*void openMobileItem/,
+    /function navigateCanvasRelation[^]*?if \(mobileAvailable\) \{[^]*?selectCanvasItem\(target\)/,
   );
+  assert.doesNotMatch(
+    session,
+    /openMobileItem|mobileListEnabled|mobileReturnToList/,
+  );
+  assert.match(session, /if \(key\) focusCanvasItem\(key\)/);
 });
 
 test("phone page follows the visible keyboard viewport and removes listeners on teardown", () => {
@@ -89,6 +94,18 @@ test("phone page follows the visible keyboard viewport and removes listeners on 
     assert.equal(values.get("--mobile-viewport-height"), "420px");
     assert.equal(values.get("--mobile-viewport-width"), "390px");
     assert.equal(values.get("--mobile-viewport-top"), "30px");
+    const pinch = new Event("touchmove", { cancelable: true });
+    Object.assign(pinch, { touches: [{}, {}] });
+    window.dispatchEvent(pinch);
+    assert.equal(pinch.defaultPrevented, true);
+    const scroll = new Event("touchmove", { cancelable: true });
+    Object.assign(scroll, { touches: [{}] });
+    window.dispatchEvent(scroll);
+    assert.equal(scroll.defaultPrevented, false);
+    action.update(false);
+    const desktop = new Event("gesturechange", { cancelable: true });
+    window.dispatchEvent(desktop);
+    assert.equal(desktop.defaultPrevented, false);
     action.destroy();
     viewport.dispatchEvent(new Event("resize"));
     assert.equal(values.size, 0);
@@ -113,37 +130,12 @@ test("phone associations filter self, duplicates, reverse links and other pages"
   ];
   const note = { pageId: 1, linkedShellIds: [1], linkedFileWindowIds: [1] };
   assert.deepEqual(
-    mobileAssociationTargets(items, 1, note, [2, 3]).map(navigationItemKey),
+    mobileAssociationTargets(items, 1, note, [2, 3]).map(
+      (item) => `${item.kind}:${item.id}`,
+    ),
     ["note:4", "terminal:2", "file:2"],
   );
   assert.deepEqual(mobileAssociationTargets(items, 1, undefined, []), []);
-});
-
-test("mobile navigation groups all pages and kinds without mutating shared data", () => {
-  const pages = [
-    { id: 1, name: "First" },
-    { id: 2, name: "Second" },
-    { id: 3, name: "Empty" },
-  ];
-  const items = Array.from({ length: 110 }, (_, id) => ({
-    id,
-    kind: "note",
-    pageId: 2,
-    minimized: true,
-  }));
-  items.push(
-    { id: 1, kind: "terminal", pageId: 1 },
-    { id: 1, kind: "file", pageId: 1 },
-    { id: 1, kind: "custom", pageId: 999 },
-  );
-  const snapshot = structuredClone(items);
-  const groups = groupNavigationItems(pages, items);
-  assert.deepEqual(
-    groups.map((g) => g.items.length),
-    [2, 110, 0],
-  );
-  assert.notEqual(navigationItemKey(items[110]), navigationItemKey(items[111]));
-  assert.deepEqual(items, snapshot);
 });
 
 test("phone camera pans and pinches around the fingers in the existing world coordinate system", () => {
@@ -177,7 +169,7 @@ test("phone camera pans and pinches around the fingers in the existing world coo
   );
 });
 
-test("phone overview distinguishes taps, drags and pinch; cancellation and cleanup never focus a component", () => {
+test("phone gesture ownership: focus, native content, pinch, fullscreen and cleanup", () => {
   const originalWindow = globalThis.window;
   globalThis.window = new EventTarget();
   const frames = new Map();
@@ -193,25 +185,24 @@ test("phone overview distinguishes taps, drags and pinch; cancellation and clean
     callbacks.forEach((callback) => callback());
   };
   const node = new EventTarget();
-  const captured = new Set();
-  node.setPointerCapture = (id) => captured.add(id);
-  node.hasPointerCapture = (id) => captured.has(id);
-  node.releasePointerCapture = (id) => captured.delete(id);
   let enabled = true,
+    full = false,
+    native = false,
     taps = 0,
     writes = 0,
     previews = 0;
   let preview;
   let view = { center: [0, 0], zoom: 1 };
-  const send = (type, id, x = 0, pointerType = "touch") => {
+  const send = (type, ...positions) => {
     const event = new Event(type, { cancelable: true });
     Object.assign(event, {
-      pointerId: id,
-      pointerType,
-      clientX: x,
-      clientY: 0,
+      touches: positions.map((x, identifier) => ({
+        identifier,
+        clientX: x,
+        clientY: 0,
+      })),
     });
-    (type === "pointerdown" ? node : window).dispatchEvent(event);
+    (type === "touchstart" ? node : window).dispatchEvent(event);
     return event.defaultPrevented;
   };
   const dispose = installMobileCanvas(
@@ -228,48 +219,72 @@ test("phone overview distinguishes taps, drags and pinch; cancellation and clean
       }
     },
     () => taps++,
+    () => full,
+    () => native,
   );
   try {
-    assert.equal(send("pointerdown", 1, 0, "mouse"), false);
-    send("pointerdown", 1);
-    send("pointerup", 1);
+    enabled = false;
+    assert.equal(send("touchstart", 0), false, "desktop untouched");
+    enabled = true;
+    send("touchstart", 0);
+    send("touchend");
     assert.equal(taps, 1);
-    send("pointerdown", 2);
-    for (let x = 7; x <= 30; x++) send("pointermove", 2, x);
-    assert.equal(frames.size, 1, "coalesce high-frequency touch samples");
-    assert.equal(writes, 0, "do not update the component tree while dragging");
+    assert.equal(writes, 0, "tap never moves camera");
+    send("touchstart", 0);
+    for (let x = 7; x <= 30; x++) send("touchmove", x);
+    assert.equal(frames.size, 1, "coalesce touch samples");
+    assert.equal(writes, 0);
     assert.equal(previews, 0);
     paint();
-    assert.equal(previews, 1);
     assert.deepEqual(preview.center, [-30, 0]);
-    send("pointerup", 2, 30);
+    send("touchend");
     assert.equal(writes, 1);
-    assert.equal(frames.size, 0);
     assert.equal(taps, 1);
-    assert.deepEqual(view.center, [-30, 0]);
-    send("pointerdown", 3);
-    send("pointerdown", 4, 100);
-    send("pointermove", 4, 200);
-    send("pointerup", 4, 200);
-    send("pointerup", 3);
-    assert.equal(taps, 1);
+    native = true;
+    assert.equal(
+      send("touchstart", 0),
+      false,
+      "focused content receives single touch",
+    );
+    assert.equal(send("touchmove", 10), false);
+    send("touchend");
+    assert.equal(writes, 1);
+    send("touchstart", 0);
+    assert.equal(
+      send("touchstart", 0, 100),
+      true,
+      "pinch takes over focused content",
+    );
+    send("touchmove", 0, 200);
+    send("touchend", 0);
+    send("touchmove", 80);
+    send("touchend");
     assert.equal(view.zoom, 2);
-    send("pointerdown", 5);
-    send("pointercancel", 5);
+    assert.equal(writes, 2);
     assert.equal(taps, 1);
-    enabled = false;
-    assert.equal(send("pointerdown", 6), false);
-    const before = writes;
-    send("pointermove", 6, 50);
-    assert.equal(writes, before);
-    enabled = true;
-    send("pointerdown", 7);
-    send("pointermove", 7, 30);
+    const previous = structuredClone(view);
+    full = true;
+    assert.equal(
+      send("touchstart", 0),
+      false,
+      "fullscreen native scroll preserved",
+    );
+    assert.equal(send("touchstart", 0, 100), true);
+    assert.equal(send("touchmove", 10, 250), true);
+    send("touchend", 10);
+    send("touchend");
+    assert.equal(writes, 2);
+    assert.deepEqual(view, previous, "fullscreen never changes camera");
+    full = native = false;
+    send("touchstart", 0);
+    send("touchcancel");
+    assert.equal(taps, 1);
+    send("touchstart", 0);
+    send("touchmove", 30);
     assert.equal(frames.size, 1);
     dispose();
     assert.equal(frames.size, 0, "teardown cancels queued paints");
-    assert.equal(captured.size, 0);
-    send("pointerup", 7);
+    send("touchend");
     assert.equal(taps, 1);
   } finally {
     dispose();

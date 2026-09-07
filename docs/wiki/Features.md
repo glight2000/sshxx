@@ -132,20 +132,35 @@ users who prefer left-button panning. It does not alter component controls,
 middle-button panning, or the stationary right-click action menu. A right-button
 selection drag suppresses that menu for the completed gesture.
 
-On phones, a collapsible **Pages and components** list provides all-page
-navigation. Choosing a component closes the list and opens an edge-to-edge
-detail page with a **Back** button returning to its originating list or canvas.
-The component's own titlebar controls are hidden inside the detail page.
+On phones, the standard top search and bottom page tabs provide navigation.
+Tapping a component only focuses it without moving the canvas. A floating
+**Fullscreen / Restore** button explicitly switches the focused component's
+view. Fullscreen hides the top toolbar, bottom page tabs and component titlebar
+controls, giving more space to the content while keeping **Restore** accessible.
 Terminal pages show an adaptive, selectable text view above a multiline input
 box. Hold text to copy; Enter adds an input line and **Send ↵** submits the text
 followed by Enter to the foreground program. Selection temporarily freezes the
 text display, not output reception; **Latest** resumes following updates. The
 page tracks the visible viewport when the phone keyboard opens. In the overview,
-one-finger pan and two-finger zoom work even over windows, and tapping a window
-opens its detail page. These are separate touch controls, not changes to desktop
-mouse behavior. The same terminal parser and component instances remain mounted.
-No lock, shared geometry change or PTY resize is introduced. On desktop, Escape
-clears focus as well as selection.
+two-finger zoom and midpoint pan work even over focused windows. Fullscreen
+disables canvas gestures and outer browser zoom, while preserving single-finger
+content scrolling. Embedded websites are touch-shielded on the canvas and
+interactive in fullscreen. These are separate touch controls, not changes to
+desktop mouse behavior. The same terminal parser and component instances remain
+mounted. No lock, shared geometry change or PTY resize is introduced. On
+desktop, Escape clears focus as well as selection.
+
+The phone composer also offers **Paste only** (no extra Enter) and **Direct
+keys** (plain terminal input, without paste markers or Enter). Direct keys
+rejects draft line breaks; use Paste only for multiline text, whose line breaks
+are still interpreted by the running application. **Keys** expands a bounded,
+scrollable keypad for arrows, Enter, Tab, Esc, Backspace/Delete, Home/End,
+PageUp/PageDown and common Ctrl combinations. Each tap sends immediately,
+without submitting or clearing the draft. Ctrl+C interrupts the foreground
+program rather than copying text. Arrow/Home/End sequences follow the terminal's
+application cursor mode. Send mode and keypad visibility are local to this
+detail view and reset on exit; all sends honor write access and connection /
+replay availability.
 
 The text view reads the existing buffer, not a separately archived chat log. It
 wraps text locally and follows the terminal's chosen theme and background
@@ -164,13 +179,13 @@ Input is limited to 16K UTF-16 units. Leaving the detail page releases its
 snapshot, draft, subscriptions and timers; none is persisted or sent to other
 viewers. Only explicitly submitted input affects the shared PTY.
 
-Tap an association icon to open the target's phone detail page. Hold it to see
-the full name and explicit **Open component** / **Remove association** actions;
-dragging the strip scrolls it without navigating. A note's **+** opens a target
-list, following the existing same-page rules and excluding existing links.
-Dismiss the list to cancel. Association changes remain shared and persisted;
-menus and navigation remain local. Real-device selection and keyboard behavior
-still need broader validation across phone browsers.
+Tap an association icon to locate and focus the target on the canvas. Hold it to
+see the full name and explicit **Open component** / **Remove association**
+actions; dragging the strip scrolls it without navigating. A note's **+** opens
+a target list, following the existing same-page rules and excluding existing
+links. Dismiss the list to cancel. Association changes remain shared and
+persisted; menus and navigation remain local. Real-device selection and keyboard
+behavior still need broader validation across phone browsers.
 
 Dragging a single window or selected group over a non-active page in the bottom
 pager highlights only the page currently under the pointer. The moving windows
@@ -282,6 +297,9 @@ background follow the same shared persistence rules as the note contents.
 
 - A click enters paragraph editing without selecting placeholder text; Escape or
   an outside click ends editing.
+- Notes use plain text with browser spellchecking disabled. The shared UI font,
+  comfortable line spacing and subtle paragraph boundaries support longer
+  reading without changing the stored text or paragraph structure.
 - Enter inserts a line break inside the current paragraph. `Ctrl`/`Cmd` + Enter
   adds a separate paragraph.
 - Four-dot handles keep paragraph boundaries visible and expose only

@@ -225,21 +225,31 @@ session name; a random-name deployment necessarily receives a new URL.
   output batches use the component's current page ID.
 - Global search runs locally over the shared all-page snapshot. The query is not
   synchronized; choosing a result changes only that viewer's page and viewport.
-- Phone navigation groups the same all-page snapshot without duplicating
-  component instances. `MobileNavigator` owns the list surface; `mobileCanvas`
-  owns overview touch gestures, leaving desktop input handlers unchanged. Touch
-  movement previews only the camera CSS once per animation frame; releasing the
+- `MobileWorkspaceControls` owns phone focus/fullscreen controls and the
+  existing same-page association picker. Pages and search reuse the standard
+  workspace chrome; tapping a component only focuses it. `mobileCanvas` owns
+  phone touch gestures, leaving desktop input handlers unchanged. Touch movement
+  previews only the world transform and childless grid once per animation frame,
+  without changing camera variables inherited by every component. Releasing the
   gesture commits the final local view, avoiding session-wide reactive updates
-  for every movement frame. The list mode, expanded pages, and phone full-screen
-  target live only in browser memory. Looking at a minimized window locally
-  reveals its content without changing shared minimized state, geometry, or PTY
-  size. In overview, component content (including iframes) cannot intercept
-  touch gestures. Full-screen returns input to the component. Deleting or moving
-  the viewed component off the current page returns the viewer to navigation.
-  `mobilePage` owns local visible-viewport sizing and follows
+  for every movement frame. The focus and phone full-screen target live only in
+  browser memory. Opening a minimized window fullscreen locally reveals its
+  content without changing shared minimized state, geometry, or PTY size.
+  Normal-canvas two-finger gestures own zoom and midpoint panning even over
+  focused content; native single-finger editing/scrolling remains available
+  there. Iframes are pointer-shielded in normal canvas because cross-origin
+  events do not bubble to the parent; fullscreen restores iframe interaction.
+  Fullscreen disables canvas gestures and outer browser zoom, not single-finger
+  scrolling. Deleting or moving the viewed component off the current page exits
+  fullscreen. `mobilePage` owns local visible-viewport sizing and follows
   keyboard/orientation changes. Detail pages reuse the existing portal (no new
-  route, session, or terminal instance); Back restores their list/canvas origin.
-  Component titlebar controls are hidden only in phone detail pages.
+  route, session, or terminal instance); Restore reveals the unchanged canvas.
+  Phone fullscreen hides the top toolbar, bottom pager and component titlebar
+  controls, retaining Restore. Navigation remains mounted and reappears on
+  restore; only the compact top-left Restore control reserves space above
+  fullscreen content, following the visible viewport and safe-area insets.
+  `MobileTerminalKeypad` supplies both the floating canvas keys and the reader's
+  keys; only the active view renders a keypad, not two concurrent input panels.
   `MobileTerminalReader` owns the phone-only text/input surface. The existing
   xterm painter is hidden, but its parser, write queue, subscriptions and
   renderer ACK processing remain live. `mobileTerminalText` extracts a current
@@ -261,20 +271,25 @@ session name; a random-name deployment necessarily receives a new URL.
   projection without accumulating snapshots or blocking output ACKs; resuming
   reads the newest buffer. Unmounting removes subscriptions,
   selection/visibility/pointer listeners, resize observers and pending timers.
-  The bounded 16K-unit input draft is memory-only and discarded on exit;
-  explicit Send uses the existing paste/Enter path, with read-only, connection
-  and replay guards. Phone focus does not lock input or change shared layout/PTY
-  dimensions. Desktop resizing can still change the shared terminal's output,
-  which the reader then reflects. Desktop Escape clears local focus/selection;
-  existing terminal focus presence is updated, but no terminal input is sent.
+  The bounded 16K-unit input draft is memory-only and discarded on exit; send
+  mode and special-key panel state are also local and reset on exit. Explicit
+  Send uses the existing paste/optional-Enter path or xterm's public `input()`
+  for direct keys. Special keys use `input()` without paste markers;
+  arrow/Home/End sequences follow public application-cursor mode. No shared
+  protocol or synthetic browser keyboard events are added. Read-only, connection
+  and replay guards apply to every send. Phone focus does not lock input or
+  change shared layout/PTY dimensions. Desktop resizing can still change the
+  shared terminal's output, which the reader then reflects. Desktop Escape
+  clears local focus/selection; existing terminal focus presence is updated, but
+  no terminal input is sent.
 - `CanvasRelations` selects the phone-only `MobileCanvasRelations` surface using
   the same phone media query as navigation. Touch tap/hold/drag routing and
-  native action dialogs are local; the target picker reuses `MobileNavigator`.
-  Add and remove operations use the existing page-scoped association mutations,
-  permission checks and daemon persistence. Desktop mouse/context-menu behavior
-  is unchanged. Phone focus/navigation never sends desktop window-raising
-  mutations; its full-screen frame uses only the local visual viewport, not
-  shared canvas bounds.
+  native action dialogs are local; `MobileWorkspaceControls` owns the target
+  picker. Add and remove operations use the existing page-scoped association
+  mutations, permission checks and daemon persistence. Desktop
+  mouse/context-menu behavior is unchanged. Phone focus/navigation never sends
+  desktop window-raising mutations; its full-screen frame uses only the local
+  visual viewport, not shared canvas bounds.
 - Undo/redo stacks for note and file editing belong to the active viewer. The
   edits they produce are shared, but the history stack itself is not.
 - Notifications, hover previews, drag state, focus styling, and open popovers

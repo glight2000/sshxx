@@ -24,9 +24,12 @@ here.
 - Keep every page's canvas component instances mounted after session hydration.
   Page switching is a browser-local visibility and transition change; it must
   not recreate terminals, notes, file explorers, or custom components.
-- Keep phone navigation/overview gestures in their dedicated client modules,
-  separate from desktop mouse interaction. Phone full-screen viewing must not
-  mutate shared window geometry, minimized state, or PTY size.
+- Keep phone gestures in dedicated modules, separate from desktop interaction,
+  with tap-to-focus separate from explicit fullscreen/restore. Reuse standard
+  search/page chrome in canvas view; phone fullscreen hides both and retains
+  Restore, while disabling canvas gestures and outer browser zoom. Phone
+  full-screen viewing must not mutate shared window geometry, minimized state,
+  or PTY size.
 - Extend existing protocol messages and versioned persistence formats
   compatibly. Any incompatible format change requires an explicit migration,
   tests for old data, and documentation in the same change.
