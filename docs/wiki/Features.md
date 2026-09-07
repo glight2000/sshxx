@@ -90,21 +90,87 @@ navigation, and Enter. Choosing a result switches only the current viewer to the
 target page and centers the selected window. Search queries and page switching
 are not synchronized.
 
+Desktop shortcuts open pages by pager order (`Ctrl+1…9`, `Ctrl+0` for page 10),
+move to adjacent pages (`Ctrl+Left/Right`), jump to first/last (`Ctrl+Up/Down`),
+and open/focus search (`Ctrl+Space`). **Settings → Keyboard shortcuts** supports
+rebinding, disabling, and restoring defaults for this browser only. See
+[Keyboard and mouse controls](Keyboard-and-Mouse#desktop-workspace-shortcuts)
+for input priority and browser/system shortcut limitations.
+
 Canvas navigation uses left-drag on empty space for a local selection marquee,
 right-drag on empty space for pan, unconditional middle-button pan, and a faster
 `Ctrl` + wheel zoom that suppresses browser zoom. Marquee selection is distinct
 from component focus: membership updates continuously with the marquee, and
 focusing a window, clicking empty canvas, or pressing Escape clears the
 selection. Dragging any selected window moves the selected group with one common
-offset, while right-button pan leaves the selection unchanged. Plain wheel input
-is routed to the hovered terminal, note, menu, file tree, directory grid, or
-editor. Pan and zoom are disabled while a component is full-screen; clicking its
-visible outside margin exits full-screen.
+offset, while right-button pan leaves the selection unchanged.
+
+Scroll input follows **component focus**, not pointer hover. With a focused
+component, both a mouse wheel and two-finger trackpad scrolling operate that
+component, even when the pointer is over blank canvas or another window. File
+explorers use the actively edited or last-clicked pane and retain both scroll
+axes; otherwise they default to the preview pane. Without component focus, a
+mouse wheel zooms the canvas and two-finger trackpad scrolling pans it. Scroll
+input does not change focus or chain into browser-page scrolling. Ctrl + wheel
+(including browser-reported trackpad pinch) remains forced canvas zoom. Pan and
+zoom are disabled while a component is full-screen; clicking its visible outside
+margin exits full-screen.
+
+Settings → **Scroll input device** offers Auto, Mouse wheel, and Trackpad. The
+[standard WheelEvent API](https://developer.mozilla.org/en-US/docs/Web/API/WheelEvent)
+does not identify the physical input device. Auto therefore estimates from delta
+units, size, and horizontal movement, keeping one classification throughout a
+gesture. Precision wheels and some touchpad drivers can be misidentified; choose
+an explicit mode on those devices. This preference stays in browser-local
+storage and never changes another viewer's behavior. Menus and dialogs retain
+their own scrolling. Events originating inside a cross-origin custom iframe do
+not reach the parent client and remain controlled by the embedded page; the
+client cannot remotely scroll that page from outside its iframe.
 
 A browser-local setting exchanges the left and right blank-canvas drag roles for
 users who prefer left-button panning. It does not alter component controls,
 middle-button panning, or the stationary right-click action menu. A right-button
 selection drag suppresses that menu for the completed gesture.
+
+On phones, a collapsible **Pages and components** list provides all-page
+navigation. Choosing a component closes the list and opens an edge-to-edge
+detail page with a **Back** button returning to its originating list or canvas.
+The component's own titlebar controls are hidden inside the detail page.
+Terminal pages show an adaptive, selectable text view above a multiline input
+box. Hold text to copy; Enter adds an input line and **Send ↵** submits the text
+followed by Enter to the foreground program. Selection temporarily freezes the
+text display, not output reception; **Latest** resumes following updates. The
+page tracks the visible viewport when the phone keyboard opens. In the overview,
+one-finger pan and two-finger zoom work even over windows, and tapping a window
+opens its detail page. These are separate touch controls, not changes to desktop
+mouse behavior. The same terminal parser and component instances remain mounted.
+No lock, shared geometry change or PTY resize is introduced. On desktop, Escape
+clears focus as well as selection.
+
+The text view reads the existing buffer, not a separately archived chat log. It
+wraps text locally and follows the terminal's chosen theme and background
+override, including its ANSI palette, selection colors and basic text styles.
+Indexed 256-color and truecolor output are supported. Images and fixed-column
+application layouts are not reproduced. Cleared/overwritten content cannot be
+reconstructed, and alternate-screen applications replace their current screen
+rather than accumulate fake history. Extraction is bounded to 2,000 rows, 128K
+UTF-16 units and 128K scanned cells, at most once per 250ms while dirty.
+Truncation is indicated. Adjacent styled characters are merged, with at most
+1,024 colored/styled ranges (2,049 total text spans). Excess older styling falls
+back to the terminal's default text color, with a notice; the text itself
+retains the same limits. Selection, reading earlier output, and background tabs
+pause projection only; returning to Latest refreshes from the current buffer.
+Input is limited to 16K UTF-16 units. Leaving the detail page releases its
+snapshot, draft, subscriptions and timers; none is persisted or sent to other
+viewers. Only explicitly submitted input affects the shared PTY.
+
+Tap an association icon to open the target's phone detail page. Hold it to see
+the full name and explicit **Open component** / **Remove association** actions;
+dragging the strip scrolls it without navigating. A note's **+** opens a target
+list, following the existing same-page rules and excluding existing links.
+Dismiss the list to cancel. Association changes remain shared and persisted;
+menus and navigation remain local. Real-device selection and keyboard behavior
+still need broader validation across phone browsers.
 
 Dragging a single window or selected group over a non-active page in the bottom
 pager highlights only the page currently under the pointer. The moving windows

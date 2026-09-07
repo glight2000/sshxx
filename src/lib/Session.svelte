@@ -43,6 +43,14 @@
   } from "./ui/ResizeHandles.svelte";
   import type { CanvasSearchItem } from "./ui/TerminalSearch.svelte";
   import SessionChrome from "./ui/SessionChrome.svelte";
+  import MobileNavigator from "./ui/MobileNavigator.svelte";
+  import { mobileViewport } from "./action/mobilePage";
+  import { mobileAssociationTargets } from "./mobileNavigation";
+  import {
+    installWorkspaceShortcuts,
+    shortcutPageId,
+  } from "./workspaceShortcuts";
+  import { installMobileCanvas } from "./action/mobileCanvas";
   import XTerm from "./ui/XTerm.svelte";
   import type { CanvasRelationItem } from "./ui/CanvasRelations.svelte";
   import type {
@@ -58,6 +66,8 @@
   } from "./canvasCamera";
   import { portal } from "./action/portal";
   import { TouchZoom, INITIAL_ZOOM } from "./action/touchZoom";
+  import { installCanvasWheel } from "./action/containWheel";
+  import { WheelInputClassifier, wheelDestination } from "./wheelInput";
   import {
     arrangeNewCanvasItem,
     arrangeNewCanvasItemNear,
@@ -275,6 +285,33 @@
     selectedCanvasItems = [];
   }
 
+  function clearCanvasFocus() {
+    if (
+      document.activeElement instanceof HTMLElement &&
+      fabricEl?.contains(document.activeElement)
+    )
+      document.activeElement.blur();
+    focusedTerminalId =
+      focusedNoteId =
+      focusedFileWindowId =
+      focusedCustomWindowId =
+        null;
+    focused = [];
+    clearCanvasSelection();
+  }
+
+  function handleFocusEscape(event: KeyboardEvent) {
+    if (event.key !== "Escape" || mobileAvailable) return;
+    // Let editor/menu Escape handlers finish first, including releasing note locks.
+    // Prevent xterm from forwarding this browser focus command to the PTY.
+    if ((event.target as Element)?.closest?.(".xterm-helper-textarea")) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      handleRelationshipKeydown(event);
+    }
+    queueMicrotask(clearCanvasFocus);
+  }
+
   function canvasItemWrapper(key: CanvasItemKey) {
     const { kind, id } = parseCanvasItemKey(key);
     if (kind === "terminal") return termWrappers[id];
@@ -415,7 +452,11 @@
       suppressMarqueeContextMenu = false;
     const fullscreenKey = activeFullscreenKey();
     const target = event.target instanceof Element ? event.target : null;
-    if (fullscreenKey && !target?.closest(".canvas-fullscreen"))
+    if (
+      fullscreenKey &&
+      !target?.closest(".canvas-fullscreen, [data-mobile-navigation]") &&
+      !(mobileAvailable && target?.closest('.panel, [role="menu"], dialog'))
+    )
       exitActivePageFullscreen();
     const wasLinking = linkingNoteId !== null;
     handleCanvasLinkSelection(event);
@@ -470,13 +511,77 @@
 
     touchZoom = new TouchZoom(
       fabricEl,
-      // Interactive components stop their own plain wheel events. Any wheel
-      // event that reaches the blank canvas should zoom regardless of which
-      // component currently owns keyboard focus.
-      () => true,
-      () => activeFullscreenKey() === null,
+      () => !mobileAvailable && activeFullscreenKey() === null,
       () => canvasPanMouseButton,
     );
+    const removeMobileCanvas = installMobileCanvas(
+      fabricEl,
+      () => mobileAvailable && activeFullscreenKey() === null,
+      () => ({ center: touchZoom.center, zoom: touchZoom.zoom }),
+      (view, settled) => {
+        if (settled) touchZoom.setView(view.center, view.zoom);
+        else
+          fabricEl.style.cssText = canvasCameraCss(
+            view.center,
+            view.zoom,
+            CONSTANT_OFFSET_LEFT,
+            CONSTANT_OFFSET_TOP,
+            GRID_SIZE,
+          );
+      },
+      (target) => {
+        const key = canvasItemFromTarget(target);
+        if (key) void openMobileItem(key);
+        else clearCanvasFocus();
+      },
+    );
+    window.addEventListener("keydown", handleFocusEscape, true);
+    const removeShortcuts = installWorkspaceShortcuts(
+      () => $settings.shortcutBindings,
+      () =>
+        !mobileAvailable &&
+        !settingsOpen &&
+        !document.querySelector('dialog[open], [aria-modal="true"]'),
+      (action) => {
+        if (action === "search") {
+          void openWorkspaceSearch();
+          return;
+        }
+        const pageId = shortcutPageId(action, pages, activePageId);
+        if (pageId === null) return;
+        searchOpen = false;
+        switchPage(pageId);
+      },
+    );
+    const wheelInput = new WheelInputClassifier();
+    const removeWheel = installCanvasWheel(
+      fabricEl,
+      () => {
+        const wrapper =
+          focusedTerminalId !== null
+            ? termWrappers[focusedTerminalId]
+            : focusedNoteId !== null
+              ? noteWrappers[focusedNoteId]
+              : focusedFileWindowId !== null
+                ? fileWrappers[focusedFileWindowId]
+                : focusedCustomWindowId !== null
+                  ? customWrappers[focusedCustomWindowId]
+                  : null;
+        return wrapper && !wrapper.closest('[aria-hidden="true"]')
+          ? wrapper
+          : null;
+      },
+      (event, focused) =>
+        wheelDestination(
+          focused,
+          wheelInput.classify(event, $settings.wheelInputMode),
+        ),
+      (event, mode) => touchZoom.wheel(event, mode),
+    );
+    // Native capture listeners still run on this window after TouchZoom stops
+    // propagation; Svelte's event wrapper skips a stopped event entirely.
+    window.addEventListener("pointerup", handleCanvasPointerEnd, true);
+    window.addEventListener("pointercancel", handleCanvasPointerEnd, true);
     const initialView = pageViews[activePageId];
     center = [...initialView.center];
     zoom = initialView.zoom;
@@ -504,6 +609,13 @@
     });
     return () => {
       unsubscribe();
+      removeWheel();
+      removeMobileCanvas();
+      window.removeEventListener("keydown", handleFocusEscape, true);
+      removeShortcuts();
+      window.removeEventListener("pointerup", handleCanvasPointerEnd, true);
+      window.removeEventListener("pointercancel", handleCanvasPointerEnd, true);
+      touchZoom.destroy();
       saveLocalViewState();
     };
   });
@@ -576,6 +688,30 @@
       return;
     }
     canvasContextMenuOpen = false;
+  }
+
+  function finishCanvasContextMenu() {
+    if (!pendingCanvasContextMenu) return;
+    if (suppressMarqueeContextMenu) {
+      suppressMarqueeContextMenu = false;
+    } else if (!touchZoom?.consumeContextMenuSuppression()) {
+      canvasContextMenuX = pendingCanvasContextMenu.x;
+      canvasContextMenuY = pendingCanvasContextMenu.y;
+      canvasContextPosition = pendingCanvasContextMenu.position;
+      canvasContextMenuOpen = true;
+    }
+    pendingCanvasContextMenu = null;
+  }
+
+  function handleCanvasPointerEnd(event: PointerEvent) {
+    if (event.type === "pointercancel") {
+      pendingCanvasContextMenu = null;
+      return;
+    }
+    // Preventing pointerdown suppresses compatibility mouseup in Firefox.
+    // Wait until TouchZoom has finished its pointer handlers, then complete
+    // the deferred menu without depending on a compatibility mouse event.
+    if (event.button === 2) queueMicrotask(finishCanvasContextMenu);
   }
 
   let encrypt: Encrypt;
@@ -715,6 +851,53 @@
   // Browser-memory-only derived state: neither synchronized nor persisted.
   let terminalTitles: Record<number, string> = {};
   let fullscreenItems: Record<string, boolean> = {};
+  let mobileAvailable = false;
+  let mobileListEnabled = true;
+  let mobileFullscreenKey: CanvasItemKey | null = null;
+  let mobileReturnToList = true;
+  $: mobileOverview =
+    mobileAvailable &&
+    !canvasSearchItems.some(
+      (item) =>
+        item.pageId === activePageId &&
+        fullscreenItems[canvasItemKey(item.kind, item.id)],
+    );
+
+  function closeMobileItem() {
+    linkingNoteId = null;
+    if (mobileFullscreenKey)
+      fullscreenItems = { ...fullscreenItems, [mobileFullscreenKey]: false };
+    mobileFullscreenKey = null;
+  }
+
+  async function openMobileItem(key: CanvasItemKey) {
+    const item = canvasSearchItems.find(
+      (item) => canvasItemKey(item.kind, item.id) === key,
+    );
+    if (!item) return;
+    if (mobileFullscreenKey === null) mobileReturnToList = mobileListEnabled;
+    closeMobileItem();
+    switchPage(item.pageId);
+    exitActivePageFullscreen();
+    mobileListEnabled = true;
+    mobileFullscreenKey = key;
+    fullscreenItems = { ...fullscreenItems, [key]: true };
+    await tick();
+    if (mobileFullscreenKey === key) focusCanvasItem(key);
+  }
+
+  $: if (
+    mobileFullscreenKey &&
+    (!mobileAvailable ||
+      !mobileListEnabled ||
+      !fullscreenItems[mobileFullscreenKey] ||
+      !canvasSearchItems.some(
+        (item) =>
+          canvasItemKey(item.kind, item.id) === mobileFullscreenKey &&
+          item.pageId === activePageId,
+      ))
+  )
+    closeMobileItem();
   // Shared workspace state: synchronized by server and persisted by daemon.
   let shells: [number, WsWinsize][] = [];
   let notes: [number, WsNote][] = [];
@@ -735,10 +918,18 @@
       .filter(([, window]) => window.minimized)
       .map(([id]) => `custom:${id}`),
   ];
-  $: if (minimizedFullscreenKeys.some((key) => fullscreenItems[key])) {
+  $: if (
+    minimizedFullscreenKeys.some(
+      (key) => key !== mobileFullscreenKey && fullscreenItems[key],
+    )
+  ) {
     fullscreenItems = {
       ...fullscreenItems,
-      ...Object.fromEntries(minimizedFullscreenKeys.map((key) => [key, false])),
+      ...Object.fromEntries(
+        minimizedFullscreenKeys
+          .filter((key) => key !== mobileFullscreenKey)
+          .map((key) => [key, false]),
+      ),
     };
   }
   let fileEditorBuffers: Record<
@@ -790,8 +981,16 @@
     return terminalHistory.read(id);
   }
 
-  function recoverTerminalRenderer(id: number, message: string) {
-    terminalHistory.delete(id);
+  function recoverTerminalRenderer(
+    id: number,
+    message: string,
+    preserveHistory = false,
+  ) {
+    console.warn("Rebuilding terminal renderer", {
+      terminalId: id,
+      generation: shells.find(([sid]) => sid === id)?.[1].generation,
+    });
+    if (!preserveHistory) terminalHistory.delete(id);
     delete replayedWriters[id];
     terminalRendererRevisions = {
       ...terminalRendererRevisions,
@@ -801,7 +1000,7 @@
       {
         id: `terminal-renderer-${id}`,
         kind: "error",
-        message: `${message} The terminal renderer was rebuilt and its browser scrollback was cleared; the remote process is still running.`,
+        message: `${message} The terminal renderer was rebuilt ${preserveHistory ? "with retained browser output" : "and its browser scrollback was cleared"}; the remote process is still running.`,
       },
       9000,
     );
@@ -1143,7 +1342,13 @@
     const { kind, id } = parseCanvasItemKey(key);
     const focusTarget =
       kind === "terminal"
-        ? termElements[id]?.querySelector<HTMLElement>(".xterm-helper-textarea")
+        ? mobileAvailable && mobileFullscreenKey === key
+          ? termWrappers[id]?.querySelector<HTMLElement>(
+              "[data-mobile-terminal-reader]",
+            )
+          : termElements[id]?.querySelector<HTMLElement>(
+              ".xterm-helper-textarea",
+            )
         : kind === "note"
           ? noteWrappers[id]?.querySelector<HTMLElement>("[data-canvas-note]")
           : kind === "file"
@@ -1903,6 +2108,14 @@
         ? "unavailable"
         : "connecting";
 
+  async function openWorkspaceSearch() {
+    searchOpen = true;
+    await tick();
+    document
+      .querySelector<HTMLInputElement>("[data-workspace-search]")
+      ?.focus({ preventScroll: true });
+  }
+
   function switchPage(pageId: number, preserveCanvasSelection = false) {
     if (!pages.some((page) => page.id === pageId)) return;
     preferredPageId = pageId;
@@ -2026,6 +2239,7 @@
   }
 
   function handleCanvasLinkSelection(event: MouseEvent) {
+    if (mobileAvailable) return; // Phone selection uses the component list.
     if (linkingNoteId === null || !(event.target instanceof Element)) return;
     if (event.target.closest("[data-link-toggle]")) return;
     const terminal = event.target.closest<HTMLElement>(
@@ -2066,8 +2280,24 @@
     event.preventDefault();
     event.stopPropagation();
 
-    if (terminal) {
-      const shellId = Number(terminal.dataset.canvasTerminal);
+    addCanvasRelation(
+      noteId,
+      terminal
+        ? { kind: "terminal", id: Number(terminal.dataset.canvasTerminal) }
+        : targetNote
+          ? { kind: "note", id: Number(targetNote.dataset.canvasNoteId) }
+          : { kind: "file", id: Number(fileWindow!.dataset.canvasFileWindow) },
+    );
+  }
+
+  function addCanvasRelation(
+    noteId: number,
+    item: Pick<CanvasRelationItem, "kind" | "id">,
+  ) {
+    const note = notes.find(([id]) => id === noteId)?.[1];
+    if (!note || !hasWriteAccess) return;
+    if (item.kind === "terminal") {
+      const shellId = item.id;
       const shell = shells.find(([id]) => id === shellId)?.[1];
       if (
         shell?.pageId === note.pageId &&
@@ -2077,8 +2307,8 @@
           linkedShellIds: [...note.linkedShellIds, shellId],
         });
       }
-    } else if (targetNote) {
-      const targetId = Number(targetNote.dataset.canvasNoteId);
+    } else if (item.kind === "note") {
+      const targetId = item.id;
       const target = notes.find(([id]) => id === targetId)?.[1];
       if (targetId === noteId) {
         makeToast({ kind: "info", message: "A note cannot link to itself." });
@@ -2090,8 +2320,8 @@
           linkedNoteIds: [...note.linkedNoteIds, targetId],
         });
       }
-    } else if (fileWindow) {
-      const windowId = Number(fileWindow.dataset.canvasFileWindow);
+    } else {
+      const windowId = item.id;
       const target = fileWindows.find(([id]) => id === windowId)?.[1];
       if (
         target?.pageId === note.pageId &&
@@ -2520,6 +2750,7 @@
   }
 
   function bringFileWindowToFront(id: number, pageId: number) {
+    if (mobileAvailable) return;
     if (fileWindows.at(-1)?.[0] === id) return;
     srocket?.send({ updateFileWindow: [id, pageId, null] });
   }
@@ -2550,6 +2781,7 @@
   }
 
   function bringCustomWindowToFront(id: number, pageId: number) {
+    if (mobileAvailable) return;
     if (customWindows.at(-1)?.[0] === id) return;
     srocket?.send({ updateCustomWindow: [id, pageId, null] });
   }
@@ -2688,6 +2920,11 @@
   ];
 
   async function selectCanvasItem(item: CanvasSearchItem) {
+    if (mobileAvailable) {
+      searchOpen = false;
+      await openMobileItem(canvasItemKey(item.kind, item.id));
+      return;
+    }
     const entry =
       item.kind === "terminal"
         ? shells.find(([id]) => id === item.id)
@@ -2758,6 +2995,10 @@
   }
 
   function navigateCanvasRelation(item: CanvasRelationItem) {
+    if (mobileAvailable) {
+      void openMobileItem(canvasItemKey(item.kind, item.id));
+      return;
+    }
     if (item.kind === "terminal") navigateToTerminal(item.id);
     else if (item.kind === "note") navigateToNote(item.id);
     else void navigateToFileWindow(item.id);
@@ -3492,17 +3733,7 @@
         canvasDropPageId = null;
         canvasDropPreviewOffsets = {};
       }
-      if (event.button === 2 && pendingCanvasContextMenu) {
-        if (suppressMarqueeContextMenu) {
-          suppressMarqueeContextMenu = false;
-        } else if (!touchZoom?.consumeContextMenuSuppression()) {
-          canvasContextMenuX = pendingCanvasContextMenu.x;
-          canvasContextMenuY = pendingCanvasContextMenu.y;
-          canvasContextPosition = pendingCanvasContextMenu.position;
-          canvasContextMenuOpen = true;
-        }
-        pendingCanvasContextMenu = null;
-      }
+      if (event.button === 2) finishCanvasContextMenu();
     }
 
     window.addEventListener("mousemove", handleMouse);
@@ -3536,6 +3767,10 @@
 <!-- Wheel handler stops native macOS Chrome zooming on pinch. -->
 <main
   class="p-8"
+  class:mobile-list-mode={mobileAvailable && mobileListEnabled}
+  class:mobile-overview={mobileOverview}
+  class:mobile-detail={mobileAvailable && mobileFullscreenKey !== null}
+  use:mobileViewport={mobileAvailable}
   style:cursor={linkingNoteId !== null
     ? "crosshair"
     : resizing !== -1
@@ -3549,6 +3784,58 @@
             : undefined}
   on:wheel={(event) => event.preventDefault()}
 >
+  <MobileNavigator
+    {pages}
+    items={canvasSearchItems}
+    {activePageId}
+    currentKey={mobileFullscreenKey}
+    associationTargets={mobileAvailable && linkingNoteId !== null
+      ? mobileAssociationTargets(
+          canvasSearchItems,
+          linkingNoteId,
+          notes.find(([id]) => id === linkingNoteId)?.[1],
+          associatedNoteIds(linkingNoteId),
+        )
+      : null}
+    on:cancelAssociation={() => (linkingNoteId = null)}
+    on:associate={(event) => {
+      const noteId = linkingNoteId;
+      linkingNoteId = null;
+      if (noteId !== null && event.detail.kind !== "custom")
+        addCanvasRelation(noteId, {
+          kind: event.detail.kind,
+          id: event.detail.id,
+        });
+    }}
+    bind:enabled={mobileListEnabled}
+    on:back={() => {
+      closeMobileItem();
+      clearCanvasFocus();
+      mobileListEnabled = mobileReturnToList;
+    }}
+    on:available={(event) => (mobileAvailable = event.detail)}
+    on:mode={(event) => {
+      if (!event.detail) closeMobileItem();
+    }}
+    on:select={(event) =>
+      openMobileItem(canvasItemKey(event.detail.kind, event.detail.id))}
+    on:page={(event) => {
+      closeMobileItem();
+      switchPage(event.detail);
+      mobileListEnabled = false;
+    }}
+    on:actions={(event) => {
+      canvasContextMenuX = event.detail.x;
+      canvasContextMenuY = event.detail.y;
+      canvasContextPosition = screenToCanvasPosition(
+        [event.detail.x, event.detail.y],
+        center,
+        zoom,
+        getConstantOffset(),
+      );
+      canvasContextMenuOpen = true;
+    }}
+  />
   <SessionChrome
     {connected}
     {connectionStatus}
@@ -3588,7 +3875,10 @@
       newMessages = false;
     }}
     on:openSettings={() => (settingsOpen = true)}
-    on:toggleSearch={() => (searchOpen = !searchOpen)}
+    on:toggleSearch={() => {
+      if (searchOpen) searchOpen = false;
+      else void openWorkspaceSearch();
+    }}
     on:selectSearch={(event) => selectCanvasItem(event.detail)}
     on:toggleNetwork={() => (showNetworkInfo = !showNetworkInfo)}
     on:chat={(event) => srocket?.send({ chat: event.detail })}
@@ -3638,7 +3928,7 @@
     on:createCustom={() => handleCreateCustom(canvasContextPosition)}
     on:search={() => {
       settingsOpen = false;
-      searchOpen = true;
+      void openWorkspaceSearch();
     }}
     on:settings={() => {
       searchOpen = false;
@@ -3648,6 +3938,7 @@
 
   <div
     class="absolute inset-0 overflow-hidden touch-none"
+    data-canvas-root
     style={canvasCameraCss(
       center,
       zoom,
@@ -3743,11 +4034,17 @@
                 bind:this={termWrappers[id]}
               >
                 <XTerm
+                  terminalId={id}
+                  generation={winsize.generation}
+                  mobileDetail={mobileAvailable &&
+                    mobileFullscreenKey === terminalKey}
+                  inputAvailable={connected && sessionReady}
                   rows={ws.rows}
                   cols={ws.cols}
                   windowWidth={ws.width}
                   windowHeight={ws.height}
                   canvasZoom={zoom}
+                  pageVisible={page.id === activePageId}
                   title={ws.title}
                   background={ws.background}
                   colorTheme={ws.theme}
@@ -3776,6 +4073,12 @@
                     hasWriteAccess && queueTerminalInput(id, ws.pageId, data)}
                   on:rendererFailure={(event) =>
                     recoverTerminalRenderer(id, event.detail)}
+                  on:retryInitialization={() =>
+                    recoverTerminalRenderer(
+                      id,
+                      "Retrying terminal initialization.",
+                      true,
+                    )}
                   on:uploadImage={({ detail: file }) =>
                     hasWriteAccess && queueImageUpload(id, ws.pageId, file)}
                   on:close={() => srocket?.send({ close: [id, ws.pageId] })}
@@ -3812,7 +4115,7 @@
                     terminalTitles = { ...terminalTitles, [id]: event.detail };
                   }}
                   on:bringToFront={() => {
-                    if (!hasWriteAccess) return;
+                    if (mobileAvailable || !hasWriteAccess) return;
                     showNetworkInfo = false;
                     srocket?.send({ move: [id, ws.pageId, null] });
                   }}
@@ -3836,11 +4139,13 @@
                   }}
                   on:focus={() => {
                     clearCanvasSelection();
-                    if (!hasWriteAccess) return;
                     focusedTerminalId = id;
                     focusedNoteId = null;
                     focusedFileWindowId = null;
                     focusedCustomWindowId = null;
+                    // Read-only viewers still need local focus for scrolling;
+                    // this does not grant PTY input or broadcast write focus.
+                    if (!hasWriteAccess) return;
                     focused = [...focused, [id, ws.pageId]];
                   }}
                   on:blur={() => {
@@ -4097,6 +4402,7 @@
                     if (focusedNoteId === id) focusedNoteId = null;
                   }}
                   on:bringToFront={() =>
+                    !mobileAvailable &&
                     srocket?.send({ updateNote: [id, note.pageId, null] })}
                   on:startMove={({ detail: event }) => {
                     if (fullscreenItems[`note:${id}`]) return;

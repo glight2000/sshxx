@@ -2,6 +2,11 @@ import { persisted } from "svelte-persisted-store";
 import themes, { type ThemeName, defaultTheme } from "./ui/themes";
 import { derived, type Readable } from "svelte/store";
 import { isColorModePreference, type ColorModePreference } from "./colorMode";
+import { isWheelInputMode, type WheelInputMode } from "./wheelInput";
+import {
+  normalizeShortcutBindings,
+  type ShortcutBindings,
+} from "./workspaceShortcuts";
 
 export type Settings = {
   name: string;
@@ -9,7 +14,9 @@ export type Settings = {
   scrollback: number;
   snapToGrid: boolean;
   swapCanvasMouseButtons: boolean;
+  wheelInputMode: WheelInputMode;
   colorMode: ColorModePreference;
+  shortcutBindings: ShortcutBindings;
 };
 
 const storedSettings = persisted<Partial<Settings>>("sshx-settings-store", {});
@@ -44,7 +51,13 @@ export const settings: Readable<Settings> = derived(
       scrollback,
       snapToGrid,
       swapCanvasMouseButtons,
+      wheelInputMode: isWheelInputMode($storedSettings.wheelInputMode)
+        ? $storedSettings.wheelInputMode
+        : "auto",
       colorMode,
+      shortcutBindings: normalizeShortcutBindings(
+        $storedSettings.shortcutBindings,
+      ),
     };
   },
 );

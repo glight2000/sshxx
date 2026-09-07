@@ -12,6 +12,148 @@ use crate::common::*;
 pub mod common;
 
 #[tokio::test]
+async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_streams(
+) -> Result<()> {
+    use sshx_core::proto::{client_update::ClientMessage, ClientUpdate, OpenRequest, TerminalData};
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let server = TestServer::new().await;
+    let encrypt = Encrypt::new("synthetic-output-recovery");
+    let mut grpc = server.grpc_client().await;
+    let opened = grpc
+        .open(OpenRequest {
+            origin: "http://example.test".into(),
+            name: "synthetic".into(),
+            encrypted_zeros: encrypt.zeros().into(),
+            ..Default::default()
+        })
+        .await?
+        .into_inner();
+    let (tx, rx) = mpsc::channel(16);
+    tx.send(ClientUpdate {
+        client_message: Some(ClientMessage::Hello(format!(
+            "{},{}",
+            opened.name, opened.token
+        ))),
+    })
+    .await?;
+    let mut updates = grpc.channel(ReceiverStream::new(rx)).await?.into_inner();
+    time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(ServerMessage::Sync(sync)) = updates
+                .message()
+                .await?
+                .context("stream closed")?
+                .server_message
+            {
+                assert!(sync.output_recovery);
+                return Ok::<_, anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+    for id in [60, 61] {
+        tx.send(ClientUpdate {
+            client_message: Some(ClientMessage::CreatedShell(Box::new(NewShell {
+                id,
+                page_id: 1,
+                ..Default::default()
+            }))),
+        })
+        .await?;
+    }
+    let mut viewer = ClientSocket::connect(
+        &server.ws_endpoint(&opened.name),
+        "synthetic-output-recovery",
+        None,
+    )
+    .await?;
+    let session = server
+        .state()
+        .lookup(&opened.name)
+        .context("missing session")?;
+    for _ in 0..20 {
+        viewer.flush().await;
+        if viewer.shells.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(viewer.shells.len(), 2);
+    for id in [60, 61] {
+        tx.send(ClientUpdate {
+            client_message: Some(ClientMessage::Data(TerminalData {
+                id,
+                seq: 0,
+                retained_sequence: Some(0),
+                data: encrypt.segment(0x100000000 | id as u64, 0, b"old").into(),
+            })),
+        })
+        .await?;
+        viewer
+            .send(WsClient::SubscribeRecoverable(Sid(id), 1, 0, 1, 0))
+            .await;
+    }
+    viewer.flush().await;
+    viewer.send(WsClient::RenderedBatch(Sid(61), 0, 1, 1)).await;
+    // Terminal 60 is deliberately waiting for a renderer ACK while its
+    // upstream stream encounters a gap beyond the daemon's retained bytes.
+    let base = 20 << 20;
+    let tail = b"Codex exited\r\n$ ";
+    for seq in [base + 64, base] {
+        tx.send(ClientUpdate {
+            client_message: Some(ClientMessage::Data(TerminalData {
+                id: 60,
+                seq,
+                retained_sequence: Some(base),
+                data: encrypt.segment(0x10000003c, seq, tail).into(),
+            })),
+        })
+        .await?;
+    }
+    for _ in 0..20 {
+        viewer.flush().await;
+        if viewer.shells[&Sid(60)].generation == 1 {
+            break;
+        }
+    }
+    assert_eq!(viewer.shells[&Sid(60)].generation, 1);
+    assert_eq!(viewer.shells[&Sid(61)].generation, 0);
+    assert_eq!(
+        session.sequence_numbers().map[&60],
+        base + tail.len() as u64
+    );
+    assert_eq!(viewer.errors.len(), 1);
+    assert!(viewer.errors[0].contains("process was not restarted"));
+    // The real client invalidates only this renderer and its history on a
+    // generation update, then subscribes without waiting for the old ACK.
+    viewer.data.remove(&Sid(60));
+    viewer
+        .send(WsClient::SubscribeRecoverable(Sid(60), 1, 1, 2, 0))
+        .await;
+    viewer.flush().await;
+    assert_eq!(viewer.read(Sid(60)).as_bytes(), tail);
+    assert_eq!(viewer.read(Sid(61)), "old");
+    session.add_data(Sid(61), encrypt.segment(0x10000003d, 3, b" live").into(), 3)?;
+    viewer.flush().await;
+    assert_eq!(viewer.read(Sid(61)), "old live");
+    // A fresh browser can decrypt the retained tail at its nonzero offset too.
+    let mut refreshed = ClientSocket::connect(
+        &server.ws_endpoint(&opened.name),
+        "synthetic-output-recovery",
+        None,
+    )
+    .await?;
+    refreshed.flush().await;
+    refreshed
+        .send(WsClient::SubscribeRecoverable(Sid(60), 1, 1, 1, 0))
+        .await;
+    refreshed.flush().await;
+    assert_eq!(refreshed.read(Sid(60)).as_bytes(), tail);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_delete_page_is_shared_and_requires_write_access() -> Result<()> {
     let server = TestServer::new().await;
     let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, true).await?;

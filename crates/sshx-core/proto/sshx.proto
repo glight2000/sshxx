@@ -20,6 +20,9 @@ message TerminalData {
   uint32 id = 1;  // ID of the shell.
   bytes data = 2; // Encrypted, UTF-8 terminal data.
   uint64 seq = 3; // Sequence number of the first byte.
+  // Earliest encrypted-stream byte still retained by the daemon. A chunk
+  // starting here may repair an irrecoverable gap without restarting the PTY.
+  optional uint64 retained_sequence = 4;
 }
 
 // Details of bytes input to the terminal (not necessarily valid UTF-8).
@@ -71,6 +74,7 @@ message OpenResponse {
 // Sequence numbers for all active shells, used for synchronization.
 message SequenceNumbers {
   map<uint32, uint64> map = 1; // Active shells and their sequence numbers.
+  bool output_recovery = 2; // Server accepts retained_sequence gap recovery.
 }
 
 // Data for a new shell.

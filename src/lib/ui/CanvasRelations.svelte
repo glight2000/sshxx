@@ -7,7 +7,9 @@
 </script>
 
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onMount } from "svelte";
+  import MobileCanvasRelations from "./MobileCanvasRelations.svelte";
+  import { MOBILE_NAVIGATION_QUERY } from "$lib/mobileNavigation";
   import {
     Edit3Icon,
     FileTextIcon,
@@ -19,6 +21,14 @@
   export let allowAdd = false;
   export let selecting = false;
   export let disabled = false;
+  let mobile = false;
+  onMount(() => {
+    const media = window.matchMedia(MOBILE_NAVIGATION_QUERY);
+    const update = () => (mobile = media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  });
 
   const dispatch = createEventDispatcher<{
     toggleAdd: void;
@@ -28,51 +38,63 @@
 </script>
 
 {#if allowAdd || items.length}
-  <div
-    class="relation-strip"
-    class:selecting
-    aria-label="Associated canvas items"
-  >
-    {#if allowAdd}
-      <button
-        type="button"
-        class="relation-button add-button"
-        class:active={selecting}
-        data-link-toggle
-        {disabled}
-        aria-label={selecting
-          ? "Cancel target selection"
-          : "Associate a terminal, note, or file editor"}
-        title={selecting
-          ? "Cancel target selection"
-          : "Associate a terminal, note, or file editor"}
-        on:mousedown|stopPropagation={(event) => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          dispatch("toggleAdd");
-        }}><PlusIcon /></button
-      >
-    {/if}
-    {#each [...items].reverse() as item (`${item.kind}:${item.id}`)}
-      <button
-        type="button"
-        class="relation-button item-button"
-        aria-label={`Go to ${item.label}`}
-        title={`${item.label} · Left-click to locate · Right-click to unlink`}
-        on:mousedown|stopPropagation={(event) => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          dispatch("navigate", item);
-        }}
-        on:contextmenu|stopPropagation|preventDefault={() =>
-          !disabled && dispatch("remove", item)}
-      >
-        {#if item.kind === "terminal"}<TerminalIcon
-          />{:else if item.kind === "file"}<Edit3Icon />{:else}<FileTextIcon
-          />{/if}
-      </button>
-    {/each}
-  </div>
+  {#if mobile}
+    <MobileCanvasRelations
+      {items}
+      {allowAdd}
+      {selecting}
+      {disabled}
+      on:toggleAdd
+      on:navigate
+      on:remove
+    />
+  {:else}
+    <div
+      class="relation-strip"
+      class:selecting
+      aria-label="Associated canvas items"
+    >
+      {#if allowAdd}
+        <button
+          type="button"
+          class="relation-button add-button"
+          class:active={selecting}
+          data-link-toggle
+          {disabled}
+          aria-label={selecting
+            ? "Cancel target selection"
+            : "Associate a terminal, note, or file editor"}
+          title={selecting
+            ? "Cancel target selection"
+            : "Associate a terminal, note, or file editor"}
+          on:mousedown|stopPropagation={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            dispatch("toggleAdd");
+          }}><PlusIcon /></button
+        >
+      {/if}
+      {#each [...items].reverse() as item (`${item.kind}:${item.id}`)}
+        <button
+          type="button"
+          class="relation-button item-button"
+          aria-label={`Go to ${item.label}`}
+          title={`${item.label} · Left-click to locate · Right-click to unlink`}
+          on:mousedown|stopPropagation={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            dispatch("navigate", item);
+          }}
+          on:contextmenu|stopPropagation|preventDefault={() =>
+            !disabled && dispatch("remove", item)}
+        >
+          {#if item.kind === "terminal"}<TerminalIcon
+            />{:else if item.kind === "file"}<Edit3Icon />{:else}<FileTextIcon
+            />{/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
 {/if}
 
 <style lang="postcss">

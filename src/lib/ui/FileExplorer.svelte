@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { containWheel, scrollWheel } from "$lib/action/containWheel";
   import { surfaceBackground, surfaceTone } from "./surfaceTheme";
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { FolderIcon } from "svelte-feather-icons";
@@ -1248,9 +1249,11 @@
     dispatch("blur");
   }}
   on:pointerdown|stopPropagation
-  on:wheel={(event) => {
-    if (!event.ctrlKey) event.stopPropagation();
-  }}
+  use:containWheel={(event) =>
+    scrollWheel(
+      sectionElement.querySelector("[data-file-preview-pane]"),
+      event,
+    )}
 >
   <FileExplorerHeader
     {title}
@@ -1370,6 +1373,7 @@
         on:save={save}
       />
       <div
+        data-file-preview-pane
         class="relative min-h-0 flex-1 overflow-auto"
         on:wheel={(event) => {
           if (!event.ctrlKey) event.stopPropagation();
@@ -1517,10 +1521,10 @@
     display: flex;
     flex-direction: column;
   }
-  .file-window.minimized > :not(header) {
+  .file-window.minimized:not(.fullscreen) > :not(header) {
     display: none;
   }
-  .file-window.minimized > :global(header) {
+  .file-window.minimized:not(.fullscreen) > :global(header) {
     height: 100%;
     border-bottom-color: transparent;
   }

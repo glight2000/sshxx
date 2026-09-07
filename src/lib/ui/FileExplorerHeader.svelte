@@ -57,8 +57,8 @@
   data-canvas-titlebar
   class="relative flex h-9 shrink-0 cursor-default select-none items-center border-b border-zinc-800"
   class:cursor-default={fullscreen}
-  class:border-transparent={minimized}
-  style:height={minimized ? "100%" : undefined}
+  class:border-transparent={minimized && !fullscreen}
+  style:height={minimized && !fullscreen ? "100%" : undefined}
   on:mousedown|stopPropagation={(event) => {
     dispatch("bringToFront");
     if (event.button === 0 && !fullscreen) dispatch("startMove", event);
@@ -85,7 +85,7 @@
       <CircleButton
         kind="purple"
         active={fullscreen}
-        disabled={minimized}
+        disabled={minimized && !fullscreen}
         ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
         on:mousedown={(event) =>
           event.button === 0 && dispatch("toggleFullscreen")}

@@ -45,30 +45,6 @@ const getNearestScrollableContainer = (
   return document;
 };
 
-/** Whether a wheel event started inside a scrollable descendant of the canvas. */
-const isInsideScrollableContent = (
-  target: EventTarget | null,
-  boundary: HTMLElement,
-) => {
-  let element = target instanceof HTMLElement ? target : null;
-  while (element && element !== boundary) {
-    const { overflowX, overflowY } = window.getComputedStyle(element);
-    const scrollsVertically =
-      element.scrollHeight > element.clientHeight &&
-      (overflowY === "auto" ||
-        overflowY === "scroll" ||
-        overflowY === "overlay");
-    const scrollsHorizontally =
-      element.scrollWidth > element.clientWidth &&
-      (overflowX === "auto" ||
-        overflowX === "scroll" ||
-        overflowX === "overlay");
-    if (scrollsVertically || scrollsHorizontally) return true;
-    element = element.parentElement;
-  }
-  return false;
-};
-
 function isDarwin(): boolean {
   return /Mac|iPod|iPhone|iPad/.test(window.navigator.platform);
 }
@@ -88,7 +64,6 @@ export const INITIAL_ZOOM = 1.0;
 
 export class TouchZoom {
   #node: HTMLElement;
-  #shouldZoomWheel: () => boolean;
   #isEnabled: () => boolean;
   #canvasPanButton: () => number;
   #scrollingAnchor: HTMLElement | Document;
@@ -129,12 +104,10 @@ export class TouchZoom {
 
   constructor(
     node: HTMLElement,
-    shouldZoomWheel = () => false,
     isEnabled = () => true,
     canvasPanButton = () => 2,
   ) {
     this.#node = node;
-    this.#shouldZoomWheel = shouldZoomWheel;
     this.#isEnabled = isEnabled;
     this.#canvasPanButton = canvasPanButton;
     this.#scrollingAnchor = getNearestScrollableContainer(node);
@@ -187,7 +160,6 @@ export class TouchZoom {
     this.#gesture = new Gesture(
       node,
       {
-        onWheel: this.#handleWheel,
         onPinchStart: this.#handlePinchStart,
         onPinch: this.#handlePinch,
         onPinchEnd: this.#handlePinchEnd,
@@ -428,14 +400,11 @@ export class TouchZoom {
   }
 
   #handleForcedWheel = (event: WheelEvent) => {
-    if (event.ctrlKey) this.#processWheel(event);
+    if (event.ctrlKey) this.wheel(event, "zoom");
   };
 
-  #handleWheel: Handler<"wheel", WheelEvent> = ({ event }) => {
-    this.#processWheel(event);
-  };
-
-  #processWheel(e: WheelEvent) {
+  /** The session owns focus/device routing; this class only moves the camera. */
+  wheel(e: WheelEvent, mode: "pan" | "zoom") {
     if (!this.#isEnabled()) {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
@@ -443,14 +412,6 @@ export class TouchZoom {
       }
       return;
     }
-    // Menus and other scrollable surfaces rendered inside the canvas own the
-    // wheel while hovered. This keeps their scroll state separate from canvas
-    // pan/zoom state, including when the canvas currently has no focus.
-    if (!e.ctrlKey && isInsideScrollableContent(e.target, this.#node)) {
-      e.stopPropagation();
-      return;
-    }
-
     e.preventDefault();
     if (e.ctrlKey) e.stopPropagation();
     if (this.isPinching || e.timeStamp <= this.#wheelLastTimeStamp) return;
@@ -459,13 +420,7 @@ export class TouchZoom {
 
     const [x, y, z] = normalizeWheel(e);
 
-    // Modifier+scroll always zooms. Plain scrolling follows the owning
-    // canvas policy; interactive descendants keep their own wheel events by
-    // stopping propagation or through the scrollable-content guard above.
-    if (
-      (e.altKey || e.ctrlKey || e.metaKey || this.#shouldZoomWheel()) &&
-      e.buttons === 0
-    ) {
+    if (mode === "zoom" && e.buttons === 0) {
       const point =
         e.clientX && e.clientY
           ? this.#getPoint(e)
@@ -479,7 +434,7 @@ export class TouchZoom {
       this.center = addVector(this.center, movement);
       this.zoom = newZoom;
 
-      this.#moved();
+      this.#moved(true, true);
       return;
     }
 
@@ -496,7 +451,7 @@ export class TouchZoom {
     if (vectorsEqual(delta, [0, 0])) return;
 
     this.center = addVector(this.center, divideVector(delta, this.zoom));
-    this.#moved();
+    this.#moved(true, true);
   }
 
   #handlePinchStart: Handler<

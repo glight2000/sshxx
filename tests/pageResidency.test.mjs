@@ -32,4 +32,5 @@ test("page switching keeps every canvas component mounted", () => {
     /class:canvas-page-active=\{page\.id === activePageId\}/,
   );
   assert.doesNotMatch(session, /\{#key activePageId\}/);
+  assert.match(session, /pageVisible=\{page\.id === activePageId\}/);
 });

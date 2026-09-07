@@ -175,3 +175,30 @@ test("times out a stalled renderer write and releases replay suppression", async
   await queue.write("ignored after failure");
   assert.equal(writes.length, 1);
 });
+
+test("diagnostics distinguish a pending write, recovery, and cleanup without content", async () => {
+  let complete;
+  const queue = new TerminalWriteQueue({
+    scheduleTimeout: () => 1,
+    cancelTimeout() {},
+  });
+  queue.setSink((_, done) => {
+    complete = done;
+  });
+  const pending = queue.write("synthetic private text", true);
+  assert.equal(queue.diagnostics.queuedChunks, 1);
+  assert.equal(typeof queue.diagnostics.pendingSince, "number");
+  assert.equal(queue.diagnostics.lastCompletedAt, null);
+  assert.equal(JSON.stringify(queue.diagnostics).includes("synthetic"), false);
+  complete();
+  await pending;
+  assert.equal(queue.diagnostics.pendingSince, null);
+  assert.equal(typeof queue.diagnostics.lastCompletedAt, "number");
+  const next = queue.write("pending at unmount", true);
+  queue.dispose();
+  const disposed = queue.diagnostics;
+  complete(); // a disposed renderer must not revive counters/timestamps
+  await next;
+  assert.deepEqual(queue.diagnostics, disposed);
+  assert.equal(disposed.queuedChunks, 0);
+});

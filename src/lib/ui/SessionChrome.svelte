@@ -66,26 +66,28 @@
 <div
   class="absolute top-8 inset-x-0 z-10 flex justify-center pointer-events-none"
 >
-  <Toolbar
-    {connected}
-    {connectionStatus}
-    {connectionDetail}
-    {newMessages}
-    {hasWriteAccess}
-    {profiles}
-    {users}
-    on:create={() => dispatch("create")}
-    on:createSsh={(event) => dispatch("createSsh", event.detail)}
-    on:saveSshProfile={(event) => dispatch("saveSshProfile", event.detail)}
-    on:deleteSshProfile={(event) => dispatch("deleteSshProfile", event.detail)}
-    on:createNote={() => dispatch("createNote")}
-    on:createCustom={() => dispatch("createCustom")}
-    on:chat={() => dispatch("toggleChat")}
-    on:settings={() => dispatch("openSettings")}
-    on:search={() => dispatch("toggleSearch")}
-    on:networkInfo={() => dispatch("toggleNetwork")}
-  />
-
+  <div class="desktop-toolbar contents">
+    <Toolbar
+      {connected}
+      {connectionStatus}
+      {connectionDetail}
+      {newMessages}
+      {hasWriteAccess}
+      {profiles}
+      {users}
+      on:create={() => dispatch("create")}
+      on:createSsh={(event) => dispatch("createSsh", event.detail)}
+      on:saveSshProfile={(event) => dispatch("saveSshProfile", event.detail)}
+      on:deleteSshProfile={(event) =>
+        dispatch("deleteSshProfile", event.detail)}
+      on:createNote={() => dispatch("createNote")}
+      on:createCustom={() => dispatch("createCustom")}
+      on:chat={() => dispatch("toggleChat")}
+      on:settings={() => dispatch("openSettings")}
+      on:search={() => dispatch("toggleSearch")}
+      on:networkInfo={() => dispatch("toggleNetwork")}
+    />
+  </div>
   <TerminalSearch
     open={searchOpen}
     items={searchItems}
@@ -139,16 +141,18 @@
 
 <ChooseName />
 
-<PagePager
-  {pages}
-  {activePageId}
-  {canvasDropPageId}
-  {hasWriteAccess}
-  on:select={(event) => dispatch("selectPage", event.detail)}
-  on:create={() => dispatch("createPage")}
-  on:rename={(event) => dispatch("renamePage", event.detail)}
-  on:delete={(event) => dispatch("deletePage", event.detail)}
-/>
+<div class="desktop-page-pager contents">
+  <PagePager
+    {pages}
+    {activePageId}
+    {canvasDropPageId}
+    {hasWriteAccess}
+    on:select={(event) => dispatch("selectPage", event.detail)}
+    on:create={() => dispatch("createPage")}
+    on:rename={(event) => dispatch("renamePage", event.detail)}
+    on:delete={(event) => dispatch("deletePage", event.detail)}
+  />
+</div>
 
 <div class="py-2">
   {#if userId && hasWriteAccess === false}

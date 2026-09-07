@@ -358,6 +358,34 @@ Windows x64.
 Release checksums and GitHub attestations provide build provenance and integrity
 checks, but do not replace trusted platform code signing.
 
+## v0.12.0 upgrade notes
+
+| Module                  | Version | Changes                                                                                                                       |
+| ----------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Suite / Runtime archive | 0.12.0  | Release bundle and updated manuals                                                                                            |
+| Web / Tauri client      | 0.12.0  | Phone navigation and terminal reader, local shortcuts, output/paste recovery, bounded history cleanup, and page repaint fixes |
+| Daemon                  | 0.11.1  | Retained-output gap recovery and progress diagnostics                                                                         |
+| Server                  | 0.11.1  | Compatible output-gap recovery and subscription diagnostics                                                                   |
+| Terminal host           | 0.10.1  | Connection/subscription cleanup, cancelled terminal-creation cleanup, and output progress diagnostics                         |
+| Internal core           | 0.11.1  | Additive output-recovery protocol fields                                                                                      |
+
+Experimental Electron and Godot clients remain at 0.1.0 and are not part of the
+standard release build matrix.
+
+Upgrade daemon and server together to repair gaps older than the retained output
+range; a Web-only update cannot fix an upstream sequence gap. Compatible running
+terminal hosts remain attached across a daemon update. Installing the new host
+binary does not activate its fixes in an already running host: schedule the
+[host upgrade procedure](Architecture-and-State.md#terminal-host-lifecycle-and-upgrades)
+after finishing or saving tasks, because restarting it disconnects every hosted
+process. The new daemon/server recovery protocol also works with the previous
+compatible host, so its restart can be deferred. No recovery action promises an
+exact TUI screen snapshot after old output has been discarded.
+
+The phone terminal reader is a local presentation/input surface, not a shared
+PTY resize. Page switches retain mounted components and output subscriptions;
+the larger multi-client endurance-test expansion remains deferred.
+
 ## Maintainer release flow
 
 `.github/workflows/release.yaml` is tag-driven and uses this sequence:

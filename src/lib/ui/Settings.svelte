@@ -8,8 +8,10 @@
 
   import { settings, updateSettings } from "$lib/settings";
   import OverlayMenu from "./OverlayMenu.svelte";
+  import ShortcutSettings from "./ShortcutSettings.svelte";
   import themes, { type ThemeName } from "./themes";
   import type { ColorModePreference } from "$lib/colorMode";
+  import type { WheelInputMode } from "$lib/wheelInput";
 
   export let open: boolean;
   export let serverVersion: string;
@@ -50,6 +52,7 @@
   let inputSnapToGrid: boolean;
   let inputSwapCanvasMouseButtons: boolean;
   let inputColorMode: ColorModePreference;
+  let inputWheelMode: WheelInputMode;
 
   let initialized = false;
   $: (open, (initialized = false));
@@ -61,6 +64,7 @@
     inputSnapToGrid = $settings.snapToGrid;
     inputSwapCanvasMouseButtons = $settings.swapCanvasMouseButtons;
     inputColorMode = $settings.colorMode;
+    inputWheelMode = $settings.wheelInputMode;
   }
 </script>
 
@@ -90,6 +94,7 @@
         Enabled
       </label>
     </div>
+    <ShortcutSettings />
     <div class="item runtime-item">
       <div>
         <p class="item-title">Runtime</p>
@@ -150,6 +155,26 @@
         />
         Swap buttons
       </label>
+    </div>
+    <div class="item">
+      <div>
+        <p class="item-title">Scroll input device</p>
+        <p class="item-subtitle">
+          With focus, scroll the focused component. Without focus, a mouse wheel
+          zooms and a trackpad pans. Auto detection is approximate; override it
+          here if your device is misidentified. Ctrl + wheel always zooms.
+        </p>
+      </div>
+      <select
+        class="input-common"
+        aria-label="Scroll input device"
+        bind:value={inputWheelMode}
+        on:change={() => updateSettings({ wheelInputMode: inputWheelMode })}
+      >
+        <option value="auto">Auto</option>
+        <option value="mouse">Mouse wheel</option>
+        <option value="trackpad">Trackpad</option>
+      </select>
     </div>
     <div class="item">
       <div>

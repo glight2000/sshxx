@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { containWheel, scrollWheel } from "$lib/action/containWheel";
   import { surfaceBackground, surfaceTone } from "./surfaceTheme";
   import { browser } from "$app/environment";
   import { createEventDispatcher, onDestroy } from "svelte";
@@ -270,6 +271,8 @@
 
 <section
   bind:this={root}
+  use:containWheel={(event) =>
+    scrollWheel(root.querySelector(".cm-scroller"), event)}
   role="presentation"
   aria-label={customWindow.title || "Custom component"}
   class="custom-window theme-surface flex overflow-visible rounded-xl border border-transparent"
@@ -323,7 +326,7 @@
         <CircleButton
           kind="purple"
           active={fullscreen}
-          disabled={customWindow.minimized}
+          disabled={customWindow.minimized && !fullscreen}
           ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
           on:mousedown={(event) =>
             event.button === 0 && dispatch("toggleFullscreen")}
@@ -515,10 +518,11 @@
   .custom-window.fullscreen {
     @apply h-full w-full;
   }
-  .custom-window.minimized > :not(header):not(.custom-window-border) {
+  .custom-window.minimized:not(.fullscreen)
+    > :not(header):not(.custom-window-border) {
     display: none;
   }
-  .custom-window.minimized > header {
+  .custom-window.minimized:not(.fullscreen) > header {
     height: 100%;
     border-bottom-color: transparent;
     border-radius: inherit;

@@ -19,13 +19,14 @@ use tokio::sync::{broadcast, watch, Notify};
 use tokio::time::Instant;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream, WatchStream};
 use tokio_stream::{Stream, StreamExt};
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::utils::Shutdown;
 use crate::web::protocol::{
     WsCustomWindow, WsFileWindow, WsNote, WsPage, WsServer, WsSshProfile, WsUser, WsWinsize,
 };
 
+mod output;
 mod pages;
 mod snapshot;
 mod validation;
@@ -161,6 +162,10 @@ pub struct Session {
 /// Internal state for each shell.
 #[derive(Default, Debug)]
 struct State {
+    last_received_sequence: Option<u64>,
+    last_accepted: Option<Instant>,
+    /// Rejected discontinuous chunks since the last accepted output.
+    gap_chunks: u64,
     /// Sequence number, indicating how many bytes have been received.
     seqnum: u64,
 
@@ -231,10 +236,18 @@ impl Session {
         let mut map = HashMap::with_capacity(shells.len());
         for (key, value) in &*shells {
             if !value.closed && !pending.contains(key) {
+                tracing::debug!(terminal_id = key.0, expected_sequence = value.seqnum,
+                    received_sequence = ?value.last_received_sequence,
+                    retained_start = value.byte_offset, gap_chunks = value.gap_chunks,
+                    last_accepted_ms_ago = ?value.last_accepted.map(|t| t.elapsed().as_millis() as u64),
+                    "server output sync progress");
                 map.insert(key.0, value.seqnum);
             }
         }
-        SequenceNumbers { map }
+        SequenceNumbers {
+            map,
+            output_recovery: true,
+        }
     }
 
     /// Receive a notification on broadcasted message events.
@@ -992,7 +1005,9 @@ impl Session {
                         _ => return,
                     };
                     let notify = Arc::clone(&shell.notify);
-                    let notified = async move { notify.notified().await };
+                    // Capture Notify's epoch while holding the state lock;
+                    // creating the future only after unlocking loses a final write.
+                    let notified = notify.notified_owned();
                     let mut seqnum = shell.byte_offset;
                     let mut chunks = Vec::new();
                     let current_chunks = shell.chunk_offset + shell.data.len() as u64;
@@ -1787,43 +1802,6 @@ impl Session {
             .send(WsServer::NoteParagraphs(id, page_id, paragraphs))
             .ok();
         self.workspace_changed_deferred();
-        Ok(())
-    }
-
-    /// Receive new data into the session.
-    pub fn add_data(&self, id: Sid, data: Bytes, seq: u64) -> Result<()> {
-        let mut shells = self.shells.write();
-        let shell = shells.get_mut(&id).context("terminal does not exist")?;
-        // Output already in transit is expected while page deletion propagates
-        // the close command to the daemon. Never resurrect the closed stream.
-        if shell.closed {
-            return Ok(());
-        }
-
-        if seq <= shell.seqnum && seq + data.len() as u64 > shell.seqnum {
-            let start = shell.seqnum - seq;
-            let segment = data.slice(start as usize..);
-            debug!(%id, bytes = segment.len(), "adding data to shell");
-            shell.seqnum += segment.len() as u64;
-            shell.data.push(segment);
-
-            // Prune old chunks if we've exceeded the maximum stored bytes.
-            let mut stored_bytes = shell.seqnum - shell.byte_offset;
-            if stored_bytes > SHELL_STORED_BYTES {
-                let mut offset = 0;
-                while offset < shell.data.len() && stored_bytes > SHELL_STORED_BYTES {
-                    let bytes = shell.data[offset].len() as u64;
-                    stored_bytes -= bytes;
-                    shell.chunk_offset += 1;
-                    shell.byte_offset += bytes;
-                    offset += 1;
-                }
-                shell.data.drain(..offset);
-            }
-
-            shell.notify.notify_waiters();
-        }
-
         Ok(())
     }
 

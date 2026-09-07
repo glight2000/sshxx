@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -5,13 +6,13 @@ use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::protocol::frame::Message;
 use crate::protocol::wire::{
     Ack, Error, Frame, HelloAck, TerminalExited, TerminalList, TerminalOutput, WorkingDirectory,
 };
-use crate::protocol::{frame, read_frame, write_frame};
+use crate::protocol::{frame, read_frame, write_frame, FrameReader};
 use crate::session::{
     BufferSnapshot, SessionEvent, SessionMap, TerminalSession, OUTPUT_CHUNK_BYTES,
 };
@@ -30,6 +31,18 @@ struct Host {
     authentication_token: Arc<[u8]>,
     sessions: SessionMap,
     shutdown_tx: watch::Sender<Option<HostExit>>,
+}
+
+// Creating a PTY runs on a non-cancellable blocking worker. Until registered
+// in Host.sessions, its result must clean up even if the connection disappears.
+struct PendingTerminal(Option<Arc<TerminalSession>>);
+
+impl Drop for PendingTerminal {
+    fn drop(&mut self) {
+        if let Some(session) = self.0.take() {
+            session.close().ok();
+        }
+    }
 }
 
 impl Host {
@@ -107,15 +120,30 @@ impl Host {
         .await?;
 
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Frame>(CONNECTION_QUEUE_CAPACITY);
-        let writer_task = tokio::spawn(async move {
+        // Keep both halves in this connection future. An error/cancellation
+        // drops the peer future instead of leaving a detached writer alive.
+        let write_output = async move {
             while let Some(frame) = outgoing_rx.recv().await {
                 write_frame(&mut writer, &frame).await?;
             }
             Result::<()>::Ok(())
-        });
+        };
+        let result = tokio::try_join!(self.handle_requests(reader, outgoing_tx), write_output,);
+        if let Err(error) = &result {
+            warn!(error = %error, "terminal-host output/control connection failed; subscriptions detached, existing PTYs retained");
+        }
+        result.map(|_| ())
+    }
+
+    async fn handle_requests<R>(&self, reader: R, outgoing_tx: mpsc::Sender<Frame>) -> Result<()>
+    where
+        R: AsyncRead + Unpin,
+    {
+        // Subscription completion can interrupt a partially received request.
+        let mut reader = FrameReader::new(reader);
         let mut subscriptions = JoinSet::new();
 
-        while let Some(incoming_frame) = read_frame(&mut reader).await? {
+        while let Some(incoming_frame) = next_request(&mut reader, &mut subscriptions).await? {
             if incoming_frame.protocol_version != PROTOCOL_VERSION {
                 send_error(
                     &outgoing_tx,
@@ -153,15 +181,16 @@ impl Host {
                         .await;
                         continue;
                     }
-                    let result =
-                        tokio::task::spawn_blocking(move || TerminalSession::spawn(request))
-                            .await
-                            .context("terminal creation task failed")?;
+                    let result = tokio::task::spawn_blocking(move || {
+                        TerminalSession::spawn(request)
+                            .map(|session| PendingTerminal(Some(session)))
+                    })
+                    .await
+                    .context("terminal creation task failed")?;
                     match result {
-                        Ok(session) => {
+                        Ok(mut pending) => {
                             let mut sessions = self.sessions.write().await;
                             if sessions.contains_key(&terminal_id) {
-                                session.close().ok();
                                 send_error(
                                     &outgoing_tx,
                                     request_id,
@@ -171,6 +200,10 @@ impl Host {
                                 )
                                 .await;
                             } else {
+                                let session = pending
+                                    .0
+                                    .take()
+                                    .expect("new terminal is pending registration");
                                 sessions.insert(terminal_id.clone(), session);
                                 send_ack(&outgoing_tx, request_id, &terminal_id).await;
                             }
@@ -380,23 +413,55 @@ impl Host {
                 }
             }
         }
-
-        subscriptions.abort_all();
-        drop(outgoing_tx);
-        writer_task
-            .await
-            .context("terminal-host writer task failed")??;
         Ok(())
+    }
+}
+
+/// Observe output-task failures even when no new control requests arrive.
+async fn next_request<R: AsyncRead + Unpin>(
+    reader: &mut FrameReader<R>,
+    subscriptions: &mut JoinSet<Result<()>>,
+) -> Result<Option<Frame>> {
+    loop {
+        tokio::select! {
+            incoming = reader.read_frame() => return incoming,
+            Some(completed) = subscriptions.join_next(), if !subscriptions.is_empty() => {
+                completed.context("terminal output subscription task failed")??;
+            }
+        }
     }
 }
 
 async fn stream_session(
     session: Arc<TerminalSession>,
-    mut subscriber: broadcast::Receiver<SessionEvent>,
-    mut next_sequence: u64,
+    subscriber: broadcast::Receiver<SessionEvent>,
+    next_sequence: u64,
     outgoing_tx: mpsc::Sender<Frame>,
 ) -> Result<()> {
+    let progress = AtomicU64::new(next_sequence);
+    let forwarding = forward_session(&session, subscriber, &progress, outgoing_tx);
+    tokio::pin!(forwarding);
+    let mut diagnostics = tokio::time::interval(Duration::from_secs(10));
+    diagnostics.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        tokio::select! {
+            result = &mut forwarding => return result,
+            _ = diagnostics.tick() => {
+                session.trace_output(progress.load(Ordering::Relaxed));
+            }
+        }
+    }
+}
+
+async fn forward_session(
+    session: &TerminalSession,
+    mut subscriber: broadcast::Receiver<SessionEvent>,
+    progress: &AtomicU64,
+    outgoing_tx: mpsc::Sender<Frame>,
+) -> Result<()> {
+    let mut next_sequence = progress.load(Ordering::Relaxed);
+    loop {
+        progress.store(next_sequence, Ordering::Relaxed);
         match subscriber.recv().await {
             Ok(SessionEvent::Output { sequence, data }) => {
                 let end = sequence.saturating_add(data.len() as u64);
@@ -675,3 +740,6 @@ async fn serve_transport(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -789,7 +789,13 @@ impl Controller {
                 ServerMessage::Sync(seqnums) => {
                     for (id, seq) in seqnums.map {
                         if let Some(sender) = self.shells_tx.get(&Sid(id)) {
-                            sender.send(ShellData::Sync(seq)).await.ok();
+                            sender
+                                .send(ShellData::Sync {
+                                    sequence: seq,
+                                    output_recovery: seqnums.output_recovery,
+                                })
+                                .await
+                                .ok();
                         } else {
                             warn!(%id, "received sequence number for non-existing shell");
                             send_msg(&tx, ClientMessage::ClosedShell(id)).await?;

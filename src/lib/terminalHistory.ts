@@ -31,6 +31,8 @@ export class TerminalHistory {
       const overflow = history.length - this.maxLength;
       if (overflow >= first.length) {
         history.length -= first.length;
+        // Release the text now; compaction only reclaims empty array slots.
+        history.chunks[history.start] = "";
         history.start += 1;
       } else {
         history.chunks[history.start] = first.slice(overflow);

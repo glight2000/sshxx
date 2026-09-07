@@ -218,3 +218,9 @@
     outline-offset: 2px;
   }
 }
+/* Contain native scrolling within menus and window surfaces on both axes even
+   when a child widget stops wheel propagation before the session handler. */
+.canvas-scroll-boundary,
+.canvas-scroll-boundary * {
+  overscroll-behavior: contain;
+}

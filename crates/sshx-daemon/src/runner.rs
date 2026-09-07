@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use encoding_rs::{CoderResult, UTF_8};
 use sshx_core::proto::{client_update::ClientMessage, SshAuthMethod, SshProfile, TerminalData};
 use sshx_core::Sid;
 use sshxx_terminal_host::client::Client as TerminalHostClient;
@@ -21,9 +20,8 @@ use crate::encrypt::Encrypt;
 use crate::terminal::Terminal;
 use crate::terminal_host::TerminalHostConfig;
 
-const CONTENT_CHUNK_SIZE: usize = 1 << 16; // Send at most this many bytes at a time.
-const CONTENT_ROLLING_BYTES: usize = 8 << 20; // Store at least this much content.
-const CONTENT_PRUNE_BYTES: usize = 12 << 20; // Prune when we exceed this length.
+mod output;
+use output::OutputBuffer;
 const INITIAL_DIRECTORY_ENV: &str = "SSHXX_INITIAL_DIRECTORY";
 const BASH_INITIAL_DIRECTORY_COMMAND: &str = "if [ -n \"${SSHXX_INITIAL_DIRECTORY+x}\" ]; then builtin cd -- \"$SSHXX_INITIAL_DIRECTORY\"; unset SSHXX_INITIAL_DIRECTORY; fi";
 
@@ -66,7 +64,12 @@ pub enum ShellData {
     /// Sequence of input bytes from the server.
     Data(Vec<u8>),
     /// Information about the server's current sequence number.
-    Sync(u64),
+    Sync {
+        /// Server's next expected encrypted byte position.
+        sequence: u64,
+        /// Whether the server supports recovery from a pruned output gap.
+        output_recovery: bool,
+    },
     /// Resize the shell to a different number of rows and columns.
     Size(u32, u32),
     /// Request the shell's current working directory for terminal duplication.
@@ -225,11 +228,7 @@ async fn shell_task(
     let mut term = Terminal::new(program, args, options.working_directory.as_deref()).await?;
     term.set_winsize(options.rows, options.cols)?;
 
-    let mut content = String::new(); // content from the terminal
-    let mut content_offset = 0; // bytes before the first character of `content`
-    let mut decoder = UTF_8.new_decoder(); // UTF-8 streaming decoder
-    let mut seq = 0; // our log of the server's sequence number
-    let mut seq_outdated = 0; // number of times seq has been outdated
+    let mut output = OutputBuffer::default();
     let mut buf = [0u8; 4096]; // buffer for reading
     let mut finished = false; // set when this is done
 
@@ -240,9 +239,7 @@ async fn shell_task(
                 if n == 0 {
                     finished = true;
                 } else {
-                    content.reserve(decoder.max_utf8_buffer_length(n).unwrap());
-                    let (result, _, _) = decoder.decode_to_string(&buf[..n], &mut content, false);
-                    debug_assert!(result == CoderResult::InputEmpty);
+                    output.append(&buf[..n], false);
                 }
             }
             item = shell_rx.recv() => {
@@ -250,12 +247,9 @@ async fn shell_task(
                     Some(ShellData::Data(data)) => {
                         term.write_all(&data).await?;
                     }
-                    Some(ShellData::Sync(seq2)) => {
-                        if seq2 < seq as u64 {
-                            seq_outdated += 1;
-                            if seq_outdated >= 3 {
-                                seq = seq2 as usize;
-                            }
+                    Some(ShellData::Sync { sequence, output_recovery }) => {
+                        if let Some(message) = output.sync(id, sequence, output_recovery) {
+                            output_tx.send(ClientMessage::Error(message)).await?;
                         }
                     }
                     Some(ShellData::Size(rows, cols)) => {
@@ -271,35 +265,14 @@ async fn shell_task(
         }
 
         if finished {
-            content.reserve(decoder.max_utf8_buffer_length(0).unwrap());
-            let (result, _, _) = decoder.decode_to_string(&[], &mut content, true);
-            debug_assert!(result == CoderResult::InputEmpty);
+            output.append(&[], true);
         }
 
-        // Send data if the server has fallen behind.
-        if content_offset + content.len() > seq {
-            let start = prev_char_boundary(&content, seq - content_offset);
-            let end = prev_char_boundary(&content, (start + CONTENT_CHUNK_SIZE).min(content.len()));
-            let data = encrypt.segment(
-                0x100000000 | id.0 as u64, // stream number
-                (content_offset + start) as u64,
-                &content.as_bytes()[start..end],
-            );
-            let data = TerminalData {
-                id: id.0,
-                data: data.into(),
-                seq: (content_offset + start) as u64,
-            };
+        // Drain a replay even when the PTY produces no further output.
+        while let Some(data) = output.next_chunk(id, &encrypt) {
+            let end = data.seq + data.data.len() as u64;
             output_tx.send(ClientMessage::Data(data)).await?;
-            seq = content_offset + end;
-            seq_outdated = 0;
-        }
-
-        if content.len() > CONTENT_PRUNE_BYTES && seq - CONTENT_ROLLING_BYTES > content_offset {
-            let pruned = (seq - CONTENT_ROLLING_BYTES) - content_offset;
-            let pruned = prev_char_boundary(&content, pruned);
-            content_offset += pruned;
-            content.drain(..pruned);
+            output.mark_sent(end);
         }
     }
     Ok(())
@@ -408,12 +381,8 @@ async fn forward_hosted_terminal(
     shell_rx: &mut mpsc::Receiver<ShellData>,
     output_tx: &mpsc::Sender<ClientMessage>,
 ) -> Result<HostedShellEnd> {
-    let mut content = String::new();
-    let mut content_offset = 0usize;
-    let mut decoder = UTF_8.new_decoder();
+    let mut output_buffer = OutputBuffer::default();
     let mut host_sequence = 0u64;
-    let mut seq = 0usize;
-    let mut seq_outdated = 0usize;
     let mut pending_working_directories = HashMap::<u64, oneshot::Sender<Option<PathBuf>>>::new();
     let mut finished = false;
 
@@ -426,14 +395,14 @@ async fn forward_hosted_terminal(
                         let end = output.sequence.saturating_add(output.data.len() as u64);
                         if end > host_sequence {
                             if output.sequence > host_sequence {
-                                decoder = UTF_8.new_decoder();
+                                warn!(%id, host_sequence, retained_start = output.sequence,
+                                    "terminal host replay starts after requested output");
+                                output_buffer.reset_decoder();
                                 host_sequence = output.sequence;
                             }
                             let start = host_sequence.saturating_sub(output.sequence) as usize;
                             let bytes = &output.data[start.min(output.data.len())..];
-                            content.reserve(decoder.max_utf8_buffer_length(bytes.len()).unwrap());
-                            let (result, _, _) = decoder.decode_to_string(bytes, &mut content, false);
-                            debug_assert!(result == CoderResult::InputEmpty);
+                            output_buffer.append(bytes, false);
                             host_sequence = end;
                         }
                     }
@@ -464,13 +433,12 @@ async fn forward_hosted_terminal(
                     Some(ShellData::Data(data)) => {
                         client.input(terminal_id, data).await?;
                     }
-                    Some(ShellData::Sync(seq2)) => {
-                        if seq2 < seq as u64 {
-                            seq_outdated += 1;
-                            if seq_outdated >= 3 {
-                                seq = seq2 as usize;
-                            }
+                    Some(ShellData::Sync { sequence, output_recovery }) => {
+                        if let Some(message) = output_buffer.sync(id, sequence, output_recovery) {
+                            output_tx.send(ClientMessage::Error(message)).await?;
                         }
+                        tracing::debug!(terminal_id = id.0, host_read_sequence = host_sequence,
+                            "daemon host reader progress");
                     }
                     Some(ShellData::Size(rows, cols)) => {
                         client.resize(terminal_id, rows, cols).await?;
@@ -496,37 +464,13 @@ async fn forward_hosted_terminal(
         }
 
         if finished {
-            content.reserve(decoder.max_utf8_buffer_length(0).unwrap());
-            let (result, _, _) = decoder.decode_to_string(&[], &mut content, true);
-            debug_assert!(result == CoderResult::InputEmpty);
+            output_buffer.append(&[], true);
         }
 
-        while content_offset + content.len() > seq {
-            let start = prev_char_boundary(&content, seq.saturating_sub(content_offset));
-            let end = prev_char_boundary(&content, (start + CONTENT_CHUNK_SIZE).min(content.len()));
-            let data = encrypt.segment(
-                0x100000000 | id.0 as u64,
-                (content_offset + start) as u64,
-                &content.as_bytes()[start..end],
-            );
-            output_tx
-                .send(ClientMessage::Data(TerminalData {
-                    id: id.0,
-                    data: data.into(),
-                    seq: (content_offset + start) as u64,
-                }))
-                .await?;
-            seq = content_offset + end;
-            seq_outdated = 0;
-        }
-
-        if content.len() > CONTENT_PRUNE_BYTES
-            && seq.saturating_sub(CONTENT_ROLLING_BYTES) > content_offset
-        {
-            let pruned = (seq - CONTENT_ROLLING_BYTES) - content_offset;
-            let pruned = prev_char_boundary(&content, pruned);
-            content_offset += pruned;
-            content.drain(..pruned);
+        while let Some(data) = output_buffer.next_chunk(id, encrypt) {
+            let end = data.seq + data.data.len() as u64;
+            output_tx.send(ClientMessage::Data(data)).await?;
+            output_buffer.mark_sent(end);
         }
     }
     // Natural process exit is terminal: remove the retained host entry so a
@@ -794,11 +738,12 @@ async fn echo_task(
                         .segment(0x100000000 | id.0 as u64, seq, msg.as_bytes())
                         .into(),
                     seq,
+                    retained_sequence: None,
                 };
                 output_tx.send(ClientMessage::Data(term_data)).await?;
                 seq += msg.len() as u64;
             }
-            ShellData::Sync(_) => (),
+            ShellData::Sync { .. } => (),
             ShellData::Size(_, _) => (),
             ShellData::WorkingDirectory(sender) => {
                 sender.send(None).ok();
@@ -1075,6 +1020,7 @@ mod tests {
             ))
             .await?;
         let output = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut received = String::new();
             loop {
                 if let Some(sshx_core::proto::client_update::ClientMessage::Data(data)) =
                     second_output_rx.recv().await
@@ -1084,7 +1030,9 @@ mod tests {
                         data.seq,
                         &data.data,
                     );
-                    if String::from_utf8_lossy(&plaintext)
+                    // PTY/transport boundaries need not coincide with a line.
+                    received.push_str(&String::from_utf8_lossy(&plaintext));
+                    if received
                         .contains("RUNNER_REATTACHED TERM=xterm-256color COLORTERM=truecolor")
                     {
                         break;

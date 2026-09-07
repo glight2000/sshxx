@@ -45,6 +45,15 @@ preserve the process while losing an exact full-screen presentation. This is
 most visible during repeated frontend hot reloads or after very high-volume
 output; generic input must never be injected automatically to force a redraw.
 
+Host connection readers and writers share one cancellation scope. A failed
+writer or failed/panicked output subscription ends that connection and detaches
+its subscriptions; other connections and already registered PTYs stay alive.
+Partially read protocol frames survive normal subscription completion. A
+cancelled connection cannot leave a detached writer task behind. If PTY creation
+finishes after its connection was cancelled, the unregistered process is closed
+instead of being leaked. These are host-side failure-containment guarantees, not
+automatic retries of potentially already-applied terminal input.
+
 Workspace restoration may reattach to an existing stable host terminal ID.
 Source-derived creation requests—including file-browser “Open terminal
 here”—must create a fresh PTY. If an orphaned host entry collides with that new
@@ -146,6 +155,21 @@ session name; a random-name deployment necessarily receives a new URL.
 
 ### Deliberately local behavior
 
+- Desktop page/search shortcut bindings use the existing browser-local settings
+  store (`sshx-settings-store`). They survive refresh and are shared only by
+  tabs in the same browser profile and origin, not by other clients through the
+  session protocol. The daemon never persists them. Shortcut navigation uses the
+  existing local page/search actions; ordinary cursor/focus presence can still
+  change, but no shared page, geometry, or PTY-size mutation is emitted. Phone
+  mode, modal dialogs, and IME composition do not use these bindings.
+- Scroll input routing is viewer-local and follows component focus, never
+  pointer hover. Both mouse wheels and trackpads scroll the focused component;
+  without focus, wheels zoom and trackpads pan the canvas. The Auto / Mouse
+  wheel / Trackpad preference is browser-persisted. The device classifier's
+  current gesture and each file window's last-clicked scroll pane are ephemeral
+  browser memory; they are not daemon state or synchronized input. Existing
+  page-aware file-tree scroll synchronization is unchanged. Menus/dialogs keep
+  their native scrolling, and cross-origin iframe input stays inside the frame.
 - Page deletion is a shared, write-authorized workspace operation. Right-click a
   page and choose **Delete page**, then confirm. Its terminals are terminated,
   its notes/custom components/file windows are removed, and dangling note links
@@ -182,7 +206,10 @@ session name; a random-name deployment necessarily receives a new URL.
   After session hydration, every page's terminal, note, file-explorer, and
   custom-component instances remain mounted in that browser. Switching pages
   changes only page-layer visibility, interaction, and the local fade
-  transition, so stateful component instances are not recreated.
+  transition, so stateful component instances are not recreated. Hidden
+  terminals skip the extra zoom-triggered atlas clear/repaint and cancel pending
+  zoom refreshes. Revealing a terminal refreshes only if its last painted zoom
+  differs; output parsing and subscriptions continue while hidden.
 - Marquee/group selection is local and mutually exclusive with component focus.
   Its membership follows the marquee continuously. Focusing a component,
   clicking empty canvas, or pressing Escape clears the selection. Right-button
@@ -198,6 +225,56 @@ session name; a random-name deployment necessarily receives a new URL.
   output batches use the component's current page ID.
 - Global search runs locally over the shared all-page snapshot. The query is not
   synchronized; choosing a result changes only that viewer's page and viewport.
+- Phone navigation groups the same all-page snapshot without duplicating
+  component instances. `MobileNavigator` owns the list surface; `mobileCanvas`
+  owns overview touch gestures, leaving desktop input handlers unchanged. Touch
+  movement previews only the camera CSS once per animation frame; releasing the
+  gesture commits the final local view, avoiding session-wide reactive updates
+  for every movement frame. The list mode, expanded pages, and phone full-screen
+  target live only in browser memory. Looking at a minimized window locally
+  reveals its content without changing shared minimized state, geometry, or PTY
+  size. In overview, component content (including iframes) cannot intercept
+  touch gestures. Full-screen returns input to the component. Deleting or moving
+  the viewed component off the current page returns the viewer to navigation.
+  `mobilePage` owns local visible-viewport sizing and follows
+  keyboard/orientation changes. Detail pages reuse the existing portal (no new
+  route, session, or terminal instance); Back restores their list/canvas origin.
+  Component titlebar controls are hidden only in phone detail pages.
+  `MobileTerminalReader` owns the phone-only text/input surface. The existing
+  xterm painter is hidden, but its parser, write queue, subscriptions and
+  renderer ACK processing remain live. `mobileTerminalText` extracts a current
+  snapshot through public cell/buffer APIs, joining soft wraps without rewriting
+  the PTY. It is not a historical transcript: alternate-screen redraws replace
+  the view, and cleared/trimmed data is not retained separately. One active
+  detail reader retains at most 128K UTF-16 units, scans at most 2,000 rows /
+  128K cells (with a 4,096-column guard), and uses one coalescing 250ms timer
+  only while dirty. Cell reads are bounded before concatenation, including
+  oversized combining sequences. Public cell attributes add basic ANSI/256/RGB
+  styling without a second parser or raw HTML. Theme CSS variables reuse the
+  terminal's effective theme/background, including preview updates; no
+  independent reader theme is persisted. Attribute ranges store offsets into the
+  same text, merging adjacent styles and capping styled ranges at 1,024 (2,049
+  total spans). On overflow, older styling is dropped with a notice, not
+  accumulated. Concealed cells remain blank even in that fallback. Blink, images
+  and exact terminal grid layout are intentionally not rendered in this
+  text-reading surface. Selection, reading earlier output, and hidden tabs pause
+  projection without accumulating snapshots or blocking output ACKs; resuming
+  reads the newest buffer. Unmounting removes subscriptions,
+  selection/visibility/pointer listeners, resize observers and pending timers.
+  The bounded 16K-unit input draft is memory-only and discarded on exit;
+  explicit Send uses the existing paste/Enter path, with read-only, connection
+  and replay guards. Phone focus does not lock input or change shared layout/PTY
+  dimensions. Desktop resizing can still change the shared terminal's output,
+  which the reader then reflects. Desktop Escape clears local focus/selection;
+  existing terminal focus presence is updated, but no terminal input is sent.
+- `CanvasRelations` selects the phone-only `MobileCanvasRelations` surface using
+  the same phone media query as navigation. Touch tap/hold/drag routing and
+  native action dialogs are local; the target picker reuses `MobileNavigator`.
+  Add and remove operations use the existing page-scoped association mutations,
+  permission checks and daemon persistence. Desktop mouse/context-menu behavior
+  is unchanged. Phone focus/navigation never sends desktop window-raising
+  mutations; its full-screen frame uses only the local visual viewport, not
+  shared canvas bounds.
 - Undo/redo stacks for note and file editing belong to the active viewer. The
   edits they produce are shared, but the history stack itself is not.
 - Notifications, hover previews, drag state, focus styling, and open popovers
@@ -265,15 +342,42 @@ URL to 4 KiB, the source session total to 4 MiB, and the component count to 100.
 | Daemon ↔ SSH host              | System OpenSSH and SFTP                                                                                                         | OpenSSH host-key, agent, key-file, and authentication policies apply. Filesystem access has the SSH account's privileges.                                                                                                                                                               |
 | Daemon ↔ terminal host         | Versioned length-prefixed protobuf over an owner-only Unix socket or Windows named pipe, authenticated by a 256-bit local token | Local-only bridge for raw PTY bytes and control operations. Dropping the connection never closes a terminal; an explicit close operation does.                                                                                                                                          |
 
-Terminal output delivery uses capability-negotiated renderer backpressure.
+Daemon-to-server output has a separate byte-sequence recovery boundary. Both
+hosted and embedded runners retain a bounded UTF-8 replay tail (pruned from over
+12 MiB to approximately 8 MiB); queued sends are not acknowledgements. Three
+Sync reports without acknowledged progress trigger replay, including while the
+PTY continues producing output. Each chunk identifies the earliest encrypted
+byte offset still retained. If the server's missing bytes precede that offset,
+only a chunk beginning at this declared boundary may discard the unrecoverable
+gap. The server keeps the original absolute encryption offsets, clears that
+terminal's old replay cache, and advances its display generation so viewers
+rebuild only that renderer and subscribe again. Other terminals, the PTY, nested
+SSH connections, and terminal host are untouched. Viewers are notified that
+earlier output was lost; retained bytes are not a complete terminal-emulator
+screen snapshot, so exact TUI screen restoration is not guaranteed. Recovery
+never injects input to force a redraw.
+
+This requires an updated daemon and server, but no terminal-host update. The
+server advertises `output_recovery` in Sync; protobuf defaults preserve older
+peers. An updated daemon connected to an older server reports an unrecoverable
+gap and suppresses futile full-tail retransmissions rather than silently
+looping; upgrading only the browser cannot repair this condition. Older daemons
+still receive normal sequence acknowledgements but cannot authorize gap
+truncation. Diagnostics log terminal IDs, expected/retained byte positions, and
+rejected chunk counts, never terminal contents or credentials.
+
+Browser output delivery uses capability-negotiated renderer backpressure.
 Compatible viewers receive at most 256 KiB per terminal batch; the server does
 not send that terminal's next batch until xterm's public write callback confirms
-that the current batch was rendered. The viewer further writes in 64 KiB chunks
+that the current batch was parsed. The viewer further writes in 64 KiB chunks
 with a timer-based event-loop yield between chunks, independent of animation
-frames that pause in hidden browser tabs. Inactive-page terminals acknowledge
-after their bounded browser history accepts the data. Older viewers retain the
-legacy subscription behavior, while batch size and current-page labeling remain
-safe on the server side.
+frames that pause in hidden browser tabs. Inactive-page terminals keep parsing
+and acknowledging output through their mounted xterm instances. If a writer is
+not yet available, bounded browser history owns the batch for later replay.
+Evicting a whole history chunk immediately clears its text reference, without
+waiting for array compaction; garbage collection timing remains browser-owned.
+Older viewers retain the legacy subscription behavior, while batch size and
+current-page labeling remain safe on the server side.
 
 The browser bounds each xterm write-callback wait to 15 seconds. A timeout
 quarantines that renderer, releases replay/input suppression, clears only that
@@ -294,6 +398,49 @@ ACK timeout; new clients fall back to the older subscription protocol when
 connected to an older server. While retained output is replaying, keyboard,
 paste, and component-driven input are blocked with a visible retry message
 rather than being silently discarded.
+
+Terminal initialization also has a 15-second deadline. Import/font completion
+checks that the instance is still alive and its parent is connected before
+opening xterm; hidden pages remain mounted. A failed initialization shows a
+local Retry action instead of repeatedly remounting; this retry replays bounded
+browser history rather than discarding output received before initialization.
+Teardown releases observers, queued writes, and timers. A pending write lasting
+two seconds shows “Catching up”, even if the batch is too small to reach the
+queue-size threshold. Browser timers cannot run while the browser/OS completely
+suspends the page; they resume when scheduling resumes, while the server has its
+independent deadline.
+
+Text clipboard events inside xterm are consumed once through public `paste()`.
+xterm owns newline normalization and negotiated bracketed-paste markers; the
+browser's default insertion into its hidden textarea is canceled. Title fields,
+settings, and the phone's independent text composer retain native text editing.
+
+#### Output diagnostics
+
+Diagnostics are local, transient metadata, not synchronized workspace state or
+terminal text. Enable the affected process's Rust module at `debug` using
+`RUST_LOG` during investigation (for example `sshx_daemon::runner=debug`,
+`sshx_server::session=debug,sshx_server::web::socket=debug`, or
+`sshxx_terminal_host=debug`). Do not restart a running host merely to enable
+logging; new host instrumentation only becomes available after a separately
+planned host upgrade, which can interrupt its processes.
+
+| Layer               | Recorded metadata                                                                                                                                                                                                                                                   |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host                | Per-subscription 10-second progress: numeric terminal suffix, process ID, raw retention start/end, last PTY output Unix timestamp, last queued forwarding position. Sampling continues when that subscriber is backpressured.                                       |
+| Daemon              | On Sync: terminal ID, raw host read position (hosted terminals), decoded/encrypted retention range, last queued send position, requested Sync position, last read/send age.                                                                                         |
+| Server              | On Sync: terminal ID, expected and last received sequence, retention start, rejected-gap count, last accepted-data age. Gap/rebase warnings remain available without debug logging.                                                                                 |
+| Viewer subscription | WebSocket viewer ID, terminal ID/display generation and subscription protocol/token; last batch end, last ACK batch, wait duration/status. Pending waits report every 10 seconds and are canceled with the viewer connection.                                       |
+| Browser renderer    | `data-terminal-diagnostics` on its `.term-container`: terminal ID/generation, pending characters/chunks, pending-since and last-completed Unix timestamps, failed state. Console initialization/failure/rebuild and delayed/recovered events contain metadata only. |
+
+IDs are scoped to a workspace/connection; a renderer generation is not a host
+process generation. Host raw PTY byte offsets and daemon/server UTF-8 encrypted
+stream offsets are different counters: compare continuity within each link, not
+numerical equality across those links. “Sent” means queued locally, not accepted
+by the next layer. A lack of PTY output can simply mean an idle shell; compare
+output and acknowledgement progress before declaring a stall. Debug logging is
+opt-in and metadata is bounded by live terminals/subscriptions; use the service
+manager's existing log retention policy, not an unbounded trace file.
 
 ### Filesystem save safety
 

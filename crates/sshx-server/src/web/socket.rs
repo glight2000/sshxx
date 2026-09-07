@@ -112,9 +112,18 @@ fn spawn_chunk_forwarder(
     chunks_tx: mpsc::Sender<TerminalChunks>,
     mut rendered_rx: Option<mpsc::Receiver<()>>,
 ) {
+    let viewer_span = tracing::info_span!(
+        "terminal_subscription",
+        terminal_id = id.0,
+        generation,
+        ?protocol
+    );
     tokio::spawn(async move {
         let stream = session.subscribe_indexed_chunks(id, generation, chunknum);
         tokio::pin!(stream);
+        let mut last_ack_batch = None::<u64>;
+        let mut diagnostic_tick = tokio::time::interval(Duration::from_secs(10));
+        diagnostic_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             let item = tokio::select! {
                 _ = chunks_tx.closed() => break,
@@ -126,6 +135,7 @@ fn spawn_chunk_forwarder(
             let Some(page_id) = session.shell_page(id) else {
                 break;
             };
+            let batch_end = start_chunk + chunks.len() as u64;
             if chunks_tx
                 .send(Ok((
                     id,
@@ -143,8 +153,23 @@ fn spawn_chunk_forwarder(
                 break;
             }
             if let Some(receiver) = rendered_rx.as_mut() {
-                match wait_for_render_ack(receiver, TERMINAL_RENDER_ACK_TIMEOUT).await {
-                    RenderAckWait::Received => {}
+                let started = Instant::now();
+                let wait = wait_for_render_ack(receiver, TERMINAL_RENDER_ACK_TIMEOUT);
+                tokio::pin!(wait);
+                let result = loop {
+                    tokio::select! {
+                        result = &mut wait => break result,
+                        _ = chunks_tx.closed() => break RenderAckWait::Closed,
+                        _ = diagnostic_tick.tick() => tracing::debug!(last_sent_batch = batch_end,
+                            ?last_ack_batch, wait_ms = started.elapsed().as_millis() as u64,
+                            "waiting for terminal renderer ACK"),
+                    }
+                };
+                tracing::debug!(last_sent_batch = batch_end, ?last_ack_batch,
+                    wait_ms = started.elapsed().as_millis() as u64, ?result,
+                    "terminal renderer ACK wait ended");
+                match result {
+                    RenderAckWait::Received => { last_ack_batch = Some(batch_end); }
                     RenderAckWait::Closed => break,
                     RenderAckWait::TimedOut => {
                         warn!(
@@ -158,7 +183,7 @@ fn spawn_chunk_forwarder(
                 }
             }
         }
-    });
+    }.instrument(viewer_span));
 }
 
 fn create_shell(message: NewShell) -> ServerMessage {
@@ -233,7 +258,7 @@ pub async fn get_session_ws(
     State(state): State<Arc<ServerState>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |mut socket| {
-        let span = info_span!("ws", %name);
+        let span = info_span!("ws", %name, viewer_id = tracing::field::Empty);
         async move {
             match state.frontend_connect(&name).await {
                 Ok(Ok(session)) => {
@@ -300,6 +325,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
 
     let metadata = session.metadata();
     let user_id = session.counter().next_uid();
+    tracing::Span::current().record("viewer_id", user_id.0);
     session.sync_now();
     send(
         socket,

@@ -62,6 +62,14 @@ a Codex or nested SSH session) may require manual recovery.
 - No TCP listener and no remote API.
 - A daemon disconnect only removes its subscriptions; it does not close PTYs.
 
+Reader/writer failures and failed or panicked output subscriptions terminate
+only the affected connection. Its tasks are cancelled together, so an output
+failure cannot silently leave a connected read half or detached writer behind.
+Other connections and registered PTYs are retained. A newly spawned PTY that has
+not yet been registered is cleaned up if creation's awaiter disappears. Partial
+control frames survive normal subscription completion. This does not replay
+uncertain terminal input or guarantee transparent daemon-side recovery.
+
 The default local state directory is `cache/terminal-host` relative to the
 working directory. The host owns the local socket and authentication token; the
 daemon adds its stable instance ID and per-terminal shell-history files.

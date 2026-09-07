@@ -244,12 +244,15 @@ impl Session {
             validate_terminal_window_size(winsize.width, winsize.height)?;
             winsizes.push((Sid(sid), winsize));
             let shell = State {
+                last_received_sequence: None,
+                last_accepted: None,
                 seqnum: shell.seqnum,
                 data: shell.data,
                 chunk_offset: shell.chunk_offset,
                 byte_offset: shell.byte_offset,
                 closed: shell.closed,
                 notify: Default::default(),
+                gap_chunks: 0,
             };
             shells.insert(Sid(sid), shell);
         }

@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
@@ -33,6 +34,7 @@ struct OutputBuffer {
     bytes: VecDeque<u8>,
     retained_sequence: u64,
     next_sequence: u64,
+    last_output: Option<SystemTime>,
 }
 
 impl OutputBuffer {
@@ -41,10 +43,14 @@ impl OutputBuffer {
             bytes: VecDeque::with_capacity(OUTPUT_BUFFER_BYTES),
             retained_sequence: 0,
             next_sequence: 0,
+            last_output: None,
         }
     }
 
     fn append(&mut self, bytes: &[u8]) -> u64 {
+        if !bytes.is_empty() {
+            self.last_output = Some(SystemTime::now());
+        }
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(bytes.len() as u64);
         self.bytes.extend(bytes);
@@ -250,6 +256,25 @@ impl TerminalSession {
         }
     }
 
+    pub fn trace_output(&self, last_forwarded: u64) {
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
+        let state = self.state.lock().expect("terminal session state poisoned");
+        // Never emit the instance prefix (or arbitrary caller-supplied host ID).
+        let terminal_id = self
+            .id
+            .rsplit('-')
+            .next()
+            .and_then(|id| id.parse::<u32>().ok());
+        tracing::debug!(?terminal_id, process_id = self.process_id,
+            retained_start = state.output.retained_sequence,
+            next_sequence = state.output.next_sequence,
+            last_output_unix_ms = ?state.output.last_output.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64),
+            last_forwarded,
+            "terminal host output progress");
+    }
+
     fn append_output(&self, data: &[u8]) {
         let sequence = {
             let mut state = self.state.lock().expect("terminal session state poisoned");
@@ -399,7 +424,12 @@ mod tests {
     #[test]
     fn output_snapshot_uses_absolute_byte_sequences() {
         let mut output = OutputBuffer::new();
+        assert!(output.last_output.is_none());
         assert_eq!(output.append(b"hello"), 0);
+        let last_output = output.last_output;
+        assert!(last_output.is_some());
+        output.append(b"");
+        assert_eq!(output.last_output, last_output);
         assert_eq!(output.append(b" world"), 5);
         let snapshot = output.snapshot_after(6);
         assert_eq!(snapshot.sequence, 6);

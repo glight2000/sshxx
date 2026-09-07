@@ -231,7 +231,9 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
             return send_err(tx, "unexpected hello".into()).await;
         }
         Some(ClientMessage::Data(data)) => {
-            if let Err(err) = session.add_data(Sid(data.id), data.data, data.seq) {
+            if let Err(err) =
+                session.add_output(Sid(data.id), data.data, data.seq, data.retained_sequence)
+            {
                 return send_err(tx, format!("add data: {:?}", err)).await;
             }
         }

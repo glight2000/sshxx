@@ -82,6 +82,18 @@ export class TerminalWriteQueue {
   #queuedCharacters = 0;
   #disposed = false;
   #failed = false;
+  #pendingSince: number | null = null;
+  #lastCompletedAt: number | null = null;
+
+  get diagnostics() {
+    return {
+      queuedCharacters: this.#queuedCharacters,
+      queuedChunks: this.#chunks.length + (this.#writing ? 1 : 0),
+      pendingSince: this.#pendingSince,
+      lastCompletedAt: this.#lastCompletedAt,
+      failed: this.#failed,
+    };
+  }
 
   constructor(options: TerminalWriteQueueOptions = {}) {
     this.#chunkCharacters = options.chunkCharacters ?? DEFAULT_CHUNK_CHARACTERS;
@@ -126,6 +138,7 @@ export class TerminalWriteQueue {
   write(data: string, replay = false): Promise<void> {
     if (!data || this.#disposed || this.#failed) return Promise.resolve();
     const pieces = splitTerminalWrite(data, this.#chunkCharacters);
+    this.#pendingSince ??= Date.now();
     return new Promise<void>((resolve) => {
       const group: WriteGroup = {
         remaining: pieces.length,
@@ -169,6 +182,7 @@ export class TerminalWriteQueue {
     this.#activeChunk = null;
     this.#writing = false;
     this.#queuedCharacters = 0;
+    this.#pendingSince = null;
     for (const group of groups) this.#finishGroup(group);
     this.#notify();
   }
@@ -203,12 +217,13 @@ export class TerminalWriteQueue {
     this.#activeChunk = chunk;
     let completed = false;
     const complete = () => {
-      if (completed) return;
+      if (completed || this.#disposed || this.#failed) return;
       completed = true;
       if (this.#writeTimeout !== null) this.#cancelTimeout(this.#writeTimeout);
       this.#writeTimeout = null;
       this.#writing = false;
       this.#activeChunk = null;
+      this.#lastCompletedAt = Date.now();
       this.#completeChunk(chunk);
     };
     this.#writeTimeout = this.#scheduleTimeout(() => {
@@ -235,6 +250,7 @@ export class TerminalWriteQueue {
     this.#chunks = [];
     this.#activeChunk = null;
     this.#queuedCharacters = 0;
+    this.#pendingSince = null;
     for (const group of groups) this.#finishGroup(group);
     this.#notify();
     this.#onWriteTimeout(error);
@@ -247,6 +263,7 @@ export class TerminalWriteQueue {
       this.#queuedCharacters - chunk.data.length,
     );
     chunk.group.remaining -= 1;
+    if (this.#queuedCharacters === 0) this.#pendingSince = null;
     if (chunk.group.remaining === 0) this.#finishGroup(chunk.group);
     this.#notify();
     if (this.#disposed || this.#chunks.length === 0) return;

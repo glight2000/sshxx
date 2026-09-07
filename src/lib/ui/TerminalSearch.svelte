@@ -85,6 +85,7 @@
       <div class="relative">
         <SearchIcon class="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
         <input
+          data-workspace-search
           bind:this={input}
           bind:value={query}
           on:keydown={handleKeydown}

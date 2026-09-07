@@ -31,6 +31,8 @@
 </script>
 
 <script lang="ts">
+  import { containWheel, forwardTerminalWheel } from "$lib/action/containWheel";
+  import MobileTerminalReader from "./MobileTerminalReader.svelte";
   import { browser } from "$app/environment";
 
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
@@ -47,6 +49,8 @@
   import InlineTitle from "./InlineTitle.svelte";
   import { settings } from "$lib/settings";
   import { TerminalWriteQueue } from "$lib/terminalWriteQueue";
+  import { terminalRefresh } from "$lib/terminalRefresh";
+  import { pasteTerminalText } from "$lib/terminalClipboard";
   import { parseOsc7Location } from "$lib/terminalLocation";
   import { splitTerminalTitle } from "$lib/terminalTitle";
   import { TypeAheadAddon } from "$lib/typeahead";
@@ -83,20 +87,52 @@
     unlinkNote: CanvasRelationItem;
     floatingChange: boolean;
     rendererFailure: string;
+    retryInitialization: void;
   }>();
 
   const typeahead = new TypeAheadAddon();
+  export let terminalId = 0;
+  export let generation = 0;
+  let destroyed = false;
+  let initializationError = "";
+  let initializationTimer: ReturnType<typeof setTimeout> | undefined;
+  let focusObserver: MutationObserver | undefined;
+  let diagnosticTimer: ReturnType<typeof setTimeout> | undefined;
+  let outputDelayed = false;
+  let outputDiagnostics = "";
+
+  function updateOutputDiagnostics() {
+    clearTimeout(diagnosticTimer);
+    diagnosticTimer = undefined;
+    const state = writeQueue.diagnostics;
+    const delayed =
+      state.pendingSince !== null && Date.now() - state.pendingSince >= 2000;
+    if (delayed !== outputDelayed)
+      console.info("Terminal output progress", {
+        terminalId,
+        generation,
+        recovering: delayed,
+        ...state,
+      });
+    outputDelayed = delayed;
+    outputDiagnostics = JSON.stringify({ terminalId, generation, ...state });
+    if (state.pendingSince !== null && !destroyed)
+      diagnosticTimer = setTimeout(updateOutputDiagnostics, 2000);
+  }
 
   export let rows: number, cols: number;
   export let windowWidth = 0;
   export let windowHeight = 0;
   export let canvasZoom = 1;
+  export let pageVisible = true;
   export let title = "";
   export let background = "";
   export let colorTheme = "";
   export let opacity = 80;
   export let hasWriteAccess: boolean | undefined;
   export let fullscreen = false;
+  export let mobileDetail = false;
+  export let inputAvailable = true;
   export let minimized = false;
   export let linkedNotes: CanvasRelationItem[] = [];
   export let linkedHighlight = false;
@@ -108,9 +144,12 @@
   let term: Terminal | null = null;
   let mouseCoordinateAdapter: { dispose(): void } | null = null;
   let webglAddon: import("@xterm/addon-webgl").WebglAddon | null = null;
+  let WebglAddonClass: typeof import("@xterm/addon-webgl").WebglAddon;
   let webglContextLoss: { dispose(): void } | null = null;
-  let webglRefreshTimer: number | null = null;
-  let lastRefreshedZoom = canvasZoom;
+  const zoomRefresh = terminalRefresh(() => {
+    webglAddon?.clearTextureAtlas();
+    if (term && term.rows > 0) term.refresh(0, term.rows - 1);
+  });
   let observedMinimized = minimized;
 
   let legacyTheme = $settings.theme;
@@ -132,22 +171,42 @@
     term.options.scrollback = $settings.scrollback;
   }
 
-  function scheduleWebglRefresh(nextZoom: number) {
-    if (!loaded || nextZoom === lastRefreshedZoom) return;
-    if (webglRefreshTimer !== null) window.clearTimeout(webglRefreshTimer);
-    webglRefreshTimer = window.setTimeout(() => {
-      webglRefreshTimer = null;
-      lastRefreshedZoom = nextZoom;
-      webglAddon?.clearTextureAtlas();
-      if (term && term.rows > 0) term.refresh(0, term.rows - 1);
-    }, 120);
-  }
-
-  // The reactive dependency is intentionally only the incoming zoom. Timer
-  // bookkeeping lives in the function so it cannot retrigger this statement.
-  $: scheduleWebglRefresh(canvasZoom);
+  // Page visibility controls only this extra paint, never parsing or ACKs.
+  $: zoomRefresh.update(canvasZoom, pageVisible, loaded);
 
   let loaded = false;
+
+  function disposeWebglRenderer() {
+    webglContextLoss?.dispose();
+    webglContextLoss = null;
+    const addon = webglAddon;
+    webglAddon = null;
+    addon?.dispose();
+  }
+
+  function enableWebglRenderer() {
+    if (!term || !WebglAddonClass || webglAddon) return;
+    let addon: import("@xterm/addon-webgl").WebglAddon | null = null;
+    try {
+      addon = new WebglAddonClass();
+      webglContextLoss = addon.onContextLoss(() => {
+        if (webglAddon !== addon) return;
+        console.warn("WebGL context lost; using the DOM terminal renderer.");
+        disposeWebglRenderer();
+      });
+      term.loadAddon(addon);
+      webglAddon = addon;
+    } catch (error) {
+      webglContextLoss?.dispose();
+      webglContextLoss = null;
+      addon?.dispose();
+      console.warn(
+        "WebGL renderer unavailable; using the DOM renderer.",
+        error,
+      );
+    }
+  }
+
   let focused = false;
   let titleEditing = false;
   let currentTitle = "Remote Terminal";
@@ -161,7 +220,10 @@
   let suppressInput = 0;
   let queuedWriteCharacters = 0;
   let queuedWriteChunks = 0;
-  $: catchingUp = queuedWriteCharacters >= 256 << 10 || queuedWriteChunks >= 8;
+  $: catchingUp =
+    outputDelayed ||
+    queuedWriteCharacters >= 256 << 10 ||
+    queuedWriteChunks >= 8;
   let workingDirectory = ".";
   let workingDirectoryHost = "";
   let initialWorkingDirectoryHost = "";
@@ -265,6 +327,7 @@
   }
 
   function handleContainerMouseDown(event: MouseEvent) {
+    if (mobileDetail) return;
     dispatch("bringToFront");
     if (
       event.button !== 0 ||
@@ -325,6 +388,7 @@
   }
 
   function handlePaste(event: ClipboardEvent) {
+    if (mobileDetail) return; // The local composer owns its paste, not the PTY.
     if (event.target instanceof HTMLInputElement) return;
     if (suppressInput > 0) {
       event.preventDefault();
@@ -337,7 +401,10 @@
         (item) => item.kind === "file" && supportedImageTypes.has(item.type),
       )
       ?.getAsFile();
-    if (!file) return;
+    if (!file) {
+      pasteTerminalText(event, term);
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     uploadImage(file);
@@ -397,13 +464,24 @@
     onStateChange(state) {
       queuedWriteCharacters = state.queuedCharacters;
       queuedWriteChunks = state.queuedChunks;
+      if (state.queuedChunks === 0 && outputDelayed) updateOutputDiagnostics();
+      else if (diagnosticTimer === undefined && !destroyed)
+        diagnosticTimer = setTimeout(updateOutputDiagnostics, 2000);
     },
     onError(error) {
       console.error("Could not write terminal output.", error);
     },
     onWriteTimeout(error) {
-      console.error("Terminal renderer write timed out.", error);
-      dispatch("rendererFailure", error.message);
+      console.error("Terminal renderer write timed out.", {
+        terminalId,
+        generation,
+        ...writeQueue.diagnostics,
+      });
+      if (!loaded) {
+        failInitialization(
+          "Terminal initialization timed out. Retry this terminal.",
+        );
+      } else dispatch("rendererFailure", error.message);
     },
   });
 
@@ -413,7 +491,7 @@
 
   $: term?.resize(cols, rows);
 
-  onMount(async () => {
+  async function initializeTerminal() {
     const [{ Terminal }, { WebLinksAddon }, { WebglAddon }, { ImageAddon }] =
       await Promise.all([
         import("@xterm/xterm"),
@@ -422,7 +500,13 @@
         import("@xterm/addon-image"),
       ]);
 
+    if (destroyed || initializationError) return;
+
     await waitForFonts();
+
+    // Imports/fonts may finish after close or renderer replacement. Hidden
+    // pages stay connected and may initialize; detached instances must not.
+    if (destroyed || initializationError || !termEl?.isConnected) return;
 
     term = new Terminal({
       allowTransparency: false,
@@ -525,24 +609,8 @@
       return true;
     });
     term.onBell(requestAttention);
-    try {
-      const addon = new WebglAddon();
-      webglContextLoss = addon.onContextLoss(() => {
-        if (webglAddon !== addon) return;
-        console.warn("WebGL context lost; using the DOM terminal renderer.");
-        webglContextLoss?.dispose();
-        webglContextLoss = null;
-        webglAddon = null;
-        addon.dispose();
-      });
-      term.loadAddon(addon);
-      webglAddon = addon;
-    } catch (error) {
-      console.warn(
-        "WebGL renderer unavailable; using the DOM renderer.",
-        error,
-      );
-    }
+    WebglAddonClass = WebglAddon;
+    enableWebglRenderer();
 
     term.resize(cols, rows);
     writeQueue.setSink((data, complete) => term!.write(data, complete));
@@ -563,7 +631,7 @@
       dispatch("title", currentTitle);
     });
 
-    const focusObserver = new MutationObserver((mutations) => {
+    focusObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         if (
           mutation.type === "attributes" &&
@@ -572,7 +640,7 @@
           // The "focus" class is set directly by xterm.js, but there isn't any way to listen for it.
           const target = mutation.target as HTMLElement;
           const isFocused = target.classList.contains("focus");
-          setFocused(isFocused);
+          if (!mobileDetail) setFocused(isFocused);
         }
       }
     });
@@ -595,16 +663,57 @@
         Uint8Array.from(data, (character) => character.charCodeAt(0)),
       );
     });
+    console.info("Terminal renderer initialized", { terminalId, generation });
+  }
+
+  onMount(() => {
+    updateOutputDiagnostics();
+    initializationTimer = setTimeout(() => {
+      if (!loaded)
+        failInitialization(
+          "Terminal initialization timed out. Check the connection and retry this terminal.",
+        );
+    }, 15_000);
+    void initializeTerminal()
+      .catch(() => {
+        if (destroyed) return;
+        failInitialization(
+          "Could not initialize the terminal. Check the connection and retry this terminal.",
+        );
+      })
+      .finally(() => clearTimeout(initializationTimer));
   });
 
-  onDestroy(() => {
+  function failInitialization(message: string) {
+    if (destroyed || initializationError) return;
+    initializationError = message;
+    clearTimeout(initializationTimer);
     writeQueue.dispose();
-    if (webglRefreshTimer !== null) window.clearTimeout(webglRefreshTimer);
+    releaseRenderer();
+    console.error("Terminal renderer initialization failed", {
+      terminalId,
+      generation,
+    });
+  }
+
+  function releaseRenderer() {
+    zoomRefresh.dispose();
     webglContextLoss?.dispose();
     mouseCoordinateAdapter?.dispose();
+    focusObserver?.disconnect();
     for (const timer of pendingExecuteTimers) window.clearTimeout(timer);
     pendingExecuteTimers.clear();
     term?.dispose();
+    term = null;
+    loaded = false;
+  }
+
+  onDestroy(() => {
+    destroyed = true;
+    writeQueue.dispose();
+    clearTimeout(diagnosticTimer);
+    clearTimeout(initializationTimer);
+    releaseRenderer();
   });
 </script>
 
@@ -613,9 +722,11 @@
 <div
   role="presentation"
   class="term-container"
+  data-terminal-diagnostics={outputDiagnostics}
   class:focused={focused || titleEditing}
   class:windowed={windowHeight > 0}
   class:fullscreen
+  class:mobile-reader={mobileDetail}
   class:minimized
   class:linked-highlight={linkedHighlight}
   class:paragraph-drop-active={paragraphDropActive}
@@ -629,19 +740,38 @@
       : undefined}
   on:mousedown|capture={handleContainerMouseDown}
   on:pointerdown={(event) => event.stopPropagation()}
+  on:focusin={() => mobileDetail && setFocused(true)}
+  on:focusout={(event) => {
+    if (
+      mobileDetail &&
+      !event.currentTarget.contains(event.relatedTarget as Node | null)
+    )
+      setFocused(false);
+  }}
   on:paste|capture={handlePaste}
   on:dragover={handleDragOver}
   on:dragleave={handleDragLeave}
   on:drop={handleDrop}
-  on:wheel={(event) => {
-    if (!event.ctrlKey) event.stopPropagation();
-  }}
+  use:containWheel={(event) => forwardTerminalWheel(term?.element, event)}
 >
   {#if imageDragging}
     <div
       class="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border-2 border-dashed border-indigo-300 bg-zinc-950/85 text-sm font-medium text-indigo-100"
     >
       Drop image into terminal
+    </div>
+  {/if}
+  {#if initializationError}
+    <div
+      role="alert"
+      class="absolute inset-x-2 top-12 z-30 rounded bg-zinc-900 p-3 text-sm text-zinc-100"
+    >
+      {initializationError}
+      <button
+        type="button"
+        class="ml-2 underline"
+        on:click={() => dispatch("retryInitialization")}>Retry</button
+      >
     </div>
   {/if}
   <div
@@ -674,7 +804,7 @@
         <CircleButton
           kind="purple"
           active={fullscreen}
-          disabled={minimized}
+          disabled={minimized && !fullscreen}
           ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
           on:mousedown={(event) =>
             event.button === 0 && dispatch("toggleFullscreen")}
@@ -862,6 +992,24 @@
     bind:this={termEl}
     style:opacity={loaded ? 1.0 : 0.0}
   ></div>
+  {#if mobileDetail && loaded && term}
+    <MobileTerminalReader
+      terminal={term}
+      theme={terminalTheme}
+      writable={!!hasWriteAccess}
+      blocked={!inputAvailable
+        ? "Disconnected; your text has not been sent."
+        : suppressInput > 0
+          ? "Restoring terminal output; wait before sending."
+          : ""}
+      send={(text) => {
+        if (!hasWriteAccess || !inputAvailable || suppressInput > 0 || !term)
+          return false;
+        sendText(text, true);
+        return true;
+      }}
+    />
+  {/if}
   {#if linkedNotes.length}
     <div class="terminal-relations">
       <CanvasRelations
@@ -889,6 +1037,11 @@
     flex-direction: column;
   }
 
+  /* Hide only the painter. The existing parser, output queue and ACK stay live. */
+  .term-container.mobile-reader .terminal-host {
+    display: none;
+  }
+
   .term-container.windowed .terminal-host {
     position: relative;
     z-index: 0;
@@ -897,11 +1050,11 @@
     overflow: hidden;
   }
 
-  .term-container.minimized > :not(.terminal-titlebar) {
+  .term-container.minimized:not(.fullscreen) > :not(.terminal-titlebar) {
     display: none;
   }
 
-  .term-container.minimized .terminal-titlebar {
+  .term-container.minimized:not(.fullscreen) .terminal-titlebar {
     height: 100%;
     border-radius: 0.45rem;
   }

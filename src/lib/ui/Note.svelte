@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { containWheel, scrollWheel } from "$lib/action/containWheel";
   import { surfaceBackground, surfaceTone } from "./surfaceTheme";
   import { createEventDispatcher, tick } from "svelte";
   import {
@@ -1044,9 +1045,7 @@
   on:paste={handlePaste}
   on:selectstart={handleSelectStart}
   on:keydown={handleNoteKeyDown}
-  on:wheel={(event) => {
-    if (!event.ctrlKey) event.stopPropagation();
-  }}
+  use:containWheel={(event) => scrollWheel(editorViewport, event)}
 >
   <header
     role="presentation"
@@ -1077,7 +1076,7 @@
       <CircleButton
         kind="purple"
         active={fullscreen}
-        disabled={note.minimized}
+        disabled={note.minimized && !fullscreen}
         ariaLabel={fullscreen ? "Exit full screen" : "Full screen"}
         on:mousedown={(event) =>
           event.button === 0 && dispatch("toggleFullscreen")}
@@ -1317,14 +1316,15 @@
     border-color: var(--surface-border);
     background: var(--surface-subtle);
   }
-  .note-container.minimized > :not(.note-titlebar):not(.panel) {
+  .note-container.minimized:not(.fullscreen)
+    > :not(.note-titlebar):not(.panel) {
     display: none;
   }
-  .note-container.minimized .note-titlebar {
+  .note-container.minimized:not(.fullscreen) .note-titlebar {
     height: 100%;
     border-radius: 0.45rem;
   }
-  .note-container.minimized .note-title-status {
+  .note-container.minimized:not(.fullscreen) .note-title-status {
     display: none;
   }
   .note-container.linked-highlight {

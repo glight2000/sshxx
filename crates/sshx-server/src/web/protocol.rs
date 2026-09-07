@@ -39,7 +39,8 @@ pub struct WsWinsize {
     /// Per-terminal color theme, or empty for a legacy client default.
     #[serde(default)]
     pub theme: String,
-    /// Volatile PTY generation. Incremented when a persisted SSH terminal is
+    /// Volatile output generation. Also advances after an unrecoverable output
+    /// gap without replacing the PTY. Incremented when a persisted SSH terminal is
     /// recreated after terminal-host state loss.
     #[serde(default)]
     pub generation: u32,
