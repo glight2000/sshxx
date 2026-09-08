@@ -1,5 +1,6 @@
 export type WheelInputKind = "mouse" | "trackpad";
 export type WheelInputMode = "auto" | WheelInputKind;
+export const WHEEL_GESTURE_GAP_MS = 180;
 
 export function isWheelInputMode(value: unknown): value is WheelInputMode {
   return value === "auto" || value === "mouse" || value === "trackpad";
@@ -21,7 +22,7 @@ export class WheelInputClassifier {
       return mode;
     }
     if (
-      event.timeStamp - this.#lastTime > 180 ||
+      event.timeStamp - this.#lastTime > WHEEL_GESTURE_GAP_MS ||
       event.timeStamp < this.#lastTime
     ) {
       // ponytail: a high-resolution wheel can look exactly like a touchpad.
@@ -39,6 +40,12 @@ export class WheelInputClassifier {
   }
 }
 
-export function wheelDestination(focused: boolean, device: WheelInputKind) {
-  return focused ? "component" : device === "trackpad" ? "pan" : "zoom";
+export function wheelDestination(
+  focused: boolean,
+  device: WheelInputKind,
+  startedOverFocus = true,
+) {
+  if (device === "trackpad")
+    return focused && startedOverFocus ? "component" : "pan";
+  return focused ? "component" : "zoom";
 }

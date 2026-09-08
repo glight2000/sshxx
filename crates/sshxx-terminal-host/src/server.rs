@@ -506,6 +506,7 @@ async fn forward_session(
                             sequence: next_sequence,
                             data,
                             replay: false,
+                            paste_checkpoint: Vec::new(),
                         }),
                     ))
                     .await
@@ -541,6 +542,11 @@ async fn send_snapshot(
                     sequence: snapshot.sequence + (index * OUTPUT_CHUNK_BYTES) as u64,
                     data: data.to_vec(),
                     replay,
+                    paste_checkpoint: if index == 0 {
+                        snapshot.paste_checkpoint.clone()
+                    } else {
+                        Vec::new()
+                    },
                 }),
             ))
             .await
@@ -561,6 +567,7 @@ async fn send_event(
             sequence,
             data: data.to_vec(),
             replay,
+            paste_checkpoint: Vec::new(),
         }),
         SessionEvent::Exited {
             exit_code,

@@ -7,7 +7,52 @@ import {
   formatShortcut,
   shortcutPageId,
   installWorkspaceShortcuts,
+  installFocusEscape,
 } from "../src/lib/workspaceShortcuts.ts";
+
+test("only desktop Shift+Escape clears focus, without reaching the terminal", () => {
+  const original = globalThis.window;
+  globalThis.window = new EventTarget();
+  let clears = 0,
+    downstream = 0,
+    enabled = true;
+  const dispose = installFocusEscape(
+    () => enabled,
+    () => clears++,
+  );
+  window.addEventListener("keydown", () => downstream++);
+  const send = (extra = {}) => {
+    const e = new Event("keydown", { cancelable: true });
+    Object.assign(e, { key: "Escape", shiftKey: false, ...extra });
+    window.dispatchEvent(e);
+    return e.defaultPrevented;
+  };
+  try {
+    assert.equal(send(), false);
+    assert.equal(clears, 0);
+    assert.equal(downstream, 1);
+    assert.equal(send({ shiftKey: true }), true);
+    assert.equal(clears, 1);
+    assert.equal(downstream, 1);
+    for (const extra of [
+      { ctrlKey: true },
+      { altKey: true },
+      { metaKey: true },
+      { isComposing: true },
+      { keyCode: 229 },
+    ])
+      assert.equal(send({ shiftKey: true, ...extra }), false);
+    enabled = false;
+    assert.equal(send({ shiftKey: true }), false);
+    dispose();
+    enabled = true;
+    assert.equal(send({ shiftKey: true }), false);
+    assert.equal(clears, 1);
+  } finally {
+    dispose();
+    globalThis.window = original;
+  }
+});
 
 const key = (code, extra = {}) => ({
   code,

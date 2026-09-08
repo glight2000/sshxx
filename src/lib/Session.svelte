@@ -49,6 +49,7 @@
   import { mobileAssociationTargets } from "./mobileNavigation";
   import {
     installWorkspaceShortcuts,
+    installFocusEscape,
     shortcutPageId,
   } from "./workspaceShortcuts";
   import { installMobileCanvas } from "./action/mobileCanvas";
@@ -62,6 +63,7 @@
   import LiveCursor from "./ui/LiveCursor.svelte";
   import {
     canvasCameraCss,
+    canvasWorldTransform,
     previewCanvasCamera,
     canvasViewportAnchor,
     screenToCanvasPosition,
@@ -170,6 +172,8 @@
   $: canvasSelectionMouseButton = $settings.swapCanvasMouseButtons ? 2 : 0;
   $: canvasPanMouseButton = $settings.swapCanvasMouseButtons ? 0 : 2;
   const fullscreenLayers: Record<number, HTMLDivElement> = {};
+  const pageWorlds: Record<number, HTMLDivElement> = {};
+  const pageGrids: Record<number, HTMLDivElement> = {};
   let touchZoom: TouchZoom;
   let center = [0, 0];
   let zoom = INITIAL_ZOOM;
@@ -305,18 +309,6 @@
         null;
     focused = [];
     clearCanvasSelection();
-  }
-
-  function handleFocusEscape(event: KeyboardEvent) {
-    if (event.key !== "Escape" || mobileAvailable) return;
-    // Let editor/menu Escape handlers finish first, including releasing note locks.
-    // Prevent xterm from forwarding this browser focus command to the PTY.
-    if ((event.target as Element)?.closest?.(".xterm-helper-textarea")) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      handleRelationshipKeydown(event);
-    }
-    queueMicrotask(clearCanvasFocus);
   }
 
   function canvasItemWrapper(key: CanvasItemKey) {
@@ -522,13 +514,23 @@
       () => !mobileAvailable && activeFullscreenKey() === null,
       () => canvasPanMouseButton,
     );
-    const canvasWorld = fabricEl.querySelector<HTMLElement>(".canvas-world")!;
-    const canvasGrid = fabricEl.querySelector<HTMLElement>(".canvas-grid")!;
     const removeMobileCanvas = installMobileCanvas(
       fabricEl,
       () => mobileAvailable,
       () => ({ center: touchZoom.center, zoom: touchZoom.zoom }),
       (view, settled) => {
+        const canvasWorld = pageWorlds[activePageId];
+        const canvasGrid = pageGrids[activePageId];
+        if (!canvasWorld || !canvasGrid) return;
+        previewCanvasCamera(
+          canvasWorld,
+          canvasGrid,
+          view.center,
+          view.zoom,
+          CONSTANT_OFFSET_LEFT,
+          CONSTANT_OFFSET_TOP,
+          GRID_SIZE,
+        );
         if (settled) {
           // Commit the same camera before removing the preview, with no snap
           // back while Svelte waits for its reactive view update.
@@ -539,19 +541,8 @@
             CONSTANT_OFFSET_TOP,
             GRID_SIZE,
           );
-          canvasWorld.style.removeProperty("transform");
-          canvasGrid.style.cssText = "";
           touchZoom.setView(view.center, view.zoom);
-        } else
-          previewCanvasCamera(
-            canvasWorld,
-            canvasGrid,
-            view.center,
-            view.zoom,
-            CONSTANT_OFFSET_LEFT,
-            CONSTANT_OFFSET_TOP,
-            GRID_SIZE,
-          );
+        }
       },
       (target) => {
         const key = canvasItemFromTarget(target);
@@ -568,7 +559,16 @@
         return key !== null && key === mobileFocusedKey;
       },
     );
-    window.addEventListener("keydown", handleFocusEscape, true);
+    const removeFocusEscape = installFocusEscape(
+      () => !mobileAvailable,
+      () => {
+        linkingNoteId = null;
+        pendingCanvasSelection = null;
+        pendingCanvasTitleFocus = null;
+        selectionMarquee = null;
+        clearCanvasFocus();
+      },
+    );
     const removeShortcuts = installWorkspaceShortcuts(
       () => $settings.shortcutBindings,
       () =>
@@ -604,10 +604,11 @@
           ? wrapper
           : null;
       },
-      (event, focused) =>
+      (event, focused, startedOverFocus) =>
         wheelDestination(
           focused,
           wheelInput.classify(event, $settings.wheelInputMode),
+          startedOverFocus,
         ),
       (event, mode) => touchZoom.wheel(event, mode),
     );
@@ -644,7 +645,7 @@
       unsubscribe();
       removeWheel();
       removeMobileCanvas();
-      window.removeEventListener("keydown", handleFocusEscape, true);
+      removeFocusEscape();
       removeShortcuts();
       window.removeEventListener("pointerup", handleCanvasPointerEnd, true);
       window.removeEventListener("pointercancel", handleCanvasPointerEnd, true);
@@ -842,7 +843,7 @@
   /** Bound "write" method for each terminal. */
   const writers: Record<
     number,
-    (data: string, replay?: boolean) => Promise<void>
+    (data: string, replay?: boolean, pasteMode?: boolean) => Promise<void>
   > = {};
   const terminalTextSenders: Record<
     number,
@@ -870,7 +871,7 @@
   const terminalHistory = new TerminalHistory(2 * 1024 * 1024);
   const replayedWriters: Record<
     number,
-    (data: string, replay?: boolean) => Promise<void>
+    (data: string, replay?: boolean, pasteMode?: boolean) => Promise<void>
   > = {};
   let terminalRendererRevisions: Record<number, number> = {};
   // Transient collaboration state: synchronized, but never persisted.
@@ -1008,8 +1009,12 @@
   )
     linkingNoteId = null;
 
-  function appendTerminalHistory(id: number, data: string) {
-    terminalHistory.append(id, data);
+  function appendTerminalHistory(
+    id: number,
+    data: string,
+    pasteMode?: boolean,
+  ) {
+    terminalHistory.append(id, data, pasteMode);
   }
 
   function readTerminalHistory(id: number) {
@@ -1046,8 +1051,9 @@
     data: string,
     replay: boolean,
     nextChunk: number,
+    pasteMode?: boolean,
   ) {
-    appendTerminalHistory(id, data);
+    appendTerminalHistory(id, data, pasteMode);
     // The browser history owns the batch before xterm finishes. Preserve this
     // checkpoint across a disconnect during the renderer callback wait.
     chunknums[id] = nextChunk;
@@ -1055,9 +1061,13 @@
     if (!writer) return;
     if (replayedWriters[id] !== writer) {
       replayedWriters[id] = writer;
-      await writer(readTerminalHistory(id), true);
+      await writer(
+        readTerminalHistory(id),
+        true,
+        terminalHistory.pasteMode(id),
+      );
     } else {
-      await writer(data, replay);
+      await writer(data, replay, pasteMode);
     }
   }
 
@@ -1070,6 +1080,7 @@
     chunks: Uint8Array[],
     subscriptionToken?: number,
     startChunk?: number,
+    encryptedPasteMode?: Uint8Array,
   ) {
     if (
       !shells.some(
@@ -1108,6 +1119,16 @@
         seqnum += data.length;
         plaintextChunks.push(decoder.decode(buf));
       }
+      let pasteMode: boolean | undefined;
+      if (encryptedPasteMode?.length === 1 && seqnum > 0) {
+        const mode = await encrypt.segment(
+          0x300000000n | BigInt(id),
+          BigInt(seqnum - 1),
+          encryptedPasteMode,
+        );
+        if (mode[0] === 1 || mode[0] === 2) pasteMode = mode[0] === 2;
+      }
+      // Decryption yields: a page move/recovery may have invalidated this batch.
       if (
         subscriptionToken !== undefined &&
         terminalSubscriptionTokens[id] !== subscriptionToken
@@ -1125,6 +1146,7 @@
         plaintextChunks.join(""),
         replay,
         (startChunk ?? chunknums[id]) + chunks.length,
+        pasteMode,
       );
       if (
         subscriptionToken !== undefined &&
@@ -1785,8 +1807,17 @@
           );
           srocket?.dispose();
         } else if (message.terminalBatch) {
-          const [id, page, generation, token, replay, sequence, start, chunks] =
-            message.terminalBatch;
+          const [
+            id,
+            page,
+            generation,
+            token,
+            replay,
+            sequence,
+            start,
+            chunks,
+            pasteMode,
+          ] = message.terminalBatch;
           handleTerminalChunks(
             id,
             page,
@@ -1796,6 +1827,7 @@
             chunks,
             token,
             start,
+            pasteMode,
           );
         } else if (message.terminalStalled) {
           const [id, , generation, token] = message.terminalStalled;
@@ -2395,6 +2427,11 @@
   }
 
   function handleRelationshipKeydown(event: KeyboardEvent) {
+    if (
+      event.defaultPrevented ||
+      (event.target as Element)?.closest?.(".xterm-helper-textarea")
+    )
+      return;
     let handled = false;
     if (event.key === "Escape" && linkingNoteId !== null) {
       linkingNoteId = null;
@@ -3417,7 +3454,11 @@
       const writer = writers[id];
       if (writer && replayedWriters[id] !== writer) {
         replayedWriters[id] = writer;
-        void writer(readTerminalHistory(id), true);
+        void writer(
+          readTerminalHistory(id),
+          true,
+          terminalHistory.pasteMode(id),
+        );
       }
     }
   });
@@ -4008,14 +4049,28 @@
     )}
     bind:this={fabricEl}
   >
-    <!-- The grid and world consume the same camera variables from one node. -->
-    <div class="canvas-grid pointer-events-none absolute inset-0"></div>
-
     <!--
       Keep a fullscreen host mounted for every page. Portaled components retain
       their local state while page visibility changes.
     -->
     {#each pages as page (page.id)}
+      {@const view =
+        page.id === activePageId
+          ? { center, zoom }
+          : (pageViews[page.id] ?? { center: [0, 0], zoom: INITIAL_ZOOM })}
+      <div
+        class="canvas-grid canvas-page-layer pointer-events-none absolute inset-0"
+        class:canvas-page-active={page.id === activePageId}
+        aria-hidden={page.id !== activePageId}
+        bind:this={pageGrids[page.id]}
+        style={canvasCameraCss(
+          view.center,
+          view.zoom,
+          CONSTANT_OFFSET_LEFT,
+          CONSTANT_OFFSET_TOP,
+          GRID_SIZE,
+        )}
+      ></div>
       <div
         class="canvas-fullscreen-layer canvas-page-layer pointer-events-none absolute inset-0"
         class:canvas-page-active={page.id === activePageId}
@@ -4041,12 +4096,23 @@
       ></div>
     {/if}
 
-    <div class="canvas-world pointer-events-none absolute inset-0">
+    <div class="canvas-pages pointer-events-none absolute inset-0">
       {#each pages as page (page.id)}
+        {@const view =
+          page.id === activePageId
+            ? { center, zoom }
+            : (pageViews[page.id] ?? { center: [0, 0], zoom: INITIAL_ZOOM })}
         <div
-          class="canvas-page-layer pointer-events-none absolute inset-0"
+          class="canvas-world canvas-page-layer pointer-events-none absolute inset-0"
           class:canvas-page-active={page.id === activePageId}
           aria-hidden={page.id !== activePageId}
+          bind:this={pageWorlds[page.id]}
+          style:transform={canvasWorldTransform(
+            view.center,
+            view.zoom,
+            CONSTANT_OFFSET_LEFT,
+            CONSTANT_OFFSET_TOP,
+          )}
         >
           {#each shells.filter(([, winsize]) => winsize.pageId === page.id) as [id, winsize] (`${id}:${winsize.generation}:${terminalRendererRevisions[id] ?? 0}`)}
             {@const ws =
@@ -4103,7 +4169,7 @@
                   cols={ws.cols}
                   windowWidth={ws.width}
                   windowHeight={ws.height}
-                  canvasZoom={zoom}
+                  canvasZoom={view.zoom}
                   pageVisible={page.id === activePageId}
                   title={ws.title}
                   background={ws.background}
@@ -4835,29 +4901,28 @@
               </div>
             </div>
           {/each}
-        </div>
-      {/each}
+          {#each users.filter(([id, user]) => id !== userId && user.cursor !== null && user.pageId === page.id) as [id, user] (id)}
+            <div
+              class="canvas-world-cursor canvas-slide pointer-events-none absolute"
+              style:--canvas-slide-x={`${user.cursor?.[0] ?? 0}px`}
+              style:--canvas-slide-y={`${user.cursor?.[1] ?? 0}px`}
+              transition:fade|local={{ duration: 200 }}
+            >
+              <LiveCursor userId={id} {user} />
+            </div>
+          {/each}
 
-      {#each users.filter(([id, user]) => id !== userId && user.cursor !== null && user.pageId === activePageId) as [id, user] (id)}
-        <div
-          class="canvas-world-cursor canvas-slide pointer-events-none absolute"
-          style:--canvas-slide-x={`${user.cursor?.[0] ?? 0}px`}
-          style:--canvas-slide-y={`${user.cursor?.[1] ?? 0}px`}
-          transition:fade|local={{ duration: 200 }}
-        >
-          <LiveCursor userId={id} {user} />
-        </div>
-      {/each}
-
-      {#each customClickPopups.filter((popup) => popup.pageId === activePageId) as popup (popup.id)}
-        <div
-          class="custom-click-popup canvas-slide pointer-events-none absolute"
-          style:--canvas-slide-x={`${popup.x + 10}px`}
-          style:--canvas-slide-y={`${popup.y + 10}px`}
-          in:fade|local={{ duration: 100 }}
-          out:fade|local={{ duration: 450 }}
-        >
-          自定义组件不同步点击事件
+          {#each customClickPopups.filter((popup) => popup.pageId === page.id) as popup (popup.id)}
+            <div
+              class="custom-click-popup canvas-slide pointer-events-none absolute"
+              style:--canvas-slide-x={`${popup.x + 10}px`}
+              style:--canvas-slide-y={`${popup.y + 10}px`}
+              in:fade|local={{ duration: 100 }}
+              out:fade|local={{ duration: 450 }}
+            >
+              自定义组件不同步点击事件
+            </div>
+          {/each}
         </div>
       {/each}
     </div>
@@ -4874,10 +4939,10 @@
     background-position: var(--canvas-world-x) var(--canvas-world-y);
     background-size: var(--canvas-grid-step) var(--canvas-grid-step);
   }
-  .canvas-world {
+  .canvas-pages {
     z-index: 1;
-    transform: translate3d(var(--canvas-world-x), var(--canvas-world-y), 0)
-      scale(var(--canvas-world-zoom));
+  }
+  .canvas-world {
     transform-origin: 0 0;
     will-change: transform;
   }

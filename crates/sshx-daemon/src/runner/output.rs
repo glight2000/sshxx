@@ -2,6 +2,8 @@
 
 use encoding_rs::{CoderResult, Decoder, UTF_8};
 use sshx_core::{proto::TerminalData, Sid};
+use sshxx_terminal_host::paste_mode::PasteMode;
+use std::collections::VecDeque;
 use std::time::Instant;
 use tracing::{debug, warn};
 
@@ -13,6 +15,9 @@ const ROLLING_BYTES: usize = 8 << 20;
 const PRUNE_BYTES: usize = 12 << 20;
 
 pub(super) struct OutputBuffer {
+    retained_modes: PasteMode,
+    sent_modes: PasteMode,
+    mode_checkpoints: VecDeque<(usize, PasteMode)>,
     content: String,
     offset: usize,
     sent: usize,
@@ -27,6 +32,9 @@ pub(super) struct OutputBuffer {
 impl Default for OutputBuffer {
     fn default() -> Self {
         Self {
+            retained_modes: PasteMode::fresh(),
+            sent_modes: PasteMode::fresh(),
+            mode_checkpoints: VecDeque::new(),
             content: String::new(),
             offset: 0,
             sent: 0,
@@ -43,6 +51,38 @@ impl Default for OutputBuffer {
 impl OutputBuffer {
     pub fn reset_decoder(&mut self) {
         self.decoder = UTF_8.new_decoder();
+        // A gap from a legacy host must not imply the default/off state.
+        self.mode_checkpoints
+            .push_back((self.offset + self.content.len(), PasteMode::default()));
+    }
+
+    pub fn restore_modes(&mut self, checkpoint: &[u8]) {
+        if let Some(mode) = PasteMode::restore(checkpoint) {
+            self.mode_checkpoints
+                .push_back((self.offset + self.content.len(), mode));
+        }
+    }
+
+    fn advance_modes(&self, mut mode: PasteMode, start: usize, end: usize) -> PasteMode {
+        let mut cursor = start;
+        for (offset, checkpoint) in &self.mode_checkpoints {
+            if *offset < start || *offset >= end {
+                continue;
+            }
+            mode.feed(
+                self.content.as_bytes()[cursor - self.offset..*offset - self.offset]
+                    .iter()
+                    .copied(),
+            );
+            mode = checkpoint.clone();
+            cursor = *offset;
+        }
+        mode.feed(
+            self.content.as_bytes()[cursor - self.offset..end - self.offset]
+                .iter()
+                .copied(),
+        );
+        mode
     }
 
     pub fn append(&mut self, bytes: &[u8], finished: bool) {
@@ -93,6 +133,7 @@ impl OutputBuffer {
             retained_end = self.offset + self.content.len(), sent = self.sent,
             "replaying terminal output after repeated unacknowledged progress");
         self.sent = (sequence as usize).max(self.offset);
+        self.sent_modes = self.advance_modes(self.retained_modes.clone(), self.offset, self.sent);
         self.sync_misses = 0;
         self.reported_gap = false;
         None
@@ -105,7 +146,22 @@ impl OutputBuffer {
         let start = prev_char_boundary(&self.content, self.sent.saturating_sub(self.offset));
         let end = prev_char_boundary(&self.content, (start + CHUNK_BYTES).min(self.content.len()));
         let seq = (self.offset + start) as u64;
+        let mode = self.advance_modes(
+            self.sent_modes.clone(),
+            self.offset + start,
+            self.offset + end,
+        );
+        let mode_byte = mode
+            .enabled()
+            .map_or(0, |enabled| if enabled { 2 } else { 1 });
         Some(TerminalData {
+            paste_mode: encrypt
+                .segment(
+                    0x300000000 | id.0 as u64,
+                    (self.offset + end - 1) as u64,
+                    &[mode_byte],
+                )
+                .into(),
             id: id.0,
             data: encrypt
                 .segment(
@@ -121,12 +177,25 @@ impl OutputBuffer {
 
     pub fn mark_sent(&mut self, end: u64) {
         self.last_sent = Some(Instant::now());
+        self.sent_modes = self.advance_modes(self.sent_modes.clone(), self.sent, end as usize);
         self.sent = end as usize;
         if self.content.len() > PRUNE_BYTES && self.sent.saturating_sub(ROLLING_BYTES) > self.offset
         {
             let pruned = prev_char_boundary(&self.content, self.sent - ROLLING_BYTES - self.offset);
+            self.retained_modes = self.advance_modes(
+                self.retained_modes.clone(),
+                self.offset,
+                self.offset + pruned,
+            );
             self.offset += pruned;
             self.content.drain(..pruned);
+            while self
+                .mode_checkpoints
+                .front()
+                .is_some_and(|(offset, _)| *offset < self.offset)
+            {
+                self.mode_checkpoints.pop_front();
+            }
         }
     }
 }
@@ -134,6 +203,64 @@ impl OutputBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paste_checkpoint_survives_pruning_replay_and_host_reattach() {
+        let encrypt = Encrypt::new("synthetic-paste-checkpoint");
+        let mut mode = PasteMode::fresh();
+        mode.feed(b"\x1b[?2004h".iter().copied());
+        let mut buffer = OutputBuffer::default();
+        buffer.reset_decoder();
+        buffer.restore_modes(&mode.checkpoint());
+        buffer.append(&vec![b'x'; PRUNE_BYTES + CHUNK_BYTES], false);
+        let original = drain(&mut buffer, &encrypt);
+        assert!(buffer.offset > 0);
+        assert!(buffer.mode_checkpoints.is_empty());
+        for chunk in &original {
+            assert_eq!(
+                encrypt.segment(
+                    0x30000003c,
+                    chunk.seq + chunk.data.len() as u64 - 1,
+                    &chunk.paste_mode
+                ),
+                [2]
+            );
+        }
+        for _ in 0..3 {
+            buffer.sync(Sid(60), 0, true);
+        }
+        for chunk in drain(&mut buffer, &encrypt) {
+            assert_eq!(
+                encrypt.segment(
+                    0x30000003c,
+                    chunk.seq + chunk.data.len() as u64 - 1,
+                    &chunk.paste_mode
+                ),
+                [2]
+            );
+        }
+        buffer.append(b"\x1b[?2004l", false);
+        let off = drain(&mut buffer, &encrypt);
+        assert_eq!(
+            encrypt.segment(
+                0x30000003c,
+                off[0].seq + off[0].data.len() as u64 - 1,
+                &off[0].paste_mode
+            ),
+            [1]
+        );
+        buffer.reset_decoder();
+        buffer.append(b"legacy host lost mode", false);
+        let unknown = drain(&mut buffer, &encrypt);
+        assert_eq!(
+            encrypt.segment(
+                0x30000003c,
+                unknown[0].seq + unknown[0].data.len() as u64 - 1,
+                &unknown[0].paste_mode
+            ),
+            [0]
+        );
+    }
 
     #[test]
     fn old_wire_messages_do_not_opt_into_discarding_gaps() {

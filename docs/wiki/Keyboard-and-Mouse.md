@@ -14,9 +14,11 @@
 - Middle-button drag always pans, even when the pointer is over a window.
 - `Ctrl` + wheel always zooms the canvas and suppresses browser zoom. Wheel zoom
   uses the faster canvas step; it does not change browser page scale.
-- With a focused component, mouse-wheel and two-finger trackpad scrolling both
-  scroll that component, regardless of pointer position. File explorers use the
-  actively edited or last-clicked pane, with horizontal and vertical scrolling.
+- With a focused component, mouse wheels scroll it regardless of pointer
+  position. Two-finger trackpad gestures scroll it only when starting inside
+  that window; starting outside pans the canvas instead. The gesture retains its
+  starting destination. File explorers support horizontal and vertical
+  scrolling, using the actively edited or last-clicked pane.
 - Without component focus, a mouse wheel zooms and a trackpad pans the canvas,
   even when the pointer is over a window. Neither action changes focus.
 - **Scroll input device** in Settings defaults to Auto. Because browsers do not
@@ -60,9 +62,10 @@ for platform-specific browser bindings.
 
 ## Windows
 
-- On desktop, `Escape` clears component focus and canvas selection without
-  closing the component. In a terminal it is a browser focus command, not PTY
-  input. Editor/menu Escape handling still finishes normally.
+- On desktop, `Shift+Escape` clears component focus and canvas selection without
+  closing the component or sending input to the PTY. Plain `Escape` stays with
+  the terminal program or the active editor/menu; it does not clear window
+  focus.
 
 - Window title bars keep the normal pointer cursor. A click focuses the window,
   a double-click edits its title inline, and movement beyond the drag threshold

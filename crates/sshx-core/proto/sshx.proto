@@ -23,6 +23,9 @@ message TerminalData {
   // Earliest encrypted-stream byte still retained by the daemon. A chunk
   // starting here may repair an irrecoverable gap without restarting the PTY.
   optional uint64 retained_sequence = 4;
+  // One encrypted byte (unknown/off/on) AFTER this chunk. Dedicated stream
+  // 0x300000000 | id, at offset seq + data.length - 1. Empty for legacy daemons.
+  bytes paste_mode = 5;
 }
 
 // Details of bytes input to the terminal (not necessarily valid UTF-8).
@@ -365,6 +368,7 @@ message SerializedShell {
   uint32 width = 15;
   uint32 height = 16;
   bool minimized = 17;
+  repeated bytes paste_modes = 18;
 }
 
 message SerializedNote {

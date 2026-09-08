@@ -44,12 +44,15 @@ The README intentionally stays at project level. See the
 for the full capability set and screenshots, or start from the
 **[sshxx Wiki](https://github.com/glight2000/sshxx/wiki)**.
 
-**v0.13.2** adds desktop sidebar/phone fullscreen chat, 500 persisted messages,
-and image/video/file attachments in chat and notes (no audio sending). Settings
-can now restart the actual installed daemon or terminal-host program. See
-[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0132-upgrade-notes).
-Update server and daemon together for these features. A compatible running
-terminal host can stay running; restarting it disconnects all hosted tasks.
+**v0.13.4** preserves each page's own camera during crossfades, repaints
+terminals when pages become visible, routes trackpad gestures by their starting
+window, and reserves **Shift+Esc** for clearing focus while plain Esc reaches
+the terminal. It also restores bracketed-paste mode across retained-output
+replay and explains blocked HTTP previews in HTTPS workspaces. See
+[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0134-upgrade-notes).
+Update server and daemon together. Full paste-state recovery includes a host
+update; schedule its restart after saving tasks because it disconnects all
+hosted processes. A compatible older host can stay running meanwhile.
 
 ## Architecture
 

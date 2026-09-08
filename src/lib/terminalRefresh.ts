@@ -2,6 +2,7 @@
 export function terminalRefresh(refresh: () => void) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let refreshedZoom: number | undefined;
+  let hidden = false;
   let disposed = false;
 
   return {
@@ -9,15 +10,17 @@ export function terminalRefresh(refresh: () => void) {
       clearTimeout(timer);
       timer = undefined;
       if (disposed) return;
+      if (!visible) hidden = true;
       // Initial xterm setup already paints at the current zoom.
       if (!ready) {
         refreshedZoom = zoom;
         return;
       }
-      if (!visible || zoom === refreshedZoom) return;
+      if (!visible || (!hidden && zoom === refreshedZoom)) return;
       timer = setTimeout(() => {
         timer = undefined;
         refreshedZoom = zoom;
+        hidden = false;
         refresh();
       }, 120);
     },

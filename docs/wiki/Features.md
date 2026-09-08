@@ -139,16 +139,15 @@ focusing a window, clicking empty canvas, or pressing Escape clears the
 selection. Dragging any selected window moves the selected group with one common
 offset, while right-button pan leaves the selection unchanged.
 
-Scroll input follows **component focus**, not pointer hover. With a focused
-component, both a mouse wheel and two-finger trackpad scrolling operate that
-component, even when the pointer is over blank canvas or another window. File
-explorers use the actively edited or last-clicked pane and retain both scroll
-axes; otherwise they default to the preview pane. Without component focus, a
-mouse wheel zooms the canvas and two-finger trackpad scrolling pans it. Scroll
-input does not change focus or chain into browser-page scrolling. Ctrl + wheel
-(including browser-reported trackpad pinch) remains forced canvas zoom. Pan and
-zoom are disabled while a component is full-screen; clicking its visible outside
-margin exits full-screen.
+Mouse wheels follow **component focus**, even over blank canvas or another
+window; without focus they zoom the canvas. Two-finger trackpad gestures scroll
+content only when they start inside the focused window; otherwise they pan the
+canvas. The starting window remains the destination for that gesture. File
+explorers retain both scroll axes and use the actively edited or last-clicked
+pane. Scroll input does not change focus or chain into browser-page scrolling.
+Ctrl + wheel (including browser-reported trackpad pinch) remains forced canvas
+zoom. Pan and zoom are disabled while a component is full-screen; clicking its
+visible outside margin exits full-screen.
 
 Settings → **Scroll input device** offers Auto, Mouse wheel, and Trackpad. The
 [standard WheelEvent API](https://developer.mozilla.org/en-US/docs/Web/API/WheelEvent)
@@ -182,7 +181,8 @@ content scrolling. Embedded websites are touch-shielded on the canvas and
 interactive in fullscreen. These are separate touch controls, not changes to
 desktop mouse behavior. The same terminal parser and component instances remain
 mounted. No lock, shared geometry change or PTY resize is introduced. On
-desktop, Escape clears focus as well as selection.
+desktop, Shift+Escape clears focus as well as selection. Plain Escape remains
+available to the terminal program or active editor/menu.
 
 The phone composer also offers **Paste only** (no extra Enter) and **Direct
 keys** (plain terminal input, without paste markers or Enter). Direct keys
@@ -295,6 +295,11 @@ loading; the server's anti-frame headers and client embedding guard provide a
 second recursion boundary. A target site can still refuse embedding with
 `X-Frame-Options` or `frame-ancestors`, and sites requiring same-origin cookies
 or storage may not work in the opaque sandbox.
+
+An HTTPS workspace cannot embed ordinary HTTP pages even if they open directly
+in a browser tab. The component displays a mixed-content explanation instead of
+a blank preview; serve the target over HTTPS or open it separately. This is a
+viewer-local preview restriction, not a change to the saved/shared URL.
 
 An HTML/JavaScript preview may explicitly navigate the shared component from a
 user action:

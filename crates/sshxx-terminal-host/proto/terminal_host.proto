@@ -106,6 +106,9 @@ message TerminalOutput {
   uint64 sequence = 2;
   bytes data = 3;
   bool replay = 4;
+  // Optional parser checkpoint immediately BEFORE this output. Empty on legacy
+  // hosts/live frames; bounded and versioned, never includes terminal text.
+  bytes paste_checkpoint = 5;
 }
 
 message TerminalExited {

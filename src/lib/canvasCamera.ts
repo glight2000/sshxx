@@ -29,6 +29,16 @@ export function canvasCameraCss(
   ].join(";");
 }
 
+export function canvasWorldTransform(
+  center: CanvasPoint,
+  zoom: number,
+  offsetLeft: number,
+  offsetTop: number,
+) {
+  const [x, y] = canvasOrigin(center, zoom, offsetLeft, offsetTop);
+  return `translate3d(${x}, ${y}, 0) scale(${zoom})`;
+}
+
 // Touch previews must not change inherited camera variables on the ancestor
 // of every mounted editor/terminal. Only these two visual layers need repainting.
 export function previewCanvasCamera(
@@ -40,8 +50,12 @@ export function previewCanvasCamera(
   offsetTop: number,
   gridSize: number,
 ) {
-  const [x, y] = canvasOrigin(center, zoom, offsetLeft, offsetTop);
-  world.style.transform = `translate3d(${x}, ${y}, 0) scale(${zoom})`;
+  world.style.transform = canvasWorldTransform(
+    center,
+    zoom,
+    offsetLeft,
+    offsetTop,
+  );
   grid.style.cssText = canvasCameraCss(
     center,
     zoom,

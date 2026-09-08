@@ -462,6 +462,38 @@ Windows x64.
 Release checksums and GitHub attestations provide build provenance and integrity
 checks, but do not replace trusted platform code signing.
 
+## v0.13.4 upgrade notes
+
+| Component               | Version | Changes                                                                                                     |
+| ----------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
+| Suite / Runtime archive | 0.13.4  | Terminal paste recovery and local canvas interaction fixes                                                  |
+| Web / Tauri client      | 0.13.3  | Independent page-camera fades, visibility repaint, Shift+Esc, trackpad routing and HTTP preview diagnostics |
+| Daemon                  | 0.11.4  | Retained-output paste-mode checkpoints and encrypted forwarding                                             |
+| Server                  | 0.11.4  | Compatible encrypted paste-mode metadata in output subscriptions and snapshots                              |
+| Internal core           | 0.11.4  | Additive output checkpoint protocol fields                                                                  |
+| Terminal host           | 0.10.3  | Bounded paste-mode parser/checkpoints across retained-output pruning and reattachment                       |
+
+Update server and daemon together, then reload the Web client or update the
+packaged client. Page switching keeps all components mounted: outgoing and
+incoming pages each retain their own camera during the fade. Plain Escape stays
+inside the terminal/editor; Shift+Escape clears desktop focus and selection.
+Trackpad gestures pan when starting outside the focused window, while
+mouse-wheel focus routing is unchanged.
+
+The paste fix addresses a verified case where pruning older output loses the
+bracketed-paste enable sequence. It does not claim that every large-paste issue
+has the same cause. Older compatible peers remain usable; complete recovery
+through host retention/reattachment requires the updated host. Installing the
+archive does **not** replace the running host. Finish or save tasks before the
+explicit host restart: all hosted PTY/SSH processes will be disconnected. A
+compatible old host can remain running until that maintenance window.
+
+Occasional unsolicited scrolling and the reported split/frozen output region
+remain unconfirmed issues, not advertised fixes. The page-visibility repaint fix
+is covered locally but still needs verification against affected workloads. HTTP
+pages blocked inside HTTPS workspaces now show an explanation; the release does
+not weaken browser security or configure a deployment's HTTPS proxy.
+
 ## v0.13.3 upgrade notes
 
 | Component               | Version | Changes                                                         |

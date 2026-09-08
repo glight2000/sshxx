@@ -16,6 +16,22 @@ impl Session {
     /// Only the authenticated daemon's earliest retained chunk can rebase a
     /// stream. Never renumber ciphertext or close/recreate the underlying PTY.
     pub fn add_output(&self, id: Sid, data: Bytes, seq: u64, retained: Option<u64>) -> Result<()> {
+        self.add_output_with_mode(id, data, seq, retained, Bytes::new())
+    }
+
+    /// Store an opaque, bounded paste checkpoint at the chunk's encrypted end offset.
+    pub fn add_output_with_mode(
+        &self,
+        id: Sid,
+        data: Bytes,
+        seq: u64,
+        retained: Option<u64>,
+        paste_mode: Bytes,
+    ) -> Result<()> {
+        ensure!(
+            paste_mode.len() <= 1,
+            "invalid terminal paste checkpoint size"
+        );
         let end = seq
             .checked_add(data.len() as u64)
             .context("terminal output sequence overflow")?;
@@ -44,6 +60,7 @@ impl Session {
             warn!(%id, expected = shell.seqnum, retained_start = seq,
                 rejected_chunks = shell.gap_chunks, "recovering terminal output beyond daemon retention");
             shell.data.clear();
+            shell.paste_modes.clear();
             shell.seqnum = seq;
             shell.byte_offset = seq;
             shell.chunk_offset = 0;
@@ -57,6 +74,7 @@ impl Session {
             shell.last_accepted = Some(tokio::time::Instant::now());
             shell.gap_chunks = 0;
             shell.data.push(segment);
+            shell.paste_modes.push(paste_mode.first().copied());
             let mut stored_bytes = shell.seqnum - shell.byte_offset;
             let mut offset = 0;
             while offset < shell.data.len() && stored_bytes > SHELL_STORED_BYTES {
@@ -67,6 +85,7 @@ impl Session {
                 offset += 1;
             }
             shell.data.drain(..offset);
+            shell.paste_modes.drain(..offset);
             shell.notify.notify_waiters();
         }
         let notify = shell.notify.clone();
@@ -94,6 +113,47 @@ mod tests {
     use crate::session::tests::session;
     use crate::web::protocol::WsServer;
     use tokio_stream::StreamExt;
+
+    #[tokio::test]
+    async fn paste_checkpoints_are_pruned_and_restored_with_their_output() {
+        let session = session();
+        let id = Sid(12);
+        add_shell(&session, id);
+        let large = Bytes::from(vec![b'x'; SHELL_STORED_BYTES as usize]);
+        session
+            .add_output_with_mode(id, large, 0, None, Bytes::from_static(b"a"))
+            .unwrap();
+        session
+            .add_output_with_mode(
+                id,
+                Bytes::from_static(b"tail"),
+                SHELL_STORED_BYTES,
+                None,
+                Bytes::from_static(b"b"),
+            )
+            .unwrap();
+        {
+            let shells = session.shells.read();
+            assert_eq!(shells[&id].data.len(), 1);
+            assert_eq!(shells[&id].paste_modes, [Some(b'b')]);
+        }
+        let restored = Session::restore(&session.snapshot().unwrap()).unwrap();
+        let stream = restored.subscribe_indexed_chunks(id, 0, 0);
+        tokio::pin!(stream);
+        let (_, seq, _, data, mode) = stream.next().await.unwrap();
+        assert_eq!(seq, SHELL_STORED_BYTES);
+        assert_eq!(data, [Bytes::from_static(b"tail")]);
+        assert_eq!(mode, Bytes::from_static(b"b"));
+        assert!(session
+            .add_output_with_mode(
+                id,
+                Bytes::from_static(b"no"),
+                0,
+                None,
+                Bytes::from_static(b"oversize")
+            )
+            .is_err());
+    }
 
     fn add_shell(session: &Session, id: Sid) {
         session

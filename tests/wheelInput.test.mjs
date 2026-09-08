@@ -47,9 +47,11 @@ test("wheel device detection is a bounded gesture guess, with explicit overrides
     assert.equal(isWheelInputMode(value), true);
 });
 
-test("focus owns both input types; without focus only a trackpad pans", () => {
+test("wheels follow focus; trackpads follow the gesture's starting position", () => {
   assert.equal(wheelDestination(true, "mouse"), "component");
   assert.equal(wheelDestination(true, "trackpad"), "component");
   assert.equal(wheelDestination(false, "mouse"), "zoom");
   assert.equal(wheelDestination(false, "trackpad"), "pan");
+  assert.equal(wheelDestination(true, "trackpad", false), "pan");
+  assert.equal(wheelDestination(true, "mouse", false), "component");
 });

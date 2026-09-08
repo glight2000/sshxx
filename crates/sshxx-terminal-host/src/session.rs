@@ -9,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use tokio::sync::{broadcast, mpsc};
 
+use crate::paste_mode::PasteMode;
 use crate::protocol::wire::{CreateTerminal, TerminalSummary};
 
 const OUTPUT_BUFFER_BYTES: usize = 16 << 20;
@@ -31,6 +32,7 @@ pub(crate) enum SessionEvent {
 
 #[derive(Debug)]
 struct OutputBuffer {
+    retained_paste: PasteMode,
     bytes: VecDeque<u8>,
     retained_sequence: u64,
     next_sequence: u64,
@@ -40,6 +42,7 @@ struct OutputBuffer {
 impl OutputBuffer {
     fn new() -> Self {
         Self {
+            retained_paste: PasteMode::fresh(),
             bytes: VecDeque::with_capacity(OUTPUT_BUFFER_BYTES),
             retained_sequence: 0,
             next_sequence: 0,
@@ -56,7 +59,7 @@ impl OutputBuffer {
         self.bytes.extend(bytes);
         if self.bytes.len() > OUTPUT_BUFFER_BYTES {
             let discarded = self.bytes.len() - OUTPUT_BUFFER_BYTES;
-            self.bytes.drain(..discarded);
+            self.retained_paste.feed(self.bytes.drain(..discarded));
             self.retained_sequence = self.retained_sequence.saturating_add(discarded as u64);
         }
         sequence
@@ -67,8 +70,11 @@ impl OutputBuffer {
             .max(self.retained_sequence)
             .min(self.next_sequence);
         let offset = (start - self.retained_sequence) as usize;
+        let mut paste = self.retained_paste.clone();
+        paste.feed(self.bytes.iter().take(offset).copied());
         let bytes = self.bytes.iter().skip(offset).copied().collect();
         BufferSnapshot {
+            paste_checkpoint: paste.checkpoint(),
             sequence: start,
             next_sequence: self.next_sequence,
             bytes,
@@ -78,6 +84,7 @@ impl OutputBuffer {
 
 #[derive(Debug)]
 pub(crate) struct BufferSnapshot {
+    pub paste_checkpoint: Vec<u8>,
     pub sequence: u64,
     pub next_sequence: u64,
     pub bytes: Vec<u8>,
@@ -421,7 +428,25 @@ fn working_directory_for_process(_process_id: u32) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::OutputBuffer;
+    use super::{OutputBuffer, PasteMode, OUTPUT_BUFFER_BYTES};
+
+    #[test]
+    fn bounded_host_replay_preserves_paste_mode_and_partial_control_sequence() {
+        let mut output = OutputBuffer::new();
+        output.append(b"\x1b[?2004h");
+        output.append(&vec![b'x'; OUTPUT_BUFFER_BYTES + 64]);
+        let snapshot = output.snapshot_after(0);
+        assert!(snapshot.sequence > 0);
+        assert_eq!(snapshot.bytes.len(), OUTPUT_BUFFER_BYTES);
+        let mut restored = PasteMode::restore(&snapshot.paste_checkpoint).unwrap();
+        restored.feed(snapshot.bytes.iter().copied());
+        assert_eq!(restored.enabled(), Some(true));
+        output.append(b"\x1b[?2004l");
+        let snapshot = output.snapshot_after(output.next_sequence - 3);
+        let mut restored = PasteMode::restore(&snapshot.paste_checkpoint).unwrap();
+        restored.feed(snapshot.bytes);
+        assert_eq!(restored.enabled(), Some(false));
+    }
 
     #[test]
     fn output_snapshot_uses_absolute_byte_sequences() {

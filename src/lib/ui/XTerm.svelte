@@ -50,7 +50,7 @@
   import { settings } from "$lib/settings";
   import { TerminalWriteQueue } from "$lib/terminalWriteQueue";
   import { terminalRefresh } from "$lib/terminalRefresh";
-  import { pasteTerminalText } from "$lib/terminalClipboard";
+  import { pasteTerminalText, pasteText } from "$lib/terminalClipboard";
   import { parseOsc7Location } from "$lib/terminalLocation";
   import { splitTerminalTitle } from "$lib/terminalTitle";
   import { TypeAheadAddon } from "$lib/typeahead";
@@ -152,11 +152,16 @@
   export let linkedNotes: CanvasRelationItem[] = [];
   export let linkedHighlight = false;
   export let paragraphDropActive = false;
-  export let write: (data: string, replay?: boolean) => Promise<void>; // bound function prop
+  export let write: (
+    data: string,
+    replay?: boolean,
+    pasteMode?: boolean,
+  ) => Promise<void>; // bound function prop
   export let sendText: (data: string, execute?: boolean) => void;
 
   export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
   let term: Terminal | null = null;
+  let pasteMode: boolean | undefined;
   let mouseCoordinateAdapter: { dispose(): void } | null = null;
   let webglAddon: import("@xterm/addon-webgl").WebglAddon | null = null;
   let WebglAddonClass: typeof import("@xterm/addon-webgl").WebglAddon;
@@ -417,7 +422,7 @@
       )
       ?.getAsFile();
     if (!file) {
-      pasteTerminalText(event, term);
+      pasteTerminalText(event, term, pasteMode);
       return;
     }
     event.preventDefault();
@@ -500,8 +505,9 @@
     },
   });
 
-  write = (data: string, replay = false) => {
-    return writeQueue.write(data, replay);
+  write = async (data: string, replay = false, checkpoint?: boolean) => {
+    await writeQueue.write(data, replay);
+    if (!destroyed) pasteMode = checkpoint;
   };
 
   $: term?.resize(cols, rows);
@@ -634,7 +640,7 @@
         notifyReplayInputBlocked();
         return;
       }
-      term?.paste(data);
+      if (term) pasteText(term, data, pasteMode);
       // Keep Enter out of the same PTY read burst as bracketed paste. TUIs
       // otherwise occasionally classify it as another pasted newline.
       if (execute) scheduleExecute();

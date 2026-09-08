@@ -208,6 +208,7 @@ export type WsServer = {
     number,
     number,
     Uint8Array[],
+    Uint8Array?,
   ];
   terminalStalled?: [Sid, number, number, number];
   hear?: [Uid, string, string];

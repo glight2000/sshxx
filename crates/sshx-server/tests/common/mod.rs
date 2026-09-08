@@ -114,6 +114,7 @@ pub struct ClientSocket {
     pub custom_clicks: Vec<(Uid, Sid, u32, u16, u16)>,
     pub errors: Vec<String>,
     pub terminal_batches: Vec<(Sid, u32, u32, u64)>,
+    pub paste_modes: BTreeMap<Sid, u8>,
     pub terminal_stalls: Vec<(Sid, u32, u32, u32)>,
 }
 
@@ -146,6 +147,7 @@ impl ClientSocket {
             custom_clicks: Vec::new(),
             errors: Vec::new(),
             terminal_batches: Vec::new(),
+            paste_modes: BTreeMap::new(),
             terminal_stalls: Vec::new(),
         };
         this.authenticate().await;
@@ -225,6 +227,7 @@ impl ClientSocket {
                         seqnum,
                         start,
                         chunks,
+                        paste_mode,
                     ) => {
                         self.terminal_batches.push((
                             id,
@@ -241,6 +244,14 @@ impl ClientSocket {
                                     .segment(0x100000000 | id.0 as u64, sequence, &buf);
                             sequence += buf.len() as u64;
                             value.push_str(std::str::from_utf8(&plaintext).unwrap());
+                        }
+                        if paste_mode.len() == 1 {
+                            let mode = self.encrypt.segment(
+                                0x300000000 | id.0 as u64,
+                                sequence - 1,
+                                &paste_mode,
+                            );
+                            self.paste_modes.insert(id, mode[0]);
                         }
                     }
                     WsServer::InvalidAuth() => panic!("invalid authentication"),

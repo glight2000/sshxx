@@ -86,6 +86,7 @@ async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_s
                 id,
                 seq: 0,
                 retained_sequence: Some(0),
+                paste_mode: encrypt.segment(0x300000000 | id as u64, 2, &[1]).into(),
                 data: encrypt.segment(0x100000000 | id as u64, 0, b"old").into(),
             })),
         })
@@ -106,6 +107,9 @@ async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_s
                 id: 60,
                 seq,
                 retained_sequence: Some(base),
+                paste_mode: encrypt
+                    .segment(0x30000003c, seq + tail.len() as u64 - 1, &[2])
+                    .into(),
                 data: encrypt.segment(0x10000003c, seq, tail).into(),
             })),
         })
@@ -133,6 +137,8 @@ async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_s
         .await;
     viewer.flush().await;
     assert_eq!(viewer.read(Sid(60)).as_bytes(), tail);
+    assert_eq!(viewer.paste_modes[&Sid(60)], 2);
+    assert_eq!(viewer.paste_modes[&Sid(61)], 1);
     assert_eq!(viewer.read(Sid(61)), "old");
     session.add_data(Sid(61), encrypt.segment(0x10000003d, 3, b" live").into(), 3)?;
     viewer.flush().await;
@@ -150,6 +156,7 @@ async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_s
         .await;
     refreshed.flush().await;
     assert_eq!(refreshed.read(Sid(60)).as_bytes(), tail);
+    assert_eq!(refreshed.paste_modes[&Sid(60)], 2);
     Ok(())
 }
 

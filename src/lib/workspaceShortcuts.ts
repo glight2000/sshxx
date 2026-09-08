@@ -117,3 +117,27 @@ export function installWorkspaceShortcuts(
   return () =>
     window.removeEventListener("keydown", keydown, { capture: true });
 }
+
+/** Workspace focus cancellation must never also reach the terminal/editor. */
+export function installFocusEscape(enabled: () => boolean, clear: () => void) {
+  const keydown = (event: KeyboardEvent) => {
+    if (
+      !enabled() ||
+      event.defaultPrevented ||
+      event.key !== "Escape" ||
+      !event.shiftKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.metaKey ||
+      event.isComposing ||
+      event.keyCode === 229
+    )
+      return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    clear();
+  };
+  window.addEventListener("keydown", keydown, { capture: true });
+  return () =>
+    window.removeEventListener("keydown", keydown, { capture: true });
+}

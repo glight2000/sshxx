@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canvasCameraCss,
+  canvasWorldTransform,
   previewCanvasCamera,
   canvasToScreenPosition,
   canvasViewportAnchor,
@@ -51,4 +52,38 @@ test("touch previews change only the world transform and the childless grid", ()
       canvasCameraCss([10, -20], zoom, 378, 240, 80),
     );
   }
+});
+
+test("page cameras stay independent during crossfade and active-page touch previews", () => {
+  const oldCenter = [10, -20],
+    newCenter = [-100, 80];
+  const oldWorld = {
+    style: { transform: canvasWorldTransform(oldCenter, 0.5, 378, 240) },
+  };
+  const newWorld = {
+    style: { transform: canvasWorldTransform(newCenter, 1.5, 378, 240) },
+  };
+  const oldGrid = {
+    style: { cssText: canvasCameraCss(oldCenter, 0.5, 378, 240, 80) },
+  };
+  const newGrid = {
+    style: { cssText: canvasCameraCss(newCenter, 1.5, 378, 240, 80) },
+  };
+  const oldTransform = oldWorld.style.transform,
+    oldGridCss = oldGrid.style.cssText;
+  assert.notEqual(newWorld.style.transform, oldTransform);
+  previewCanvasCamera(newWorld, newGrid, [20, 40], 2, 378, 240, 80);
+  assert.equal(oldWorld.style.transform, oldTransform);
+  assert.equal(oldGrid.style.cssText, oldGridCss);
+  assert.equal(
+    newWorld.style.transform,
+    canvasWorldTransform([20, 40], 2, 378, 240),
+  );
+  // A quick return uses the old view, not the other page's most recent camera.
+  previewCanvasCamera(oldWorld, oldGrid, oldCenter, 0.5, 378, 240, 80);
+  assert.equal(oldWorld.style.transform, oldTransform);
+  assert.equal(
+    newWorld.style.transform,
+    canvasWorldTransform([20, 40], 2, 378, 240),
+  );
 });

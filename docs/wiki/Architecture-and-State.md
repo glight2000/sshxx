@@ -223,14 +223,17 @@ session name; a random-name deployment necessarily receives a new URL.
   existing local page/search actions; ordinary cursor/focus presence can still
   change, but no shared page, geometry, or PTY-size mutation is emitted. Phone
   mode, modal dialogs, and IME composition do not use these bindings.
-- Scroll input routing is viewer-local and follows component focus, never
-  pointer hover. Both mouse wheels and trackpads scroll the focused component;
-  without focus, wheels zoom and trackpads pan the canvas. The Auto / Mouse
-  wheel / Trackpad preference is browser-persisted. The device classifier's
-  current gesture and each file window's last-clicked scroll pane are ephemeral
-  browser memory; they are not daemon state or synchronized input. Existing
-  page-aware file-tree scroll synchronization is unchanged. Menus/dialogs keep
-  their native scrolling, and cross-origin iframe input stays inside the frame.
+- Scroll input routing is viewer-local. Mouse wheels scroll the focused
+  component regardless of pointer position; without focus they zoom the canvas.
+  Trackpads scroll a component only when the gesture starts inside the focused
+  window; otherwise they pan the canvas. The starting window remains the
+  gesture's destination until a pause, focus change, or menu/pinch interaction.
+  The Auto / Mouse wheel / Trackpad preference is browser-persisted. The device
+  classifier's current gesture and each file window's last-clicked scroll pane
+  are ephemeral browser memory; they are not daemon state or synchronized input.
+  Existing page-aware file-tree scroll synchronization is unchanged.
+  Menus/dialogs keep their native scrolling, and cross-origin iframe input stays
+  inside the frame.
 - Page deletion is a shared, write-authorized workspace operation. Right-click a
   page and choose **Delete page**, then confirm. Its terminals are terminated,
   its notes/custom components/file windows are removed, and dangling note links
@@ -267,10 +270,14 @@ session name; a random-name deployment necessarily receives a new URL.
   After session hydration, every page's terminal, note, file-explorer, and
   custom-component instances remain mounted in that browser. Switching pages
   changes only page-layer visibility, interaction, and the local fade
-  transition, so stateful component instances are not recreated. Hidden
-  terminals skip the extra zoom-triggered atlas clear/repaint and cancel pending
-  zoom refreshes. Revealing a terminal refreshes only if its last painted zoom
-  differs; output parsing and subscriptions continue while hidden.
+  transition, so stateful component instances are not recreated. Each page's
+  world and grid use its own browser-local camera: the outgoing page fades at
+  its previous position/zoom while the incoming page fades at its saved view.
+  Rapid switches reverse the existing opacity transition without moving the
+  outgoing page to the incoming camera. Touch previews update only the active
+  page's world/grid. Hidden terminals skip the extra zoom-triggered atlas
+  clear/repaint and cancel pending zoom refreshes. Revealing a terminal repaints
+  even at the same zoom; output parsing and subscriptions continue while hidden.
 - Marquee/group selection is local and mutually exclusive with component focus.
   Its membership follows the marquee continuously. Focusing a component,
   clicking empty canvas, or pressing Escape clears the selection. Right-button
@@ -340,9 +347,10 @@ session name; a random-name deployment necessarily receives a new URL.
   protocol or synthetic browser keyboard events are added. Read-only, connection
   and replay guards apply to every send. Phone focus does not lock input or
   change shared layout/PTY dimensions. Desktop resizing can still change the
-  shared terminal's output, which the reader then reflects. Desktop Escape
+  shared terminal's output, which the reader then reflects. Desktop Shift+Escape
   clears local focus/selection; existing terminal focus presence is updated, but
-  no terminal input is sent.
+  no terminal input is sent. Plain Escape is handled by the terminal or active
+  editor/menu without cancelling component focus.
 - `CanvasRelations` selects the phone-only `MobileCanvasRelations` surface using
   the same phone media query as navigation. Touch tap/hold/drag routing and
   native action dialogs are local; `MobileWorkspaceControls` owns the target
@@ -533,6 +541,32 @@ Text clipboard events inside xterm are consumed once through public `paste()`.
 xterm owns newline normalization and negotiated bracketed-paste markers; the
 browser's default insertion into its hidden textarea is canceled. Title fields,
 settings, and the phone's independent text composer retain native text editing.
+
+Bracketed-paste negotiation is retained separately from scrollback. The host
+keeps a bounded 10-byte parser checkpoint at its retained output boundary; this
+checkpoint contains no terminal text. The daemon restores it on attach, tracks
+mode changes through output trimming, and encrypts one end-of-chunk mode byte
+using the dedicated `0x300000000 | terminalId` stream at the final output-byte
+offset. Retries reuse the same checkpoint at the same offset. The server cannot
+read it: it retains/prunes it with the corresponding ciphertext and includes the
+last checkpoint in each recoverable output batch. Server snapshots preserve that
+alignment too; old snapshots have unknown mode.
+
+After that batch has finished parsing, the viewer uses the recovered mode for
+clipboard, linked-note sends, and phone text submission. Its bounded local
+history retains the same end-state for renderer replacement. It does not inject
+extra escape sequences into a possibly incomplete OSC/DCS parser, force paste
+mode for every application, change the underlying PTY, or save these transient
+modes in daemon workspace files. This is a paste-mode checkpoint, **not** a full
+screen/terminal-state snapshot. Other modes and missing screen history are not
+reconstructed by this repair.
+
+Older peers remain usable but cannot provide missing checkpoints. In particular,
+if an old host has already discarded the enabling sequence before a daemon
+attaches, that state is unknown until the application emits another mode change.
+The viewer then retains xterm's legacy behavior rather than guessing. Activating
+an updated host is a separately planned, disruptive upgrade; this fix does not
+automatically restart it or existing tasks.
 
 #### Output diagnostics
 

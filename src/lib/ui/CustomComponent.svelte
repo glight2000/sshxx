@@ -99,6 +99,7 @@
     urlDraft,
     browser ? window.location.href : "http://localhost/",
   );
+  $: previewError = previewUrl.error || previewUrl.previewError || "";
 
   function setSettingsOpen(open: boolean) {
     if (settingsOpen === open) return;
@@ -173,7 +174,7 @@
   function showPreview() {
     commitSource();
     commitUrl();
-    if (useUrl && previewUrl.error) return;
+    if (useUrl && previewError) return;
     observedShowPreview = true;
     mode = "preview";
     renderRevision += 1;
@@ -455,8 +456,8 @@
                 on:input={(event) => urlChanged(event.currentTarget.value)}
               />
             </label>
-            <p class:error={Boolean(previewUrl.error)}>
-              {previewUrl.error ||
+            <p class:error={Boolean(previewError)}>
+              {previewError ||
                 "The page will run in an isolated iframe without access to sshxx."}
             </p>
           </div>
@@ -475,8 +476,8 @@
         {/if}
       </div>
     {:else}
-      {#if useUrl && previewUrl.error}
-        <div class="preview-error" role="alert">{previewUrl.error}</div>
+      {#if useUrl && previewError}
+        <div class="preview-error" role="alert">{previewError}</div>
       {:else}
         {#key renderRevision}
           {#if useUrl}

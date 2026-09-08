@@ -56,6 +56,7 @@ type TerminalChunks = Result<
         u64,
         u64,
         Vec<Bytes>,
+        Bytes,
     ),
     (Sid, u32, TerminalChunkProtocol),
 >;
@@ -130,7 +131,7 @@ fn spawn_chunk_forwarder(
                 _ = chunks_tx.closed() => break,
                 item = stream.next() => item,
             };
-            let Some((replay, seqnum, start_chunk, chunks)) = item else {
+            let Some((replay, seqnum, start_chunk, chunks, paste_mode)) = item else {
                 break;
             };
             let Some(page_id) = session.shell_page(id) else {
@@ -147,6 +148,7 @@ fn spawn_chunk_forwarder(
                     seqnum,
                     start_chunk,
                     chunks,
+                    paste_mode,
                 )))
                 .await
                 .is_err()
@@ -481,7 +483,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 continue;
             }
             Some(event) = chunks_rx.recv() => {
-                let (id, page_id, generation, protocol, replay, seqnum, chunknum, chunks) = match event {
+                let (id, page_id, generation, protocol, replay, seqnum, chunknum, chunks, paste_mode) = match event {
                     Ok(batch) => batch,
                     Err((id, generation, protocol)) => {
                         if subscribed.get(&id) != Some(&(generation, protocol)) {
@@ -508,7 +510,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 let message = match protocol {
                     TerminalChunkProtocol::Recoverable(token) => {
                         pending_batch_ends.insert(id, chunknum + chunks.len() as u64);
-                        WsServer::TerminalBatch(id, page_id, generation, token, replay, seqnum, chunknum, chunks)
+                        WsServer::TerminalBatch(id, page_id, generation, token, replay, seqnum, chunknum, chunks, paste_mode)
                     }
                     TerminalChunkProtocol::Legacy => WsServer::Chunks(WsTerminalChunks::Legacy(
                         id, page_id, replay, seqnum, chunks,

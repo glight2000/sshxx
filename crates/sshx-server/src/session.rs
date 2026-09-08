@@ -175,6 +175,8 @@ struct State {
 
     /// Terminal data chunks.
     data: Vec<Bytes>,
+    /// Encrypted end-of-chunk paste checkpoints, pruned with `data`.
+    paste_modes: Vec<Option<u8>>,
 
     /// Number of pruned data chunks before `data[0]`.
     chunk_offset: u64,
@@ -1023,7 +1025,7 @@ impl Session {
         chunknum: u64,
     ) -> impl Stream<Item = (bool, u64, Vec<Bytes>)> + '_ {
         self.subscribe_indexed_chunks(id, generation, chunknum)
-            .map(|(replay, seqnum, _, chunks)| (replay, seqnum, chunks))
+            .map(|(replay, seqnum, _, chunks, _)| (replay, seqnum, chunks))
     }
 
     pub(crate) fn subscribe_indexed_chunks(
@@ -1031,7 +1033,7 @@ impl Session {
         id: Sid,
         generation: u32,
         mut chunknum: u64,
-    ) -> impl Stream<Item = (bool, u64, u64, Vec<Bytes>)> + '_ {
+    ) -> impl Stream<Item = (bool, u64, u64, Vec<Bytes>, Bytes)> + '_ {
         async_stream::stream! {
             let mut replay = true;
             while !self.shutdown.is_terminated() {
@@ -1040,7 +1042,7 @@ impl Session {
                 }
                 // We absolutely cannot hold `shells` across an await point,
                 // since that would cause deadlocks.
-                let (seqnum, chunks, notified, caught_up) = {
+                let (seqnum, chunks, paste_mode, notified, caught_up) = {
                     let shells = self.shells.read();
                     let shell = match shells.get(&id) {
                         Some(shell) if !shell.closed => shell,
@@ -1052,6 +1054,7 @@ impl Session {
                     let notified = notify.notified_owned();
                     let mut seqnum = shell.byte_offset;
                     let mut chunks = Vec::new();
+                    let mut paste_mode = Bytes::new();
                     let current_chunks = shell.chunk_offset + shell.data.len() as u64;
                     if chunknum < current_chunks {
                         let start = chunknum.saturating_sub(shell.chunk_offset) as usize;
@@ -1070,13 +1073,16 @@ impl Session {
                             end += 1;
                         }
                         chunks = shell.data[start..end].to_vec();
+                        if let Some(Some(mode)) = shell.paste_modes.get(end - 1) {
+                            paste_mode = Bytes::copy_from_slice(&[*mode]);
+                        }
                         chunknum = shell.chunk_offset + end as u64;
                     }
-                    (seqnum, chunks, notified, chunknum >= current_chunks)
+                    (seqnum, chunks, paste_mode, notified, chunknum >= current_chunks)
                 };
 
                 if !chunks.is_empty() {
-                    yield (replay, seqnum, chunknum - chunks.len() as u64, chunks);
+                    yield (replay, seqnum, chunknum - chunks.len() as u64, chunks, paste_mode);
                     if caught_up {
                         replay = false;
                     }
@@ -2134,7 +2140,7 @@ mod tests {
         }
         let stream = session.subscribe_indexed_chunks(id, 0, 0);
         tokio::pin!(stream);
-        let (_, bytes, chunk, data) = stream.next().await.unwrap();
+        let (_, bytes, chunk, data, _) = stream.next().await.unwrap();
         assert_eq!((bytes, chunk), (50, 5));
         assert_eq!(data, [Bytes::from_static(b"retained")]);
     }

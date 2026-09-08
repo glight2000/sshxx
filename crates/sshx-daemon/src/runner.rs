@@ -441,6 +441,7 @@ async fn forward_hosted_terminal(
                                 host_sequence = output.sequence;
                             }
                             let start = host_sequence.saturating_sub(output.sequence) as usize;
+                            if start == 0 { output_buffer.restore_modes(&output.paste_checkpoint); }
                             let bytes = &output.data[start.min(output.data.len())..];
                             output_buffer.append(bytes, false);
                             host_sequence = end;
@@ -773,6 +774,7 @@ async fn echo_task(
             ShellData::Data(data) => {
                 let msg = String::from_utf8_lossy(&data);
                 let term_data = TerminalData {
+                    paste_mode: Default::default(),
                     id: id.0,
                     data: encrypt
                         .segment(0x100000000 | id.0 as u64, seq, msg.as_bytes())

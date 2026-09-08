@@ -2,6 +2,7 @@ type TextHistory = {
   chunks: string[];
   start: number;
   length: number;
+  pasteMode?: boolean;
 };
 
 /** Bounded terminal output retained only for remounting the local renderer. */
@@ -15,7 +16,7 @@ export class TerminalHistory {
     this.maxLength = maxLength;
   }
 
-  append(id: number, data: string) {
+  append(id: number, data: string, pasteMode?: boolean) {
     if (!data) return;
     const history = this.histories.get(id) ?? {
       chunks: [],
@@ -23,6 +24,7 @@ export class TerminalHistory {
       length: 0,
     };
     if (!this.histories.has(id)) this.histories.set(id, history);
+    history.pasteMode = pasteMode;
     history.chunks.push(data);
     history.length += data.length;
 
@@ -53,6 +55,10 @@ export class TerminalHistory {
 
   delete(id: number) {
     this.histories.delete(id);
+  }
+
+  pasteMode(id: number) {
+    return this.histories.get(id)?.pasteMode;
   }
 
   retain(ids: ReadonlySet<number>) {

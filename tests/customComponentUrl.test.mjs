@@ -25,3 +25,27 @@ test("rejects recursive, unsupported, and incomplete custom component URLs", () 
   );
   assert.match(resolveCustomComponentUrl("/relative", viewer).error, /valid/);
 });
+
+test("mixed-content errors are local to preview and do not invalidate shared navigation", () => {
+  const target = "http://dashboard.example.test/";
+  const resolved = resolveCustomComponentUrl(
+    target,
+    "https://sshxx.example.test/",
+  );
+  assert.equal(resolved.url, target);
+  assert.equal(resolved.error, "");
+  assert.match(resolved.previewError, /mixed content/);
+  assert.equal(
+    resolveCustomComponentUrl(target, "http://sshxx.example.test/")
+      .previewError,
+    undefined,
+  );
+  for (const host of ["localhost", "127.0.0.1", "[::1]"])
+    assert.equal(
+      resolveCustomComponentUrl(
+        `http://${host}/`,
+        "https://sshxx.example.test/",
+      ).previewError,
+      undefined,
+    );
+});

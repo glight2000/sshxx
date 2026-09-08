@@ -58,6 +58,13 @@ impl Session {
                     let shell = SerializedShell {
                         seqnum: shell.seqnum,
                         data: shell.data[prefix..].to_vec(),
+                        paste_modes: shell.paste_modes[prefix..]
+                            .iter()
+                            .map(|mode| {
+                                mode.map(|byte| bytes::Bytes::copy_from_slice(&[byte]))
+                                    .unwrap_or_default()
+                            })
+                            .collect(),
                         chunk_offset,
                         byte_offset,
                         closed: shell.closed,
@@ -245,7 +252,22 @@ impl Session {
             );
             validate_terminal_window_size(winsize.width, winsize.height)?;
             winsizes.push((Sid(sid), winsize));
+            let paste_modes = if shell.paste_modes.is_empty() {
+                vec![Default::default(); shell.data.len()]
+            } else {
+                ensure!(
+                    shell.paste_modes.len() == shell.data.len()
+                        && shell.paste_modes.iter().all(|mode| mode.len() <= 1),
+                    "invalid terminal paste checkpoints"
+                );
+                shell
+                    .paste_modes
+                    .into_iter()
+                    .map(|mode| mode.first().copied())
+                    .collect()
+            };
             let shell = State {
+                paste_modes,
                 last_received_sequence: None,
                 last_accepted: None,
                 seqnum: shell.seqnum,

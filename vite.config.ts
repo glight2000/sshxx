@@ -12,7 +12,7 @@ const tauriDevHost = process.env.TAURI_DEV_HOST;
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(
-      "0.13.2-" + commitHash + (sourceChanges ? "-dev" : ""),
+      "0.13.3-" + commitHash + (sourceChanges ? "-dev" : ""),
     ),
     __RELEASE_VERSION__: JSON.stringify(
       JSON.parse(

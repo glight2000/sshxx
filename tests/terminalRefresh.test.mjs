@@ -21,15 +21,19 @@ test("hidden pages cancel zoom paints and refresh only the final visible scale",
   refresh.update(0.7, false, true);
   refresh.update(0.7, true, true);
   t.mock.timers.tick(120);
-  assert.equal(paints, 1);
+  assert.equal(
+    paints,
+    2,
+    "showing a hidden terminal repaints at the same zoom",
+  );
   // Returning to the already painted zoom must cancel an intermediate zoom.
   refresh.update(0.9, true, true);
   refresh.update(0.7, true, true);
   t.mock.timers.tick(120);
-  assert.equal(paints, 1);
+  assert.equal(paints, 2);
   refresh.update(1, true, true);
   refresh.dispose();
   refresh.update(2, true, true);
   t.mock.timers.tick(120);
-  assert.equal(paints, 1);
+  assert.equal(paints, 2);
 });

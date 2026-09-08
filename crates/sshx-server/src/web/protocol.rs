@@ -367,7 +367,17 @@ pub enum WsServer {
     ChunksGeneration(Sid, u32, u32, bool, u64, Vec<Bytes>),
     /// Recoverable batch: shell, page, PTY generation, subscription token,
     /// replay, byte sequence, starting chunk index, encrypted chunks.
-    TerminalBatch(Sid, u32, u32, u32, bool, u64, u64, Vec<Bytes>),
+    TerminalBatch(
+        Sid,
+        u32,
+        u32,
+        u32,
+        bool,
+        u64,
+        u64,
+        Vec<Bytes>,
+        #[serde(default)] Bytes,
+    ),
     /// This viewer's subscription stopped waiting for a renderer acknowledgement.
     TerminalStalled(Sid, u32, u32, u32),
     /// Get a chat message tuple `(uid, name, text)` from the room.

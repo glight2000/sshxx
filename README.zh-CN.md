@@ -39,8 +39,9 @@ README 只保留项目级介绍。完整功能和全量截图请查看
 **[功能指南](https://github.com/glight2000/sshxx/wiki/Features)**，或从
 **[sshxx Wiki 首页](https://github.com/glight2000/sshxx/wiki)** 开始阅读。
 
-**v0.13.2**
-增加桌面侧栏/手机全屏聊天、持久化的最近 500 条消息，以及聊天和 note 的图片、视频和文件附件（不含语音发送）。设置现在可以真正重启已安装的 daemon 或 terminal-host 程序。参见[模块版本与升级注意事项](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0132-upgrade-notes)。这些功能需要一起更新 server 和 daemon；兼容的 terminal-host 可以继续运行，重启它会中断全部托管任务。
+**v0.13.4**
+让页面按各自的位置与缩放淡入淡出、切回页面时重绘终端、按触控板手势起点分配滚动行为，并将取消焦点改为
+**Shift+Esc**，普通 Esc 交给终端内部处理。同时恢复历史输出回放中的整段粘贴模式，并明确提示 HTTPS 工作区中的 HTTP 预览限制。参见[模块版本与升级注意事项](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0134-upgrade-notes)。请一起更新 server 和 daemon；完整的粘贴状态恢复还涉及 host 更新，需先保存任务再安排重启，因为它会中断全部托管进程。在此之前，兼容的旧 host 可以继续运行。
 
 ## 架构
 

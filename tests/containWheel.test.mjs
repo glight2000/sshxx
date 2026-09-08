@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { wheelDestination } from "../src/lib/wheelInput.ts";
 import {
   containWheel,
   scrollWheel,
@@ -104,17 +105,20 @@ test("canvas capture routes to the focused surface, not the hovered window", () 
       scrolls = 0;
     const camera = [];
     const surface = containWheel(focused, () => scrolls++);
+    let device = "mouse";
     const cleanup = installCanvasWheel(
       canvas,
       () => current,
-      (_event, hasFocus) => (hasFocus ? "component" : "pan"),
+      (_event, hasFocus, overFocus) =>
+        wheelDestination(hasFocus, device, overFocus),
       (_event, mode) => camera.push(mode),
     );
-    const wheel = (target, ctrlKey = false) => {
+    const wheel = (target, ctrlKey = false, timeStamp = 0) => {
       const event = new Event("wheel", { cancelable: true });
       Object.defineProperties(event, {
         target: { value: target },
         ctrlKey: { value: ctrlKey },
+        timeStamp: { value: timeStamp },
       });
       canvas.dispatchEvent(event);
       return event.defaultPrevented;
@@ -136,6 +140,15 @@ test("canvas capture routes to the focused surface, not the hovered window", () 
     const menu = new Element();
     menu.closest = () => menu;
     assert.equal(wheel(menu), false, "menus retain their native routing");
+    device = "trackpad";
+    wheel(focused, false, 200);
+    wheel(canvas, false, 220);
+    assert.equal(scrolls, 4, "a gesture starting inside stays inside");
+    wheel(canvas, false, 500);
+    wheel(focused, false, 520);
+    assert.equal(scrolls, 4, "a gesture starting outside keeps panning");
+    assert.deepEqual(camera, ["pan", "pan"]);
+    camera.length = 0;
     current = null;
     wheel(hovered);
     assert.deepEqual(

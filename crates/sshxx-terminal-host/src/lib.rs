@@ -7,6 +7,7 @@
 use std::path::Path;
 
 pub mod client;
+pub mod paste_mode;
 pub mod process_restart;
 pub mod protocol;
 #[cfg(feature = "host")]

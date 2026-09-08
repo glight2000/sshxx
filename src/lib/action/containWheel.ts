@@ -1,3 +1,5 @@
+import { WHEEL_GESTURE_GAP_MS } from "../wheelInput.ts";
+
 const surfaces = new WeakMap<HTMLElement, (event: WheelEvent) => void>();
 const forwardedWheels = new WeakSet<Event>();
 
@@ -109,18 +111,41 @@ export function installCanvasWheel(
   navigate: (
     event: WheelEvent,
     focused: boolean,
+    startedOverFocus: boolean,
   ) => "component" | "pan" | "zoom",
   moveCamera: (event: WheelEvent, mode: "pan" | "zoom") => void,
 ) {
+  let lastTime = -Infinity;
+  let gestureWindow: HTMLElement | null = null;
+  let gestureTarget: Element | null = null;
   const wheel = (event: WheelEvent) => {
     // Ctrl+wheel/pinch is handled by the existing camera capture listener.
-    if (event.ctrlKey || forwardedWheels.has(event)) return;
+    if (forwardedWheels.has(event)) return;
+    if (event.ctrlKey) {
+      lastTime = -Infinity;
+      return;
+    }
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest(".panel, [role=menu], [role=dialog]")) return;
+    if (target?.closest(".panel, [role=menu], [role=dialog]")) {
+      lastTime = -Infinity;
+      return;
+    }
     event.preventDefault();
     event.stopImmediatePropagation();
     const focused = focusedWindow();
-    const destination = navigate(event, focused !== null);
+    if (
+      event.timeStamp - lastTime > WHEEL_GESTURE_GAP_MS ||
+      event.timeStamp < lastTime ||
+      gestureWindow !== focused
+    ) {
+      gestureWindow = focused;
+      gestureTarget = target;
+    }
+    lastTime = event.timeStamp;
+    const startedOverFocus = Boolean(
+      focused && gestureTarget && focused.contains(gestureTarget),
+    );
+    const destination = navigate(event, focused !== null, startedOverFocus);
     if (destination !== "component") {
       moveCamera(event, destination);
       return;

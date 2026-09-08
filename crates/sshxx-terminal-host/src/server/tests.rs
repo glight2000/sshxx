@@ -244,7 +244,7 @@ async fn broken_output_connection_preserves_the_owned_pty_and_replay() {
         program: "/bin/sh".into(),
         args: vec![
             "-c".into(),
-            "read value; printf 'STILL_RUNNING\\n'; read value".into(),
+            "read value; printf '\\033[?2004hSTILL_RUNNING\\n'; read value".into(),
         ],
         working_directory: state.path().to_string_lossy().into_owned(),
         environment: Default::default(),
@@ -292,6 +292,12 @@ async fn broken_output_connection_preserves_the_owned_pty_and_replay() {
     })
     .await
     .unwrap();
+    let replay_from = session
+        .snapshot_after(0)
+        .bytes
+        .windows(13)
+        .position(|bytes| bytes == b"STILL_RUNNING")
+        .unwrap() as u64;
     let mut reattached = connect(&host).await;
     write_frame(
         &mut reattached.peer,
@@ -299,7 +305,7 @@ async fn broken_output_connection_preserves_the_owned_pty_and_replay() {
             2,
             Message::AttachTerminal(AttachTerminal {
                 terminal_id: session.id().into(),
-                after_sequence: 0,
+                after_sequence: replay_from,
             }),
         ),
     )
@@ -318,6 +324,13 @@ async fn broken_output_connection_preserves_the_owned_pty_and_replay() {
                     .windows(13)
                     .any(|bytes| bytes == b"STILL_RUNNING")
                 {
+                    assert_eq!(
+                        crate::paste_mode::PasteMode::restore(&output.paste_checkpoint)
+                            .unwrap()
+                            .enabled(),
+                        Some(true)
+                    );
+                    assert!(!output.data.windows(8).any(|bytes| bytes == b"\x1b[?2004h"));
                     break;
                 }
             }
