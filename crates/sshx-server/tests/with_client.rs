@@ -11,6 +11,152 @@ use crate::common::*;
 
 pub mod common;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_checkpoint_cold_read_history_and_live_fence_are_isolated() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(
+        &server.endpoint(),
+        "",
+        Runner::Shell("/bin/dash".into()),
+        true,
+    )
+    .await?;
+    let key = controller.encryption_key().to_owned();
+    let write_url = controller.write_url().unwrap().to_owned();
+    let password = write_url.split(',').nth(1).unwrap();
+    let endpoint = server.ws_endpoint(controller.name());
+    let encrypt = Encrypt::new(&key);
+    let controller_task = tokio::spawn(async move { controller.run().await });
+    let mut writer = ClientSocket::connect(&endpoint, &key, Some(password)).await?;
+    let mut reader = ClientSocket::connect(&endpoint, &key, None).await?;
+    writer.flush().await;
+    writer
+        .send(WsClient::CreateWindowed(
+            0,
+            0,
+            714,
+            518,
+            24,
+            80,
+            1,
+            "Dracula".into(),
+        ))
+        .await;
+    for _ in 0..30 {
+        writer.flush().await;
+        if writer.shells.contains_key(&Sid(1)) {
+            break;
+        }
+    }
+    writer
+        .send(WsClient::SubscribeGeneration(Sid(1), 1, 0, 0))
+        .await;
+    writer.send_input(Sid(1), b"i=0; while [ $i -lt 300 ]; do printf 'archive-%03d\\n' $i; i=$((i+1)); done; printf 'CHECKPOINT_READY\\n'\r").await;
+    for _ in 0..60 {
+        writer.flush().await;
+        if writer.read(Sid(1)).contains("archive-299") {
+            break;
+        }
+    }
+    assert!(writer.read(Sid(1)).contains("archive-299"));
+    reader.flush().await;
+    let request_id = "a".repeat(32);
+    reader
+        .send(WsClient::TerminalCheckpoint(
+            Sid(1),
+            1,
+            0,
+            request_id.clone(),
+            12,
+            None,
+            0,
+        ))
+        .await;
+    for _ in 0..60 {
+        reader.flush().await;
+        if !reader.terminal_checkpoints.is_empty() {
+            break;
+        }
+    }
+    let response = reader
+        .terminal_checkpoints
+        .pop()
+        .context("checkpoint was not routed back")?;
+    assert!(
+        !response.data.is_empty(),
+        "mirror could not produce a checkpoint"
+    );
+    assert_eq!(response.request_id, request_id);
+    let nonce: &[u8; 12] = response.nonce.as_ref().try_into()?;
+    let state: serde_json::Value =
+        serde_json::from_slice(&encrypt.open_checkpoint(nonce, &response.data)?)?;
+    assert_eq!(state["sequence"].as_u64(), Some(response.sequence));
+    assert_eq!(
+        state["state"]["normal"]["lines"].as_array().unwrap().len(),
+        36
+    );
+    writer.flush().await;
+    assert!(
+        writer.terminal_checkpoints.is_empty(),
+        "checkpoint leaked to a different viewer"
+    );
+    reader
+        .send(WsClient::SubscribeCheckpoint(
+            Sid(1),
+            1,
+            0,
+            9,
+            Some(response.sequence),
+        ))
+        .await;
+    writer
+        .send_input(Sid(1), b"printf 'AFTER_CHECKPOINT\\n'\r")
+        .await;
+    for _ in 0..30 {
+        reader.flush().await;
+        if reader.read(Sid(1)).contains("AFTER_CHECKPOINT") {
+            break;
+        }
+    }
+    assert!(reader.read(Sid(1)).contains("AFTER_CHECKPOINT"));
+    assert!(
+        !reader.read(Sid(1)).contains("archive-000"),
+        "cold viewer replayed old output before its fence"
+    );
+    let cursor = &state["state"]["archive"];
+    reader
+        .send(WsClient::TerminalCheckpoint(
+            Sid(1),
+            1,
+            0,
+            "b".repeat(32),
+            12,
+            cursor["epoch"].as_u64(),
+            cursor["before"].as_u64().unwrap(),
+        ))
+        .await;
+    for _ in 0..60 {
+        reader.flush().await;
+        if !reader.terminal_checkpoints.is_empty() {
+            break;
+        }
+    }
+    let page = reader
+        .terminal_checkpoints
+        .pop()
+        .context("history page was not routed back")?;
+    let nonce: &[u8; 12] = page.nonce.as_ref().try_into()?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&encrypt.open_checkpoint(nonce, &page.data)?)?;
+    assert_eq!(value["state"]["lines"].as_array().unwrap().len(), 12);
+    assert_eq!(value["state"]["before"], cursor["before"]);
+    writer.send(WsClient::Close(Sid(1), 1)).await;
+    writer.flush().await;
+    controller_task.abort();
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_streams(
 ) -> Result<()> {
@@ -83,6 +229,8 @@ async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_s
     for id in [60, 61] {
         tx.send(ClientUpdate {
             client_message: Some(ClientMessage::Data(TerminalData {
+                output_epoch: Default::default(),
+                output_gap: false,
                 id,
                 seq: 0,
                 retained_sequence: Some(0),
@@ -104,6 +252,8 @@ async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_s
     for seq in [base + 64, base] {
         tx.send(ClientUpdate {
             client_message: Some(ClientMessage::Data(TerminalData {
+                output_epoch: Default::default(),
+                output_gap: false,
                 id: 60,
                 seq,
                 retained_sequence: Some(base),

@@ -56,6 +56,7 @@ impl Session {
 
                     let winsize = winsizes.get(sid).cloned().unwrap_or_default();
                     let shell = SerializedShell {
+                        output_epoch: shell.output_epoch.clone(),
                         seqnum: shell.seqnum,
                         data: shell.data[prefix..].to_vec(),
                         paste_modes: shell.paste_modes[prefix..]
@@ -266,7 +267,12 @@ impl Session {
                     .map(|mode| mode.first().copied())
                     .collect()
             };
+            ensure!(
+                shell.output_epoch.is_empty() || shell.output_epoch.len() == 16,
+                "invalid terminal output epoch"
+            );
             let shell = State {
+                output_epoch: shell.output_epoch,
                 paste_modes,
                 last_received_sequence: None,
                 last_accepted: None,

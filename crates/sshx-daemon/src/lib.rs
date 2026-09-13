@@ -16,6 +16,7 @@ mod runtime_update;
 mod safe_file;
 mod ssh_profiles;
 pub mod terminal;
+mod terminal_checkpoint;
 pub mod terminal_host;
 mod uploads;
 mod workspace;

@@ -94,6 +94,8 @@ pub(crate) struct BufferSnapshot {
 struct SessionState {
     output: OutputBuffer,
     running: bool,
+    output_complete: bool,
+    exit_reported: bool,
     exit_code: u32,
     signal: String,
     rows: u16,
@@ -172,6 +174,8 @@ impl TerminalSession {
             state: Mutex::new(SessionState {
                 output: OutputBuffer::new(),
                 running: true,
+                output_complete: false,
+                exit_reported: false,
                 exit_code: 0,
                 signal: String::new(),
                 rows: size.rows,
@@ -204,7 +208,7 @@ impl TerminalSession {
 
     pub fn exit_event(&self) -> Option<SessionEvent> {
         let state = self.state.lock().expect("terminal session state poisoned");
-        (!state.running).then(|| SessionEvent::Exited {
+        state.exit_reported.then(|| SessionEvent::Exited {
             exit_code: state.exit_code,
             signal: state.signal.clone(),
             host_shutdown: self.host_shutdown.load(Ordering::Acquire),
@@ -298,21 +302,40 @@ impl TerminalSession {
     }
 
     fn mark_exited(&self, exit_code: u32, signal: String) {
-        let host_shutdown = self.host_shutdown.load(Ordering::Acquire);
         {
             let mut state = self.state.lock().expect("terminal session state poisoned");
             state.running = false;
             state.exit_code = exit_code;
             state.signal.clone_from(&signal);
         }
-        self.events
-            .send(SessionEvent::Exited {
-                exit_code,
-                signal,
-                host_shutdown,
-            })
-            .ok();
         self.command_tx.try_send(SessionCommand::Close).ok();
+        self.finish_exit();
+    }
+
+    fn mark_output_complete(&self) {
+        self.state
+            .lock()
+            .expect("terminal session state poisoned")
+            .output_complete = true;
+        self.finish_exit();
+    }
+
+    /// Child exit and PTY EOF are independent. Publish once, after every output
+    /// event, so both live subscribers and a late attach see the complete tail.
+    fn finish_exit(&self) {
+        let event = {
+            let mut state = self.state.lock().expect("terminal session state poisoned");
+            if state.running || !state.output_complete || state.exit_reported {
+                return;
+            }
+            state.exit_reported = true;
+            SessionEvent::Exited {
+                exit_code: state.exit_code,
+                signal: state.signal.clone(),
+                host_shutdown: self.host_shutdown.load(Ordering::Acquire),
+            }
+        };
+        self.events.send(event).ok();
     }
 
     fn record_size(&self, size: PtySize) {
@@ -365,6 +388,7 @@ fn spawn_reader_thread(session: Arc<TerminalSession>, mut reader: Box<dyn Read +
                     Ok(length) => session.append_output(&buffer[..length]),
                 }
             }
+            session.mark_output_complete();
         })
         .expect("failed to spawn terminal output thread");
 }
@@ -429,6 +453,52 @@ fn working_directory_for_process(_process_id: u32) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{OutputBuffer, PasteMode, OUTPUT_BUFFER_BYTES};
+
+    #[test]
+    fn exit_is_published_once_after_output_in_either_completion_order() {
+        use super::*;
+        for process_first in [true, false] {
+            let session = TerminalSession {
+                id: "synthetic-tail".into(),
+                process_id: 0,
+                command_tx: mpsc::channel(1).0,
+                events: broadcast::channel(8).0,
+                state: Mutex::new(SessionState {
+                    output: OutputBuffer::new(),
+                    running: true,
+                    output_complete: false,
+                    exit_reported: false,
+                    exit_code: 0,
+                    signal: String::new(),
+                    rows: 24,
+                    columns: 80,
+                }),
+                host_shutdown: AtomicBool::new(false),
+            };
+            let mut events = session.subscribe();
+            if process_first {
+                session.mark_exited(7, String::new());
+                assert!(session.exit_event().is_none());
+                assert!(events.try_recv().is_err());
+            }
+            session.append_output(b"final output");
+            session.mark_output_complete();
+            if !process_first {
+                assert!(session.exit_event().is_none());
+                session.mark_exited(7, String::new());
+            }
+            assert!(
+                matches!(events.try_recv().unwrap(), SessionEvent::Output { data, .. } if &*data == b"final output")
+            );
+            assert!(matches!(
+                events.try_recv().unwrap(),
+                SessionEvent::Exited { exit_code: 7, .. }
+            ));
+            session.mark_output_complete();
+            assert!(events.try_recv().is_err());
+            assert_eq!(session.snapshot_after(0).bytes, b"final output");
+        }
+    }
 
     #[test]
     fn bounded_host_replay_preserves_paste_mode_and_partial_control_sequence() {

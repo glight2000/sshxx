@@ -57,9 +57,44 @@ type TerminalChunks = Result<
         u64,
         Vec<Bytes>,
         Bytes,
+        Bytes,
     ),
-    (Sid, u32, TerminalChunkProtocol),
+    (Sid, u32, TerminalChunkProtocol, TerminalFailure),
 >;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalFailure {
+    Stalled,
+    Gap,
+}
+
+/// Exactly one forwarding task per subscribed terminal, including fence waits.
+#[derive(Default)]
+struct TerminalForwarders(HashMap<Sid, tokio::task::AbortHandle>);
+impl TerminalForwarders {
+    fn replace(&mut self, id: Sid, task: tokio::task::AbortHandle) {
+        if let Some(previous) = self.0.insert(id, task) {
+            previous.abort();
+        }
+    }
+    fn retain(&mut self, subscribed: &HashMap<Sid, (u32, TerminalChunkProtocol)>) {
+        self.0.retain(|id, task| {
+            if subscribed.contains_key(id) {
+                true
+            } else {
+                task.abort();
+                false
+            }
+        });
+    }
+}
+impl Drop for TerminalForwarders {
+    fn drop(&mut self) {
+        for task in self.0.values() {
+            task.abort();
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderAckWait {
@@ -105,23 +140,54 @@ fn resolve_terminal_subscription(
     }
 }
 
+enum TerminalCursor {
+    Chunk(u64),
+    Sequence(u64),
+}
+impl From<u64> for TerminalCursor {
+    fn from(value: u64) -> Self {
+        Self::Chunk(value)
+    }
+}
+
 fn spawn_chunk_forwarder(
     session: Arc<Session>,
     id: Sid,
     generation: u32,
     protocol: TerminalChunkProtocol,
-    chunknum: u64,
+    cursor: impl Into<TerminalCursor>,
     chunks_tx: mpsc::Sender<TerminalChunks>,
     mut rendered_rx: Option<mpsc::Receiver<()>>,
-) {
+) -> tokio::task::AbortHandle {
+    let cursor = cursor.into();
     let viewer_span = tracing::info_span!(
         "terminal_subscription",
         terminal_id = id.0,
         generation,
         ?protocol
     );
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
+        let (chunknum, mut byte_fence) = match cursor {
+            TerminalCursor::Chunk(chunk) => (chunk, None),
+            TerminalCursor::Sequence(sequence) => {
+                let resolve = async {
+                    loop {
+                        if let Some(chunk) = session.chunk_at_sequence(id, generation, sequence)? { return Ok::<_, anyhow::Error>(chunk); }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                };
+                match tokio::time::timeout(Duration::from_secs(5), resolve).await {
+                    Ok(Ok(chunk)) => (chunk, Some(sequence)),
+                    _ => { chunks_tx.send(Err((id, generation, protocol, TerminalFailure::Gap))).await.ok(); return; }
+                }
+            }
+        };
+        if !session.valid_chunk_cursor(id, generation, chunknum) {
+            chunks_tx.send(Err((id, generation, protocol, TerminalFailure::Gap))).await.ok();
+            return;
+        }
         let stream = session.subscribe_indexed_chunks(id, generation, chunknum);
+        let mut expected_chunk = chunknum;
         tokio::pin!(stream);
         let mut last_ack_batch = None::<u64>;
         let mut diagnostic_tick = tokio::time::interval(Duration::from_secs(10));
@@ -129,15 +195,43 @@ fn spawn_chunk_forwarder(
         loop {
             let item = tokio::select! {
                 _ = chunks_tx.closed() => break,
+                _ = async {
+                    if let Some(receiver) = rendered_rx.as_mut() {
+                        while receiver.recv().await.is_some() {}
+                    } else { std::future::pending::<()>().await; }
+                } => break,
                 item = stream.next() => item,
             };
-            let Some((replay, seqnum, start_chunk, chunks, paste_mode)) = item else {
+            let Some((replay, mut seqnum, mut start_chunk, mut chunks, paste_mode, output_epoch)) = item else {
                 break;
             };
+            if expected_chunk != 0 && start_chunk != expected_chunk {
+                chunks_tx.send(Err((id, generation, protocol, TerminalFailure::Gap))).await.ok();
+                break;
+            }
+            if let Some(fence) = byte_fence.take() {
+                if seqnum > fence {
+                    chunks_tx.send(Err((id, generation, protocol, TerminalFailure::Gap))).await.ok();
+                    break;
+                }
+                while let Some(first) = chunks.first() {
+                    let end = seqnum + first.len() as u64;
+                    if end > fence {
+                        chunks[0] = first.slice((fence - seqnum) as usize..);
+                        seqnum = fence;
+                        break;
+                    }
+                    seqnum = end;
+                    start_chunk += 1;
+                    chunks.remove(0);
+                }
+                if chunks.is_empty() { byte_fence = Some(fence); continue; }
+            }
             let Some(page_id) = session.shell_page(id) else {
                 break;
             };
             let batch_end = start_chunk + chunks.len() as u64;
+            expected_chunk = batch_end;
             if chunks_tx
                 .send(Ok((
                     id,
@@ -149,6 +243,7 @@ fn spawn_chunk_forwarder(
                     start_chunk,
                     chunks,
                     paste_mode,
+                    output_epoch,
                 )))
                 .await
                 .is_err()
@@ -180,13 +275,14 @@ fn spawn_chunk_forwarder(
                             generation,
                             "terminal renderer acknowledgement timed out; stopping the flow-controlled subscription"
                         );
-                        chunks_tx.send(Err((id, generation, protocol))).await.ok();
+                        chunks_tx.send(Err((id, generation, protocol, TerminalFailure::Stalled))).await.ok();
                         break;
                     }
                 }
             }
         }
     }.instrument(viewer_span));
+    task.abort_handle()
 }
 
 fn create_shell(message: NewShell) -> ServerMessage {
@@ -381,6 +477,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
         TERMINAL_RENDER_ACK_CAPABILITY.into(),
         TERMINAL_GENERATION_CAPABILITY.into(),
         TERMINAL_RECOVERY_CAPABILITY.into(),
+        "terminal-output-epoch-v1".into(),
     ];
     if metadata
         .daemon_capabilities
@@ -410,6 +507,13 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     {
         capabilities.push("workspace-media-v1".into());
     }
+    if metadata
+        .daemon_capabilities
+        .iter()
+        .any(|value| value == "terminal-checkpoint-v1")
+    {
+        capabilities.push("terminal-checkpoint-v1".into());
+    }
     send(socket, WsServer::Capabilities(capabilities)).await?;
     if let Some(info) = session.runtime_info() {
         send(socket, WsServer::RuntimeInfo(info)).await?;
@@ -421,11 +525,15 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     }
 
     let mut subscribed = HashMap::<Sid, (u32, TerminalChunkProtocol)>::new();
+    let mut forwarders = TerminalForwarders::default();
+    let mut output_epoch_supported = false;
     let mut render_acks = HashMap::<Sid, mpsc::Sender<()>>::new();
     let mut pending_batch_ends = HashMap::<Sid, u64>::new();
     // Filesystem responses are returned only to the WebSocket that requested
     // them, even though the daemon-to-server transport is session-scoped.
     let mut pending_file_requests = HashMap::<String, Instant>::new();
+    let mut pending_checkpoints = HashMap::<String, Instant>::new();
+    let mut last_checkpoint = Instant::now() - Duration::from_millis(50);
     let mut pending_system_actions = HashMap::<String, Instant>::new();
     let mut last_custom_click = Instant::now() - CUSTOM_CLICK_MIN_INTERVAL;
     let mut last_chat = Instant::now() - Duration::from_millis(250);
@@ -447,6 +555,9 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         continue;
                     }
                 }
+                if let WsServer::TerminalCheckpoint(response) = &msg {
+                    if pending_checkpoints.remove(&response.request_id).is_none() { continue; }
+                }
                 if let WsServer::SystemActionResult(request_id, _, _, _) = &msg {
                     if pending_system_actions.remove(request_id).is_none() {
                         continue;
@@ -457,6 +568,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
             }
             Some(shells) = shells_stream.next() => {
                 subscribed.retain(|id, _| shells.iter().any(|(live, _)| live == id));
+                forwarders.retain(&subscribed);
                 render_acks.retain(|id, _| subscribed.contains_key(id));
                 pending_batch_ends.retain(|id, _| subscribed.contains_key(id));
                 send(socket, WsServer::Shells(shells)).await?;
@@ -483,9 +595,9 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 continue;
             }
             Some(event) = chunks_rx.recv() => {
-                let (id, page_id, generation, protocol, replay, seqnum, chunknum, chunks, paste_mode) = match event {
+                let (id, page_id, generation, protocol, replay, seqnum, chunknum, chunks, paste_mode, output_epoch) = match event {
                     Ok(batch) => batch,
-                    Err((id, generation, protocol)) => {
+                    Err((id, generation, protocol, failure)) => {
                         if subscribed.get(&id) != Some(&(generation, protocol)) {
                             continue;
                         }
@@ -493,8 +605,16 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                         render_acks.remove(&id);
                         pending_batch_ends.remove(&id);
                         if let TerminalChunkProtocol::Recoverable(token) = protocol {
+                            if failure == TerminalFailure::Gap && !output_epoch_supported {
+                                send(socket, WsServer::Error("Terminal output retention was exceeded; reload with an updated Web client.".into())).await?;
+                                break;
+                            }
                             if let Some(page) = session.shell_page(id) {
-                                send(socket, WsServer::TerminalStalled(id, page, generation, token)).await?;
+                                let message = match failure {
+                                    TerminalFailure::Stalled => WsServer::TerminalStalled(id, page, generation, token),
+                                    TerminalFailure::Gap => WsServer::TerminalGap(id, page, generation, token),
+                                };
+                                send(socket, message).await?;
                             }
                             continue;
                         }
@@ -507,11 +627,20 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 if subscribed.get(&id) != Some(&(generation, protocol)) {
                     continue;
                 }
+                if !output_epoch.is_empty() && !output_epoch_supported {
+                    send(socket, WsServer::Error("Upgrade the Web client to read this terminal's independent output encryption.".into())).await?;
+                    break;
+                }
                 let message = match protocol {
                     TerminalChunkProtocol::Recoverable(token) => {
                         pending_batch_ends.insert(id, chunknum + chunks.len() as u64);
-                        WsServer::TerminalBatch(id, page_id, generation, token, replay, seqnum, chunknum, chunks, paste_mode)
+                        if output_epoch.is_empty() {
+                            WsServer::TerminalBatch(id, page_id, generation, token, replay, seqnum, chunknum, chunks, paste_mode)
+                        } else {
+                            WsServer::TerminalBatchEpoch(id, page_id, generation, token, replay, seqnum, chunknum, chunks, paste_mode, output_epoch)
+                        }
                     }
+                    _ if !output_epoch.is_empty() => WsServer::ChunksEpoch(id, page_id, generation, replay, seqnum, chunks, output_epoch),
                     TerminalChunkProtocol::Legacy => WsServer::Chunks(WsTerminalChunks::Legacy(
                         id, page_id, replay, seqnum, chunks,
                     )),
@@ -534,6 +663,9 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
         };
 
         match msg {
+            WsClient::TerminalOutputEpoch => {
+                output_epoch_supported = true;
+            }
             WsClient::Authenticate(_, _) => {}
             WsClient::SetName(name) => {
                 if !name.is_empty() {
@@ -1846,14 +1978,17 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 }
                 subscribed.insert(id, (generation, protocol));
                 render_acks.remove(&id);
-                spawn_chunk_forwarder(
-                    Arc::clone(&session),
+                forwarders.replace(
                     id,
-                    generation,
-                    protocol,
-                    chunknum,
-                    chunks_tx.clone(),
-                    None,
+                    spawn_chunk_forwarder(
+                        Arc::clone(&session),
+                        id,
+                        generation,
+                        protocol,
+                        chunknum,
+                        chunks_tx.clone(),
+                        None,
+                    ),
                 );
             }
             WsClient::SubscribeFlowControlled(subscription) => {
@@ -1872,14 +2007,17 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 subscribed.insert(id, (generation, protocol));
                 let (rendered_tx, rendered_rx) = mpsc::channel(1);
                 render_acks.insert(id, rendered_tx);
-                spawn_chunk_forwarder(
-                    Arc::clone(&session),
+                forwarders.replace(
                     id,
-                    generation,
-                    protocol,
-                    chunknum,
-                    chunks_tx.clone(),
-                    Some(rendered_rx),
+                    spawn_chunk_forwarder(
+                        Arc::clone(&session),
+                        id,
+                        generation,
+                        protocol,
+                        chunknum,
+                        chunks_tx.clone(),
+                        Some(rendered_rx),
+                    ),
                 );
             }
             WsClient::SubscribeGeneration(id, page_id, generation, chunknum) => {
@@ -1892,14 +2030,17 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 }
                 subscribed.insert(id, (generation, TerminalChunkProtocol::Generation));
                 render_acks.remove(&id);
-                spawn_chunk_forwarder(
-                    Arc::clone(&session),
+                forwarders.replace(
                     id,
-                    generation,
-                    TerminalChunkProtocol::Generation,
-                    chunknum,
-                    chunks_tx.clone(),
-                    None,
+                    spawn_chunk_forwarder(
+                        Arc::clone(&session),
+                        id,
+                        generation,
+                        TerminalChunkProtocol::Generation,
+                        chunknum,
+                        chunks_tx.clone(),
+                        None,
+                    ),
                 );
             }
             WsClient::SubscribeFlowControlledGeneration(id, page_id, generation, chunknum) => {
@@ -1913,14 +2054,17 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 subscribed.insert(id, (generation, TerminalChunkProtocol::Generation));
                 let (rendered_tx, rendered_rx) = mpsc::channel(1);
                 render_acks.insert(id, rendered_tx);
-                spawn_chunk_forwarder(
-                    Arc::clone(&session),
+                forwarders.replace(
                     id,
-                    generation,
-                    TerminalChunkProtocol::Generation,
-                    chunknum,
-                    chunks_tx.clone(),
-                    Some(rendered_rx),
+                    spawn_chunk_forwarder(
+                        Arc::clone(&session),
+                        id,
+                        generation,
+                        TerminalChunkProtocol::Generation,
+                        chunknum,
+                        chunks_tx.clone(),
+                        Some(rendered_rx),
+                    ),
                 );
             }
             WsClient::SubscribeRecoverable(id, page_id, generation, token, chunknum) => {
@@ -1932,25 +2076,86 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     continue;
                 }
                 let protocol = TerminalChunkProtocol::Recoverable(token);
-                // A new token is accepted only after timeout or generation change.
-                if subscribed
-                    .get(&id)
-                    .is_some_and(|(current, _)| *current == generation)
-                {
+                // Renderer failure may replace a subscription before its timeout.
+                if subscribed.get(&id) == Some(&(generation, protocol)) {
                     continue;
                 }
                 subscribed.insert(id, (generation, protocol));
                 pending_batch_ends.remove(&id);
                 let (sender, receiver) = mpsc::channel(1);
                 render_acks.insert(id, sender);
-                spawn_chunk_forwarder(
-                    Arc::clone(&session),
+                forwarders.replace(
                     id,
-                    generation,
-                    protocol,
-                    chunknum,
-                    chunks_tx.clone(),
-                    Some(receiver),
+                    spawn_chunk_forwarder(
+                        Arc::clone(&session),
+                        id,
+                        generation,
+                        protocol,
+                        chunknum,
+                        chunks_tx.clone(),
+                        Some(receiver),
+                    ),
+                );
+            }
+            WsClient::TerminalCheckpoint(
+                id,
+                _page_id,
+                generation,
+                request_id,
+                history,
+                epoch,
+                before,
+            ) => {
+                pending_checkpoints.retain(|_, started| started.elapsed() < Duration::from_secs(5));
+                // Reads follow stable terminal identity through page moves;
+                // geometry mutations still validate the originating page.
+                if session.shell_generation(id) != Some(generation)
+                    || history > 10000
+                    || request_id.len() != 32
+                    || !request_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || pending_checkpoints.len() >= 8
+                    || last_checkpoint.elapsed() < Duration::from_millis(50)
+                {
+                    continue;
+                }
+                last_checkpoint = Instant::now();
+                pending_checkpoints.insert(request_id.clone(), Instant::now());
+                update_tx
+                    .send(ServerMessage::TerminalCheckpoint(
+                        sshx_core::proto::TerminalCheckpointRequest {
+                            id: id.0,
+                            request_id,
+                            generation,
+                            history,
+                            archive_epoch: epoch,
+                            before,
+                        },
+                    ))
+                    .await?;
+            }
+            WsClient::SubscribeCheckpoint(id, _page_id, generation, token, sequence) => {
+                if session.shell_generation(id) != Some(generation) {
+                    continue;
+                }
+                let protocol = TerminalChunkProtocol::Recoverable(token);
+                if subscribed.get(&id) == Some(&(generation, protocol)) {
+                    continue;
+                }
+                subscribed.insert(id, (generation, protocol));
+                pending_batch_ends.remove(&id);
+                let (sender, receiver) = mpsc::channel(1);
+                render_acks.insert(id, sender);
+                forwarders.replace(
+                    id,
+                    spawn_chunk_forwarder(
+                        Arc::clone(&session),
+                        id,
+                        generation,
+                        protocol,
+                        sequence.map_or(TerminalCursor::Chunk(0), TerminalCursor::Sequence),
+                        chunks_tx.clone(),
+                        Some(receiver),
+                    ),
                 );
             }
             WsClient::RenderedBatch(id, generation, token, next_chunk) => {
@@ -2083,6 +2288,160 @@ mod tests {
     use super::{
         same_ssh_host, valid_image_upload, valid_request_id, wait_for_render_ack, RenderAckWait,
     };
+
+    fn output_session() -> std::sync::Arc<crate::session::Session> {
+        let session = crate::session::Session::new(crate::session::Metadata {
+            encrypted_zeros: Default::default(),
+            name: "synthetic-output".into(),
+            write_password_hash: None,
+            daemon_version: String::new(),
+            terminal_host_version: String::new(),
+            daemon_capabilities: Vec::new(),
+        });
+        for id in [Sid(60), Sid(61)] {
+            session
+                .add_shell(id, (0, 0), 1, (24, 80), (640, 480), Default::default())
+                .unwrap();
+        }
+        std::sync::Arc::new(session)
+    }
+
+    #[tokio::test]
+    async fn resumed_and_suspended_viewers_report_gaps_without_appending_tails() {
+        use super::*;
+        let session = output_session();
+        session
+            .add_data(Sid(60), Bytes::from_static(b"old"), 0)
+            .unwrap();
+        let mut tasks = TerminalForwarders::default();
+        let (tx, mut rx) = mpsc::channel(4);
+        let (ack, receiver) = mpsc::channel(1);
+        tasks.replace(
+            Sid(60),
+            spawn_chunk_forwarder(
+                session.clone(),
+                Sid(60),
+                0,
+                TerminalChunkProtocol::Recoverable(1),
+                0,
+                tx.clone(),
+                Some(receiver),
+            ),
+        );
+        assert!(rx.recv().await.unwrap().is_ok());
+        let mut sequence = 3;
+        for _ in 0..40 {
+            session
+                .add_data(Sid(60), Bytes::from(vec![b'x'; 65536]), sequence)
+                .unwrap();
+            sequence += 65536;
+        }
+        ack.send(()).await.unwrap();
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            Err((Sid(60), 0, _, TerminalFailure::Gap))
+        ));
+        // Both a stale retained cursor and a cursor from a lost server incarnation
+        // must fail explicitly; zero still requests a fresh retained replay.
+        for cursor in [1, 1000] {
+            let (_ack, receiver) = mpsc::channel(1);
+            tasks.replace(
+                Sid(60),
+                spawn_chunk_forwarder(
+                    session.clone(),
+                    Sid(60),
+                    0,
+                    TerminalChunkProtocol::Recoverable(2),
+                    cursor,
+                    tx.clone(),
+                    Some(receiver),
+                ),
+            );
+            assert!(matches!(
+                rx.recv().await.unwrap(),
+                Err((Sid(60), 0, _, TerminalFailure::Gap))
+            ));
+        }
+        let (_ack, receiver) = mpsc::channel(1);
+        tasks.replace(
+            Sid(61),
+            spawn_chunk_forwarder(
+                session.clone(),
+                Sid(61),
+                0,
+                TerminalChunkProtocol::Recoverable(3),
+                0,
+                tx,
+                Some(receiver),
+            ),
+        );
+        session
+            .add_data(Sid(61), Bytes::from_static(b"sibling"), 0)
+            .unwrap();
+        assert!(matches!(rx.recv().await.unwrap(), Ok((Sid(61), ..))));
+    }
+
+    #[tokio::test]
+    async fn fence_tasks_are_replaced_and_cancelled_with_the_connection() {
+        use super::*;
+        let session = output_session();
+        let mut tasks = TerminalForwarders::default();
+        let (tx, _rx) = mpsc::channel(1);
+        let mut acknowledgements = Vec::new();
+        for token in 1..=100 {
+            let (ack, receiver) = mpsc::channel(1);
+            acknowledgements.push(ack);
+            tasks.replace(
+                Sid(60),
+                spawn_chunk_forwarder(
+                    session.clone(),
+                    Sid(60),
+                    0,
+                    TerminalChunkProtocol::Recoverable(token),
+                    TerminalCursor::Sequence(u64::MAX),
+                    tx.clone(),
+                    Some(receiver),
+                ),
+            );
+            tokio::task::yield_now().await;
+            assert_eq!(tasks.0.len(), 1);
+        }
+        drop(tasks);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while Arc::strong_count(&session) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn snapshot_fence_slices_an_overlapping_encrypted_chunk() {
+        use super::*;
+        let session = output_session();
+        session
+            .add_data(Sid(60), Bytes::from_static(b"first"), 0)
+            .unwrap();
+        let mut tasks = TerminalForwarders::default();
+        let (tx, mut rx) = mpsc::channel(1);
+        let (_ack, receiver) = mpsc::channel(1);
+        tasks.replace(
+            Sid(60),
+            spawn_chunk_forwarder(
+                session,
+                Sid(60),
+                0,
+                TerminalChunkProtocol::Recoverable(1),
+                TerminalCursor::Sequence(3),
+                tx,
+                Some(receiver),
+            ),
+        );
+        let (_, _, _, _, _, sequence, chunk, data, _, _) = rx.recv().await.unwrap().unwrap();
+        assert_eq!((sequence, chunk), (3, 0));
+        assert_eq!(data, [Bytes::from_static(b"st")]);
+    }
 
     #[tokio::test]
     async fn bounds_terminal_renderer_ack_waits() {

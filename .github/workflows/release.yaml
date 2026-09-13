@@ -50,6 +50,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          node <<'NODE' > "$RUNNER_TEMP/sshxx-release-notes.md"
+          const fs = require("node:fs");
+          const version = require("./release.json").version;
+          const manual = fs.readFileSync("docs/wiki/Installation-and-Releases.md", "utf8");
+          const heading = `## v${version} upgrade notes`;
+          const start = manual.indexOf(heading + "\n");
+          if (start < 0) throw new Error(`Missing release notes for v${version}`);
+          const body = start + heading.length;
+          const end = manual.indexOf("\n## ", body);
+          process.stdout.write(manual.slice(body, end < 0 ? undefined : end).trim() + "\n");
+          NODE
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true || {
               echo "Release $GITHUB_REF_NAME is already published." >&2
@@ -59,6 +70,7 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --verify-tag \
               --draft \
+              --notes-file "$RUNNER_TEMP/sshxx-release-notes.md" \
               --generate-notes \
               --title "sshxx $GITHUB_REF_NAME"
           fi

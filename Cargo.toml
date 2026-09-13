@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/*", "src-tauri"]
 default-members = ["crates/*"]
+exclude = ["clients/pocket-local"]
 resolver = "2"
 
 [workspace.package]
@@ -18,8 +19,8 @@ prost = "0.14.4"
 portable-pty = "0.9.0"
 rand = "0.10.2"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
-sshx-core = { package = "sshxx-core", version = "0.11.4", path = "crates/sshx-core" }
-sshxx-terminal-host = { version = "0.10.3", path = "crates/sshxx-terminal-host", default-features = false }
+sshx-core = { package = "sshxx-core", version = "0.11.5", path = "crates/sshx-core" }
+sshxx-terminal-host = { version = "0.10.4", path = "crates/sshxx-terminal-host", default-features = false }
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"] }
@@ -31,3 +32,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [profile.release]
 strip = true
+
+# Parser deadlines must be meaningful in dev/test as well as release builds.
+# Optimize only the embedded C interpreter, not the surrounding Rust code.
+[profile.dev.package.rquickjs-sys]
+opt-level = 2

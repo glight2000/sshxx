@@ -17,7 +17,12 @@
     randomHex,
   } from "./fileRequests";
   import { createLock } from "./lock";
-  import { terminalSubscriptionMessage } from "./terminalSubscription";
+  import {
+    terminalSubscriptionMessage,
+    terminalBatchIsContinuous,
+  } from "./terminalSubscription";
+  import type { TerminalWriteResult } from "./terminalWriteQueue";
+  import { TerminalCheckpointClient } from "./terminalCheckpoint/client";
   import { Srocket } from "./srocket";
   import { isNativeApp } from "./runtime";
   import type {
@@ -843,8 +848,22 @@
   /** Bound "write" method for each terminal. */
   const writers: Record<
     number,
-    (data: string, replay?: boolean, pasteMode?: boolean) => Promise<void>
+    (
+      data: string,
+      replay?: boolean,
+      pasteMode?: boolean,
+    ) => Promise<TerminalWriteResult>
   > = {};
+  const terminalRendererRecoveries = new Map<
+    number,
+    (typeof writers)[number]
+  >();
+  const terminalOutputEpochs = new Map<number, Uint8Array>();
+  const checkpointRestorers: Record<number, (state: any) => Promise<void>> = {};
+  const checkpointLoading = new Map<number, number>();
+  const checkpointTerminals = new Set<number>();
+  let checkpointAvailable = false;
+  let checkpointClient: TerminalCheckpointClient | undefined;
   const terminalTextSenders: Record<
     number,
     (data: string, execute?: boolean) => void
@@ -871,7 +890,11 @@
   const terminalHistory = new TerminalHistory(2 * 1024 * 1024);
   const replayedWriters: Record<
     number,
-    (data: string, replay?: boolean, pasteMode?: boolean) => Promise<void>
+    (
+      data: string,
+      replay?: boolean,
+      pasteMode?: boolean,
+    ) => Promise<TerminalWriteResult>
   > = {};
   let terminalRendererRevisions: Record<number, number> = {};
   // Transient collaboration state: synchronized, but never persisted.
@@ -1021,16 +1044,19 @@
     return terminalHistory.read(id);
   }
 
-  function recoverTerminalRenderer(
-    id: number,
-    message: string,
-    preserveHistory = false,
-  ) {
+  function recoverTerminalRenderer(id: number, message: string) {
     console.warn("Rebuilding terminal renderer", {
       terminalId: id,
       generation: shells.find(([sid]) => sid === id)?.[1].generation,
     });
-    if (!preserveHistory) terminalHistory.delete(id);
+    // Invalidate pending decrypt/write callbacks before rebuilding. Start a new
+    // authoritative replay instead of acknowledging a failed renderer's cursor.
+    terminalHistory.delete(id);
+    terminalOutputEpochs.delete(id);
+    terminalRendererRecoveries.set(id, writers[id]);
+    terminalSubscriptionTokens[id] = ++nextTerminalSubscriptionToken;
+    chunknums[id] = 0;
+    checkpointLoading.delete(id);
     delete replayedWriters[id];
     terminalRendererRevisions = {
       ...terminalRendererRevisions,
@@ -1040,7 +1066,7 @@
       {
         id: `terminal-renderer-${id}`,
         kind: "error",
-        message: `${message} The terminal renderer was rebuilt ${preserveHistory ? "with retained browser output" : "and its browser scrollback was cleared"}; the remote process is still running.`,
+        message: `${message} The terminal renderer is rebuilding from a fresh checkpoint or retained output; the remote process is still running.`,
       },
       9000,
     );
@@ -1058,16 +1084,16 @@
     // checkpoint across a disconnect during the renderer callback wait.
     chunknums[id] = nextChunk;
     const writer = writers[id];
-    if (!writer) return;
+    if (!writer) return "disposed" as const;
     if (replayedWriters[id] !== writer) {
       replayedWriters[id] = writer;
-      await writer(
+      return await writer(
         readTerminalHistory(id),
         true,
         terminalHistory.pasteMode(id),
       );
     } else {
-      await writer(data, replay, pasteMode);
+      return await writer(data, replay, pasteMode);
     }
   }
 
@@ -1081,6 +1107,7 @@
     subscriptionToken?: number,
     startChunk?: number,
     encryptedPasteMode?: Uint8Array,
+    outputEpoch?: Uint8Array,
   ) {
     if (
       !shells.some(
@@ -1108,10 +1135,22 @@
         )
       )
         return;
+      if (
+        !terminalBatchIsContinuous(
+          chunknums[id] ?? 0,
+          startChunk ?? chunknums[id] ?? 0,
+          terminalOutputEpochs.get(id),
+          outputEpoch,
+        )
+      ) {
+        recoverTerminalRenderer(id, "Terminal output retention was exceeded.");
+        return;
+      }
       const plaintextChunks: string[] = [];
       const decoder = new TextDecoder();
       for (const data of chunks) {
-        const buf = await encrypt.segment(
+        const buf = await encrypt.outputSegment(
+          outputEpoch,
           0x100000000n | BigInt(id),
           BigInt(seqnum),
           data,
@@ -1121,7 +1160,8 @@
       }
       let pasteMode: boolean | undefined;
       if (encryptedPasteMode?.length === 1 && seqnum > 0) {
-        const mode = await encrypt.segment(
+        const mode = await encrypt.outputSegment(
+          outputEpoch,
           0x300000000n | BigInt(id),
           BigInt(seqnum - 1),
           encryptedPasteMode,
@@ -1141,13 +1181,15 @@
         )
       )
         return;
-      await writeTerminalData(
+      if (outputEpoch?.length) terminalOutputEpochs.set(id, outputEpoch);
+      const result = await writeTerminalData(
         id,
         plaintextChunks.join(""),
         replay,
         (startChunk ?? chunknums[id]) + chunks.length,
         pasteMode,
       );
+      if (result !== "written") return;
       if (
         subscriptionToken !== undefined &&
         terminalSubscriptionTokens[id] !== subscriptionToken
@@ -1171,6 +1213,11 @@
     subscriptions.add(id);
     const token = ++nextTerminalSubscriptionToken;
     terminalSubscriptionTokens[id] = token;
+    if (checkpointAvailable && checkpointClient && chunknums[id] === 0) {
+      checkpointLoading.set(id, token);
+      void initializeCheckpoint(id, winsize, token);
+      return;
+    }
     srocket?.send(
       terminalSubscriptionMessage(
         id,
@@ -1185,6 +1232,93 @@
         },
       ),
     );
+  }
+
+  async function initializeCheckpoint(
+    id: number,
+    winsize: WsWinsize,
+    token: number,
+  ) {
+    const current = () =>
+      terminalSubscriptionTokens[id] === token && Boolean(srocket?.connected);
+    try {
+      const result = await checkpointClient!.latest(
+        id,
+        winsize.pageId ?? 1,
+        winsize.generation ?? 0,
+        Math.min($settings.scrollback, Math.ceil(winsize.rows / 2)),
+      );
+      await tick();
+      if (!current()) return;
+      if (!checkpointRestorers[id])
+        throw new Error("Terminal renderer is unavailable");
+      await checkpointRestorers[id](result.state);
+      if (!current()) return;
+      checkpointTerminals.add(id);
+      replayedWriters[id] = writers[id];
+      terminalHistory.delete(id);
+      srocket?.send({
+        subscribeCheckpoint: [
+          id,
+          winsize.pageId ?? 1,
+          winsize.generation ?? 0,
+          token,
+          result.sequence,
+        ],
+      });
+    } catch {
+      if (!current()) return;
+      checkpointTerminals.delete(id);
+      try {
+        await checkpointRestorers[id]?.(null);
+      } catch {
+        /* Existing initialization error UI remains actionable. */
+      }
+      if (!current()) return;
+      terminalHistory.delete(id);
+      replayedWriters[id] = writers[id];
+      srocket?.send({
+        subscribeCheckpoint: [
+          id,
+          winsize.pageId ?? 1,
+          winsize.generation ?? 0,
+          token,
+          null,
+        ],
+      });
+      makeToast(
+        {
+          id: `terminal-history-${id}`,
+          kind: "error",
+          message:
+            "A compact terminal checkpoint is unavailable. Loading retained output in order; the terminal process is unaffected.",
+        },
+        7000,
+      );
+    } finally {
+      if (checkpointLoading.get(id) === token) checkpointLoading.delete(id);
+    }
+  }
+
+  async function readOlderTerminal(
+    id: number,
+    archive: { epoch: number; before: number },
+    count: number,
+  ) {
+    const shell = shells.find(([sid]) => sid === id)?.[1];
+    const token = terminalSubscriptionTokens[id];
+    if (!shell || !checkpointClient || !checkpointAvailable)
+      throw new Error("Terminal history unavailable");
+    const result = await checkpointClient.request(
+      id,
+      shell.pageId,
+      shell.generation,
+      count,
+      archive,
+    );
+    if (terminalSubscriptionTokens[id] !== token)
+      throw new Error("Terminal subscription changed");
+    return result.state;
   }
 
   function resumeStalledTerminal(
@@ -1755,6 +1889,9 @@
     const writePassword = window.location.hash?.slice(1).split(",")[1] ?? null;
 
     encrypt = await Encrypt.new(key);
+    checkpointClient = new TerminalCheckpointClient(encrypt, (message) =>
+      srocket?.send(message),
+    );
     const encryptedZeros = await encrypt.zeros();
 
     const writeEncryptedZeros = writePassword
@@ -1784,6 +1921,11 @@
           exitReason = null;
           failureStage = null;
         } else if (message.capabilities) {
+          if (message.capabilities.includes("terminal-output-epoch-v1"))
+            srocket?.send({ terminalOutputEpoch: null });
+          checkpointAvailable = message.capabilities.includes(
+            "terminal-checkpoint-v1",
+          );
           mediaAvailable = message.capabilities.includes("workspace-media-v1");
           terminalRecoveryProtocol = message.capabilities.includes(
             "terminal-recovery-v1",
@@ -1806,7 +1948,7 @@
             "session",
           );
           srocket?.dispose();
-        } else if (message.terminalBatch) {
+        } else if (message.terminalBatch || message.terminalBatchEpoch) {
           const [
             id,
             page,
@@ -1817,7 +1959,11 @@
             start,
             chunks,
             pasteMode,
-          ] = message.terminalBatch;
+            outputEpoch,
+          ] = message.terminalBatchEpoch ?? [
+            ...message.terminalBatch!,
+            undefined,
+          ];
           handleTerminalChunks(
             id,
             page,
@@ -1828,7 +1974,21 @@
             token,
             start,
             pasteMode,
+            outputEpoch,
           );
+        } else if (message.terminalGap) {
+          const [id, , generation, token] = message.terminalGap;
+          if (
+            terminalSubscriptionTokens[id] === token &&
+            shells.some(
+              ([sid, shell]) => sid === id && shell.generation === generation,
+            )
+          ) {
+            recoverTerminalRenderer(
+              id,
+              "Earlier terminal output is no longer retained.",
+            );
+          }
         } else if (message.terminalStalled) {
           const [id, , generation, token] = message.terminalStalled;
           resumeStalledTerminal(id, generation, token);
@@ -1848,10 +2008,27 @@
               chunks,
             );
           }
+        } else if (message.chunksEpoch) {
+          const [id, page, generation, replay, sequence, chunks, epoch] =
+            message.chunksEpoch;
+          handleTerminalChunks(
+            id,
+            page,
+            generation,
+            replay,
+            sequence,
+            chunks,
+            undefined,
+            undefined,
+            undefined,
+            epoch,
+          );
         } else if (message.chunksGeneration) {
           const [id, pageId, generation, replay, seqnum, chunks] =
             message.chunksGeneration;
           handleTerminalChunks(id, pageId, generation, replay, seqnum, chunks);
+        } else if (message.terminalCheckpoint) {
+          void checkpointClient?.accept(message.terminalCheckpoint);
         } else if (message.users) {
           sessionReady = true;
           clearReadinessTimer();
@@ -1883,6 +2060,10 @@
             delete replayedWriters[shellId];
             delete terminalRendererRevisions[shellId];
             delete terminalTitles[shellId];
+            checkpointLoading.delete(shellId);
+            checkpointTerminals.delete(shellId);
+            terminalRendererRecoveries.delete(shellId);
+            terminalOutputEpochs.delete(shellId);
           }
           for (const [shellId, winsize] of message.shells) {
             const previous = previousShells.get(shellId);
@@ -1895,6 +2076,10 @@
             delete replayedWriters[shellId];
             delete terminalRendererRevisions[shellId];
             delete terminalTitles[shellId];
+            checkpointLoading.delete(shellId);
+            checkpointTerminals.delete(shellId);
+            terminalRendererRecoveries.delete(shellId);
+            terminalOutputEpochs.delete(shellId);
           }
           shells = message.shells.map(([shellId, winsize]) => [
             shellId,
@@ -2107,6 +2292,9 @@
       },
 
       onDisconnect() {
+        checkpointAvailable = false;
+        checkpointLoading.clear();
+        checkpointClient?.reset();
         mediaAvailable = false;
         chatHistoryAvailable = false;
         connected = false;
@@ -2161,6 +2349,7 @@
     for (const timer of customClickPopupTimers) window.clearTimeout(timer);
     customClickPopupTimers.clear();
     fileRequests?.dispose();
+    checkpointClient?.dispose();
     media?.dispose();
     srocket?.dispose();
   });
@@ -3450,8 +3639,26 @@
     if (activeElement instanceof HTMLElement)
       activeElement.focus({ preventScroll: true });
     for (const [id, shell] of shells) {
-      if (shell.pageId !== activePageId) continue;
       const writer = writers[id];
+      if (terminalRendererRecoveries.has(id)) {
+        if (writer && writer !== terminalRendererRecoveries.get(id)) {
+          terminalRendererRecoveries.delete(id);
+          if (srocket?.connected) subscribeTerminal(id, shell);
+        }
+        continue;
+      }
+      if (checkpointLoading.has(id)) continue;
+      if (
+        writer &&
+        replayedWriters[id] !== writer &&
+        checkpointTerminals.has(id) &&
+        checkpointAvailable
+      ) {
+        chunknums[id] = 0;
+        subscribeTerminal(id, shell);
+        continue;
+      }
+      if (shell.pageId !== activePageId) continue;
       if (writer && replayedWriters[id] !== writer) {
         replayedWriters[id] = writer;
         void writer(
@@ -4193,6 +4400,18 @@
                     "terminal" && paragraphDropTarget.id === id}
                   {hasWriteAccess}
                   bind:write={writers[id]}
+                  bind:restoreState={checkpointRestorers[id]}
+                  readOlder={(archive, count) =>
+                    readOlderTerminal(id, archive, count)}
+                  on:historyUnavailable={({ detail }) =>
+                    makeToast(
+                      {
+                        id: `terminal-history-${id}`,
+                        kind: "error",
+                        message: detail,
+                      },
+                      7000,
+                    )}
                   bind:sendText={terminalTextSenders[id]}
                   bind:sendKey={terminalKeySenders[id]}
                   bind:termEl={termElements[id]}
@@ -4204,7 +4423,6 @@
                     recoverTerminalRenderer(
                       id,
                       "Retrying terminal initialization.",
-                      true,
                     )}
                   on:uploadImage={({ detail: file }) =>
                     hasWriteAccess && queueImageUpload(id, ws.pageId, file)}

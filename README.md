@@ -298,10 +298,15 @@ activate a newly installed terminal-host binary.
 ## Build
 
 ```shell
+npm ci
 cargo build --release -p sshxx-daemon -p sshxx-server -p sshxx-terminal-host
 npm run build
 npm run app:build
 ```
+
+The daemon embeds its pinned headless terminal parser during compilation.
+`npm ci` is a source-build prerequisite; installed Runtime binaries do not need
+Node.js or an additional service.
 
 The packaged client requires the platform-specific Tauri system dependencies. On
 Ubuntu:
@@ -333,6 +338,11 @@ when coordinating multiple server instances.
       backups, and recovery.
 - [ ] Add versioned workspace migrations and end-to-end browser coverage for
       pages, notes, snapping, search, terminal input, and concurrent editing.
+- [ ] Complete sustained multi-device validation of latest-first terminal
+      history. Development builds load a viewport-sized checkpoint and fetch
+      older rows on demand; unsupported or expired state falls back to ordered
+      replay. See
+      [retention and compatibility boundaries](docs/wiki/Architecture-and-State.md#latest-first-terminal-history-development-implementation).
 - [ ] Design an explicit daemon-to-client process-status protocol before adding
       AI-agent identification or semantic completion notifications.
 

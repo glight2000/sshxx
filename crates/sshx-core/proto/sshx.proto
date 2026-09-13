@@ -26,6 +26,11 @@ message TerminalData {
   // One encrypted byte (unknown/off/on) AFTER this chunk. Dedicated stream
   // 0x300000000 | id, at offset seq + data.length - 1. Empty for legacy daemons.
   bytes paste_mode = 5;
+  // Fresh 128-bit daemon-owned encryption epoch for this output incarnation.
+  // Empty only for legacy streams. Derives a separate CTR key using HKDF.
+  bytes output_epoch = 6;
+  // The host's raw prefix was lost; this incarnation is an incomplete replay.
+  bool output_gap = 7;
 }
 
 // Details of bytes input to the terminal (not necessarily valid UTF-8).
@@ -54,6 +59,27 @@ message TerminalSize {
   uint32 cols = 3; // Number of columns for the terminal.
 }
 
+// Read-only, bounded terminal state/history request. No PTY action is implied.
+message TerminalCheckpointRequest {
+  uint32 id = 1;
+  string request_id = 2;
+  uint32 generation = 3;
+  uint32 history = 4;
+  optional uint64 archive_epoch = 5;
+  uint64 before = 6;
+}
+
+// AES-GCM authenticated JSON. Identity and sequence are also inside ciphertext.
+// Empty data means unavailable: readers fall back to chronological raw replay.
+message TerminalCheckpointResponse {
+  uint32 id = 1;
+  string request_id = 2;
+  uint32 generation = 3;
+  uint64 sequence = 4;
+  bytes nonce = 5;
+  bytes data = 6;
+}
+
 // Request to open an sshxx session.
 message OpenRequest {
   string origin = 1;                      // Web origin of the server.
@@ -77,6 +103,7 @@ message OpenResponse {
   string token = 2; // Signed verification token for the client.
   string url = 3;   // Public web URL to view the session.
   bool process_restart_supported = 4;
+  bool output_epoch_supported = 5;
 }
 
 // Sequence numbers for all active shells, used for synchronization.
@@ -161,6 +188,7 @@ message ClientUpdate {
     FileResponse file_response = 9; // Encrypted filesystem operation result.
     SystemActionResponse system_action_response = 10; // Lifecycle action result.
     RuntimeInfo runtime_info = 11; // Live versions and independent update-job status.
+    TerminalCheckpointResponse terminal_checkpoint = 12;
     fixed64 pong = 14;          // Response for latency measurement.
     string error = 15;
   }
@@ -179,6 +207,7 @@ message ServerUpdate {
     ImageUploadChunk image_upload = 8; // Encrypted browser image stored by the daemon.
     FileRequest file_request = 9; // Encrypted filesystem operation for the daemon.
     SystemActionRequest system_action = 10; // Authenticated lifecycle action.
+    TerminalCheckpointRequest terminal_checkpoint = 12;
     fixed64 ping = 14;         // Request a pong, with the timestamp.
     string error = 15;
   }
@@ -369,6 +398,7 @@ message SerializedShell {
   uint32 height = 16;
   bool minimized = 17;
   repeated bytes paste_modes = 18;
+  bytes output_epoch = 19;
 }
 
 message SerializedNote {

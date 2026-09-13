@@ -108,6 +108,8 @@ pub struct ClientSocket {
     pub pages: Vec<WsPage>,
     pub note_editors: BTreeMap<Sid, (u32, Uid)>,
     pub data: HashMap<Sid, String>,
+    output_epochs: HashMap<Sid, bytes::Bytes>,
+    pub terminal_gaps: Vec<(Sid, u32, u32, u32)>,
     pub chunk_replays: Vec<(Sid, bool)>,
     pub messages: Vec<(Uid, String, String)>,
     pub system_action_results: Vec<(String, String, bool, String)>,
@@ -116,6 +118,7 @@ pub struct ClientSocket {
     pub terminal_batches: Vec<(Sid, u32, u32, u64)>,
     pub paste_modes: BTreeMap<Sid, u8>,
     pub terminal_stalls: Vec<(Sid, u32, u32, u32)>,
+    pub terminal_checkpoints: Vec<sshx_core::proto::TerminalCheckpointResponse>,
 }
 
 impl ClientSocket {
@@ -141,6 +144,8 @@ impl ClientSocket {
             pages: Vec::new(),
             note_editors: BTreeMap::new(),
             data: HashMap::new(),
+            output_epochs: HashMap::new(),
+            terminal_gaps: Vec::new(),
             chunk_replays: Vec::new(),
             messages: Vec::new(),
             system_action_results: Vec::new(),
@@ -149,6 +154,7 @@ impl ClientSocket {
             terminal_batches: Vec::new(),
             paste_modes: BTreeMap::new(),
             terminal_stalls: Vec::new(),
+            terminal_checkpoints: Vec::new(),
         };
         this.authenticate().await;
         Ok(this)
@@ -201,7 +207,35 @@ impl ClientSocket {
         const FLUSH_DURATION: Duration = Duration::from_millis(50);
         let flush_task = async {
             while let Some(msg) = self.recv().await {
+                let msg = match msg {
+                    WsServer::TerminalBatchEpoch(
+                        id,
+                        page,
+                        generation,
+                        token,
+                        replay,
+                        seq,
+                        start,
+                        chunks,
+                        mode,
+                        epoch,
+                    ) => {
+                        self.output_epochs.insert(id, epoch);
+                        WsServer::TerminalBatch(
+                            id, page, generation, token, replay, seq, start, chunks, mode,
+                        )
+                    }
+                    WsServer::ChunksEpoch(id, page, generation, replay, seq, chunks, epoch) => {
+                        self.output_epochs.insert(id, epoch);
+                        WsServer::ChunksGeneration(id, page, generation, replay, seq, chunks)
+                    }
+                    other => other,
+                };
                 match msg {
+                    WsServer::TerminalBatchEpoch(..) | WsServer::ChunksEpoch(..) => unreachable!(),
+                    WsServer::TerminalGap(id, page, generation, token) => {
+                        self.terminal_gaps.push((id, page, generation, token))
+                    }
                     WsServer::Hello(
                         user_id,
                         _,
@@ -214,7 +248,14 @@ impl ClientSocket {
                         self.daemon_version = daemon_version;
                         self.terminal_host_version = terminal_host_version;
                     }
-                    WsServer::Capabilities(_) => {}
+                    WsServer::Capabilities(capabilities) => {
+                        if capabilities
+                            .iter()
+                            .any(|capability| capability == "terminal-output-epoch-v1")
+                        {
+                            self.send(WsClient::TerminalOutputEpoch).await;
+                        }
+                    }
                     WsServer::TerminalStalled(id, page, generation, token) => {
                         self.terminal_stalls.push((id, page, generation, token));
                     }
@@ -239,14 +280,22 @@ impl ClientSocket {
                         let value = self.data.entry(id).or_default();
                         let mut sequence = seqnum;
                         for buf in chunks {
-                            let plaintext =
-                                self.encrypt
-                                    .segment(0x100000000 | id.0 as u64, sequence, &buf);
+                            let plaintext = self.encrypt.output_segment(
+                                self.output_epochs
+                                    .get(&id)
+                                    .map_or(&[], |epoch| epoch.as_ref()),
+                                0x100000000 | id.0 as u64,
+                                sequence,
+                                &buf,
+                            );
                             sequence += buf.len() as u64;
                             value.push_str(std::str::from_utf8(&plaintext).unwrap());
                         }
                         if paste_mode.len() == 1 {
-                            let mode = self.encrypt.segment(
+                            let mode = self.encrypt.output_segment(
+                                self.output_epochs
+                                    .get(&id)
+                                    .map_or(&[], |epoch| epoch.as_ref()),
                                 0x300000000 | id.0 as u64,
                                 sequence - 1,
                                 &paste_mode,
@@ -311,7 +360,10 @@ impl ClientSocket {
                         let value = self.data.entry(id).or_default();
                         assert_eq!(seqnum, value.len() as u64);
                         for buf in chunks {
-                            let plaintext = self.encrypt.segment(
+                            let plaintext = self.encrypt.output_segment(
+                                self.output_epochs
+                                    .get(&id)
+                                    .map_or(&[], |epoch| epoch.as_ref()),
                                 0x100000000 | id.0 as u64,
                                 value.len() as u64,
                                 &buf,
@@ -336,6 +388,9 @@ impl ClientSocket {
                     WsServer::Pong(_) => {}
                     WsServer::TerminalHostVersion(version) => self.terminal_host_version = version,
                     WsServer::Error(err) => self.errors.push(err),
+                    WsServer::TerminalCheckpoint(response) => {
+                        self.terminal_checkpoints.push(response)
+                    }
                 }
             }
         };

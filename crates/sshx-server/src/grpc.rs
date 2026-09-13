@@ -115,6 +115,7 @@ impl SshxService for GrpcServer {
             token: BASE64_STANDARD.encode(token.into_bytes()),
             url,
             process_restart_supported: true,
+            output_epoch_supported: true,
         }))
     }
 
@@ -249,12 +250,14 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
             return send_err(tx, "unexpected hello".into()).await;
         }
         Some(ClientMessage::Data(data)) => {
-            if let Err(err) = session.add_output_with_mode(
+            if let Err(err) = session.add_output_with_epoch(
                 Sid(data.id),
                 data.data,
                 data.seq,
                 data.retained_sequence,
                 data.paste_mode,
+                data.output_epoch,
+                data.output_gap,
             ) {
                 return send_err(tx, format!("add data: {:?}", err)).await;
             }
@@ -308,6 +311,9 @@ async fn handle_update(tx: &ServerTx, session: &Session, update: ClientUpdate) -
         }
         Some(ClientMessage::FileResponse(response)) => {
             session.send_file_response(response.request_id, response.stream_num, response.data);
+        }
+        Some(ClientMessage::TerminalCheckpoint(response)) => {
+            session.send_terminal_checkpoint(response);
         }
         Some(ClientMessage::RuntimeInfo(info)) => {
             if [

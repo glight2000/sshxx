@@ -181,6 +181,14 @@ export type AttachmentRequest = {
 
 /** Server message type, see the Rust version. */
 export type WsServer = {
+  terminalCheckpoint?: {
+    id: number;
+    requestId: string;
+    generation: number;
+    sequence: number;
+    nonce: Uint8Array;
+    data: Uint8Array;
+  };
   hello?: [Uid, string, string, string, string?];
   capabilities?: string[];
   invalidAuth?: [];
@@ -211,6 +219,28 @@ export type WsServer = {
     Uint8Array?,
   ];
   terminalStalled?: [Sid, number, number, number];
+  terminalGap?: [Sid, number, number, number];
+  terminalBatchEpoch?: [
+    Sid,
+    number,
+    number,
+    number,
+    boolean,
+    number,
+    number,
+    Uint8Array[],
+    Uint8Array,
+    Uint8Array,
+  ];
+  chunksEpoch?: [
+    Sid,
+    number,
+    number,
+    boolean,
+    number,
+    Uint8Array[],
+    Uint8Array,
+  ];
   hear?: [Uid, string, string];
   chatHistory?: WireChatRecord[];
   chatMessage?: WireChatRecord;
@@ -230,6 +260,17 @@ export type WsServer = {
 
 /** Client message type, see the Rust version. */
 export type WsClient = {
+  terminalCheckpoint?: [
+    Sid,
+    number,
+    number,
+    string,
+    number,
+    number | null,
+    number,
+  ];
+  subscribeCheckpoint?: [Sid, number, number, number, number | null];
+  terminalOutputEpoch?: null;
   authenticate?: [Uint8Array, Uint8Array | null];
   setName?: string;
   setCursor?: [number, [number, number] | null];

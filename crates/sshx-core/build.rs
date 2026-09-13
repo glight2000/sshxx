@@ -6,6 +6,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(descriptor_path)
         .bytes(".")
         .type_attribute(
+            ".sshx.TerminalCheckpointResponse",
+            "#[derive(serde::Serialize, serde::Deserialize)] #[serde(rename_all = \"camelCase\")]",
+        )
+        .type_attribute(
             ".sshx.RuntimeInfo",
             "#[derive(serde::Serialize, serde::Deserialize)] #[serde(rename_all = \"camelCase\")]",
         )

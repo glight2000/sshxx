@@ -331,6 +331,8 @@ pub enum WsTerminalSubscription {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum WsServer {
+    /// Correlated, authenticated terminal state. Forwarded only to its requester.
+    TerminalCheckpoint(sshx_core::proto::TerminalCheckpointResponse),
     /// Initial message with user ID, session name, server, daemon, and
     /// terminal-host versions.
     Hello(Uid, String, String, String, String),
@@ -380,6 +382,12 @@ pub enum WsServer {
     ),
     /// This viewer's subscription stopped waiting for a renderer acknowledgement.
     TerminalStalled(Sid, u32, u32, u32),
+    /// A discontinuity affects only this viewer's renderer, never the PTY.
+    TerminalGap(Sid, u32, u32, u32),
+    /// Epoch-aware counterpart to TerminalBatch; the final field derives its CTR key.
+    TerminalBatchEpoch(Sid, u32, u32, u32, bool, u64, u64, Vec<Bytes>, Bytes, Bytes),
+    /// Epoch-aware output for negotiated generation/legacy flow-control modes.
+    ChunksEpoch(Sid, u32, u32, bool, u64, Vec<Bytes>, Bytes),
     /// Get a chat message tuple `(uid, name, text)` from the room.
     Hear(Uid, String, String),
     /// Bounded durable room history and idempotent live records.
@@ -408,6 +416,12 @@ pub enum WsServer {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum WsClient {
+    /// Opt into epoch-aware terminal batches before subscribing.
+    TerminalOutputEpoch,
+    /// Read-only state or history. The final fields select an older archive page.
+    TerminalCheckpoint(Sid, u32, u32, String, u32, Option<u64>, u64),
+    /// Subscribe immediately after a successfully restored snapshot byte fence.
+    SubscribeCheckpoint(Sid, u32, u32, u32, Option<u64>),
     /// Authenticate the user's encryption key by zeros block and write password
     /// (if provided).
     Authenticate(Bytes, Option<Bytes>),

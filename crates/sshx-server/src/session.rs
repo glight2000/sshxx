@@ -27,6 +27,7 @@ use crate::web::protocol::{
 };
 
 mod chat;
+mod checkpoint;
 mod output;
 mod pages;
 mod snapshot;
@@ -166,6 +167,7 @@ pub struct Session {
 /// Internal state for each shell.
 #[derive(Default, Debug)]
 struct State {
+    output_epoch: Bytes,
     last_received_sequence: Option<u64>,
     last_accepted: Option<Instant>,
     /// Rejected discontinuous chunks since the last accepted output.
@@ -1025,7 +1027,7 @@ impl Session {
         chunknum: u64,
     ) -> impl Stream<Item = (bool, u64, Vec<Bytes>)> + '_ {
         self.subscribe_indexed_chunks(id, generation, chunknum)
-            .map(|(replay, seqnum, _, chunks, _)| (replay, seqnum, chunks))
+            .map(|(replay, seqnum, _, chunks, _, _)| (replay, seqnum, chunks))
     }
 
     pub(crate) fn subscribe_indexed_chunks(
@@ -1033,7 +1035,7 @@ impl Session {
         id: Sid,
         generation: u32,
         mut chunknum: u64,
-    ) -> impl Stream<Item = (bool, u64, u64, Vec<Bytes>, Bytes)> + '_ {
+    ) -> impl Stream<Item = (bool, u64, u64, Vec<Bytes>, Bytes, Bytes)> + '_ {
         async_stream::stream! {
             let mut replay = true;
             while !self.shutdown.is_terminated() {
@@ -1042,7 +1044,7 @@ impl Session {
                 }
                 // We absolutely cannot hold `shells` across an await point,
                 // since that would cause deadlocks.
-                let (seqnum, chunks, paste_mode, notified, caught_up) = {
+                let (seqnum, chunks, paste_mode, output_epoch, notified, caught_up) = {
                     let shells = self.shells.read();
                     let shell = match shells.get(&id) {
                         Some(shell) if !shell.closed => shell,
@@ -1078,11 +1080,11 @@ impl Session {
                         }
                         chunknum = shell.chunk_offset + end as u64;
                     }
-                    (seqnum, chunks, paste_mode, notified, chunknum >= current_chunks)
+                    (seqnum, chunks, paste_mode, shell.output_epoch.clone(), notified, chunknum >= current_chunks)
                 };
 
                 if !chunks.is_empty() {
-                    yield (replay, seqnum, chunknum - chunks.len() as u64, chunks, paste_mode);
+                    yield (replay, seqnum, chunknum - chunks.len() as u64, chunks, paste_mode, output_epoch);
                     if caught_up {
                         replay = false;
                     }
@@ -2140,7 +2142,7 @@ mod tests {
         }
         let stream = session.subscribe_indexed_chunks(id, 0, 0);
         tokio::pin!(stream);
-        let (_, bytes, chunk, data, _) = stream.next().await.unwrap();
+        let (_, bytes, chunk, data, _, _) = stream.next().await.unwrap();
         assert_eq!((bytes, chunk), (50, 5));
         assert_eq!(data, [Bytes::from_static(b"retained")]);
     }

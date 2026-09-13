@@ -33,6 +33,7 @@ export default [
       "target/**",
       "clients/electron/dist/**",
       "clients/electron/node_modules/**",
+      "clients/pocket-local/**",
       "clients/godot/.godot/**",
       "clients/godot/addons/**",
     ],

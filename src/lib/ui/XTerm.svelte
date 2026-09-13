@@ -33,6 +33,7 @@
 <script lang="ts">
   import { containWheel, forwardTerminalWheel } from "$lib/action/containWheel";
   import MobileTerminalReader from "./MobileTerminalReader.svelte";
+  import { terminalHistoryScroll } from "../terminalCheckpoint/historyScroll";
   import { browser } from "$app/environment";
 
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
@@ -87,6 +88,7 @@
     unlinkNote: CanvasRelationItem;
     floatingChange: boolean;
     rendererFailure: string;
+    historyUnavailable: string;
     retryInitialization: void;
   }>();
 
@@ -156,11 +158,26 @@
     data: string,
     replay?: boolean,
     pasteMode?: boolean,
-  ) => Promise<void>; // bound function prop
+  ) => Promise<import("../terminalWriteQueue").TerminalWriteResult>; // bound function prop
+  export let restoreState: (state: any) => Promise<void>;
+  export let readOlder:
+    | ((
+        archive: { epoch: number; before: number },
+        count: number,
+      ) => Promise<any>)
+    | undefined = undefined;
   export let sendText: (data: string, execute?: boolean) => void;
 
   export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
   let term: Terminal | null = null;
+  let historyWindow:
+    import("../terminalCheckpoint/archive.mjs").TerminalHistoryWindow | null =
+    null;
+  let historyLoading = false;
+  let readyResolve: (ready: boolean) => void;
+  const rendererReady = new Promise<boolean>((resolve) => {
+    readyResolve = resolve;
+  });
   let pasteMode: boolean | undefined;
   let mouseCoordinateAdapter: { dispose(): void } | null = null;
   let webglAddon: import("@xterm/addon-webgl").WebglAddon | null = null;
@@ -188,7 +205,14 @@
   $: if (term) {
     // If the theme changes, update existing terminals' appearance.
     term.options.theme = terminalTheme;
-    term.options.scrollback = $settings.scrollback;
+    if (historyWindow) {
+      historyWindow.limit = Math.max(0, $settings.scrollback);
+      historyWindow.capacity = Math.min(
+        historyWindow.capacity,
+        historyWindow.limit,
+      );
+    }
+    term.options.scrollback = historyWindow?.capacity ?? $settings.scrollback;
   }
 
   // Page visibility controls only this extra paint, never parsing or ACKs.
@@ -488,27 +512,129 @@
       else if (diagnosticTimer === undefined && !destroyed)
         diagnosticTimer = setTimeout(updateOutputDiagnostics, 2000);
     },
-    onError(error) {
-      console.error("Could not write terminal output.", error);
-    },
-    onWriteTimeout(error) {
-      console.error("Terminal renderer write timed out.", {
+    onWriteFailure(error) {
+      console.error("Terminal output processing failed.", {
         terminalId,
         generation,
+        reason: error.reason,
         ...writeQueue.diagnostics,
       });
       if (!loaded) {
         failInitialization(
-          "Terminal initialization timed out. Retry this terminal.",
+          "Terminal output could not be initialized. Retry this terminal.",
         );
       } else dispatch("rendererFailure", error.message);
     },
   });
 
   write = async (data: string, replay = false, checkpoint?: boolean) => {
-    await writeQueue.write(data, replay);
-    if (!destroyed) pasteMode = checkpoint;
+    // Reserve before parsing: a restored buffer already fills its small initial
+    // capacity, so growing only after the first LF would discard its top row.
+    if (historyWindow && term)
+      term.options.scrollback = historyWindow.grow(term.buffer.normal.baseY);
+    const result = await writeQueue.write(data, replay);
+    if (!destroyed && result === "written") pasteMode = checkpoint;
+    return result;
   };
+
+  restoreState = async (state: any) => {
+    const [{ restoreCheckpoint }, { TerminalHistoryWindow }] =
+      await Promise.all([
+        import("../terminalCheckpoint/compat.mjs"),
+        import("../terminalCheckpoint/archive.mjs"),
+      ]);
+    if (!(await rendererReady) || !term || destroyed)
+      throw new Error("Terminal renderer unavailable");
+    if (state === null) {
+      historyWindow?.dispose();
+      historyWindow = null;
+      term.reset();
+      typeahead.reset();
+      historyScroll.reset(term.buffer.active.viewportY);
+      pasteMode = undefined;
+      return;
+    }
+    if (state.cols !== cols || state.rows !== rows)
+      throw new Error("Terminal was resized while loading its checkpoint");
+    suppressInput++;
+    suppressAttention++;
+    typeahead.beginInputSuppression();
+    try {
+      const window = new TerminalHistoryWindow(rows, $settings.scrollback);
+      historyWindow?.dispose();
+      restoreCheckpoint(term, state, window.capacity);
+      window.restore(state, term);
+      historyWindow = window;
+      historyScroll.reset(term.buffer.active.viewportY);
+      typeahead.reset();
+      pasteMode = state.core.decPrivateModes.bracketedPasteMode;
+      const next = splitTerminalTitle(state.input._windowTitle);
+      currentTitle = next.title || "Remote Terminal";
+      titleActivity = next.activity;
+      dispatch("title", currentTitle);
+      const location = parseOsc7Location(state.location ?? "");
+      if (location) {
+        workingDirectory = location.workingDirectory;
+        workingDirectoryHost = location.workingDirectoryHost;
+        if (!initialWorkingDirectoryHost && workingDirectoryHost)
+          initialWorkingDirectoryHost = workingDirectoryHost;
+      }
+      zoomRefresh.update(canvasZoom, pageVisible, loaded);
+    } finally {
+      suppressInput = Math.max(0, suppressInput - 1);
+      suppressAttention = Math.max(0, suppressAttention - 1);
+      typeahead.endInputSuppression();
+    }
+  };
+
+  const historyScroll = terminalHistoryScroll(async () => {
+    if (!mobileDetail && pageVisible) await loadOlderHistory();
+  });
+
+  async function loadOlderHistory(): Promise<boolean> {
+    const window = historyWindow;
+    const terminal = term;
+    if (
+      !window?.archive ||
+      !terminal ||
+      !readOlder ||
+      window.loading ||
+      terminal.hasSelection() ||
+      terminal.buffer.active.type !== "normal" ||
+      terminal.buffer.normal.baseY >= window.limit ||
+      window.archive.before <= window.archive.available
+    )
+      return false;
+    window.loading = true;
+    historyLoading = true;
+    try {
+      const page = await readOlder(
+        window.archive,
+        Math.min(window.step, window.limit - terminal.buffer.normal.baseY),
+      );
+      if (!destroyed && historyWindow === window && term === terminal) {
+        // A selection may have started while this read was in flight. Do not
+        // shift its absolute buffer rows underneath the user's mouse.
+        if (terminal.hasSelection()) return false;
+        if (!window.apply(terminal, page))
+          throw new Error("Terminal history changed while loading");
+        historyScroll.update(terminal.buffer.normal.viewportY);
+        return true;
+      }
+    } catch {
+      if (!destroyed && historyWindow === window) {
+        window.archive = null;
+        dispatch(
+          "historyUnavailable",
+          "Earlier terminal history is no longer available in this range. Live output is unaffected.",
+        );
+      }
+    } finally {
+      window.loading = false;
+      if (!destroyed) historyLoading = false;
+    }
+    return false;
+  }
 
   $: term?.resize(cols, rows);
 
@@ -668,6 +794,20 @@
     focusObserver.observe(term.element!, { attributeFilter: ["class"] });
 
     loaded = true;
+    readyResolve(true);
+    term.onLineFeed(() => {
+      if (historyWindow && term)
+        term.options.scrollback = historyWindow.grow(term.buffer.normal.baseY);
+    });
+    historyScroll.reset(term.buffer.active.viewportY);
+    term.buffer.onBufferChange(() =>
+      historyScroll.reset(term!.buffer.active.viewportY),
+    );
+    term.onScroll((position) => {
+      if (!historyWindow || suppressInput > 0 || mobileDetail)
+        historyScroll.reset(position);
+      else historyScroll.update(position);
+    });
 
     typeahead.reset();
     term.loadAddon(typeahead);
@@ -708,8 +848,10 @@
   function failInitialization(message: string) {
     if (destroyed || initializationError) return;
     initializationError = message;
+    readyResolve(false);
     clearTimeout(initializationTimer);
     writeQueue.dispose();
+    historyScroll.dispose();
     releaseRenderer();
     console.error("Terminal renderer initialization failed", {
       terminalId,
@@ -732,6 +874,8 @@
   onDestroy(() => {
     destroyed = true;
     writeQueue.dispose();
+    historyWindow?.dispose();
+    readyResolve(false);
     clearTimeout(diagnosticTimer);
     clearTimeout(initializationTimer);
     releaseRenderer();
@@ -780,6 +924,14 @@
       class="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border-2 border-dashed border-indigo-300 bg-zinc-950/85 text-sm font-medium text-indigo-100"
     >
       Drop image into terminal
+    </div>
+  {/if}
+  {#if historyLoading}
+    <div
+      role="status"
+      class="pointer-events-none absolute right-2 top-9 z-10 rounded bg-zinc-900/90 px-2 py-1 text-xs text-zinc-200"
+    >
+      Loading earlier output…
     </div>
   {/if}
   {#if initializationError}
@@ -1016,6 +1168,7 @@
   {#if mobileDetail && loaded && term}
     <MobileTerminalReader
       terminal={term}
+      loadHistory={loadOlderHistory}
       theme={terminalTheme}
       writable={!!hasWriteAccess}
       blocked={!inputAvailable

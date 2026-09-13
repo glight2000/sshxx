@@ -38,3 +38,9 @@ destructive-close behavior.
 Client-side frame decoding retains incomplete length and payload bytes across
 cancelled asynchronous reads. A concurrent input or resize event must never
 discard a partial host frame or shift the stream boundary.
+
+Host 0.10.4 publishes `TerminalExited` only after both child exit and PTY reader
+completion, following all final output events. A late attachment replays the
+complete retained tail before its exit event. Process exit and PTY EOF may
+arrive in either order; completion is emitted once. This fixes output ordering
+within protocol 1 and does not change process ownership or host activation.

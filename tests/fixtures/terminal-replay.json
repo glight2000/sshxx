@@ -1,0 +1,62 @@
+[
+  {
+    "name": "ordered scrollback reaches the latest shell prompt",
+    "parts": ["old\r\n", "running\r\n", "done\r\n$ "],
+    "lines": ["running", "done", "$ "],
+    "cursor": [2, 2],
+    "paste": false
+  },
+  {
+    "name": "leaving the alternate screen restores the shell, not the old working frame",
+    "parts": [
+      "$ \u001b[?1049h\u001b[2J\u001b[HWorking",
+      "\u001b[H\u001b[2KDone",
+      "\u001b[?1049lready"
+    ],
+    "lines": ["$ ready", "", ""],
+    "cursor": [7, 0],
+    "paste": false
+  },
+  {
+    "name": "Unicode, color and paste mode survive fragmented replay",
+    "parts": ["\u001b[31m中", "文😀\u001b[0m\r\n", "\u001b[?2004h$ "],
+    "lines": ["中文😀", "$ ", ""],
+    "cursor": [2, 1],
+    "paste": true
+  },
+  {
+    "name": "cursor-addressed updates are not append-only log lines",
+    "parts": ["abc\r\n123", "\u001b[1;2HX", "\u001b[2;1H\u001b[2K$ "],
+    "lines": ["aXc", "$ ", ""],
+    "cursor": [2, 1],
+    "paste": false
+  },
+  {
+    "name": "an OSC split at the terminator does not swallow the latest output",
+    "parts": ["\u001b]0;Fixture title\u001b", "\\\u001b[?2004h", "ready"],
+    "lines": ["ready", "", ""],
+    "cursor": [5, 0],
+    "paste": true
+  },
+  {
+    "name": "a saved cursor affects output after the replay boundary",
+    "parts": ["one\u001b7\r\nsecond\u001b[32m", "\u001b8!"],
+    "lines": ["one!", "second", ""],
+    "cursor": [4, 0],
+    "paste": false
+  },
+  {
+    "name": "a retained scroll region protects the fixed header from live output",
+    "parts": ["one\r\ntwo\r\nthree\u001b[2;3r\u001b[3;1H", "\r\nnext"],
+    "lines": ["one", "three", "next"],
+    "cursor": [4, 2],
+    "paste": false
+  },
+  {
+    "name": "a partial CSI at the replay boundary continues without printing its parameters",
+    "parts": ["latest\u001b[3", "1mred"],
+    "lines": ["latestred", "", ""],
+    "cursor": [9, 0],
+    "paste": false
+  }
+]

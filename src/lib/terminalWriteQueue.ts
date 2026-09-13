@@ -3,11 +3,23 @@ export type TerminalWriteQueueState = {
   queuedChunks: number;
 };
 
+export type TerminalWriteResult = "written" | "failed" | "disposed";
+
+export class TerminalWriteFailure extends Error {
+  readonly reason: "timeout" | "capacity" | "transform" | "sink";
+
+  constructor(reason: TerminalWriteFailure["reason"], message: string) {
+    super(message);
+    this.reason = reason;
+    this.name = "TerminalWriteFailure";
+  }
+}
+
 type WriteGroup = {
   remaining: number;
   replay: boolean;
   started: boolean;
-  resolve: () => void;
+  resolve: (result: TerminalWriteResult) => void;
 };
 
 type WriteChunk = {
@@ -19,6 +31,9 @@ type WriteChunk = {
 export type TerminalWriteQueueOptions = {
   chunkCharacters?: number;
   writeTimeoutMs?: number;
+  maxQueuedCharacters?: number;
+  maxQueuedChunks?: number;
+  now?: () => number;
   schedule?: (callback: () => void) => number;
   cancel?: (handle: number) => void;
   scheduleTimeout?: (callback: () => void, timeoutMs: number) => number;
@@ -29,19 +44,23 @@ export type TerminalWriteQueueOptions = {
   onStateChange?: (state: TerminalWriteQueueState) => void;
   onError?: (error: unknown) => void;
   onWriteTimeout?: (error: TerminalWriteTimeoutError) => void;
+  onWriteFailure?: (error: TerminalWriteFailure) => void;
 };
 
 type TerminalWriteSink = (data: string, complete: () => void) => void;
 
 const DEFAULT_CHUNK_CHARACTERS = 64 << 10;
 export const DEFAULT_TERMINAL_WRITE_TIMEOUT_MS = 15_000;
+export const MAX_TERMINAL_QUEUED_CHARACTERS = 4 << 20;
+export const MAX_TERMINAL_QUEUED_CHUNKS = 4096;
 
-export class TerminalWriteTimeoutError extends Error {
+export class TerminalWriteTimeoutError extends TerminalWriteFailure {
   readonly timeoutMs: number;
   readonly chunkCharacters: number;
 
   constructor(timeoutMs: number, chunkCharacters: number) {
     super(
+      "timeout",
       `Terminal renderer did not complete a ${chunkCharacters}-character write within ${timeoutMs} ms.`,
     );
     this.name = "TerminalWriteTimeoutError";
@@ -52,12 +71,15 @@ export class TerminalWriteTimeoutError extends Error {
 
 /**
  * Feed xterm in bounded chunks and wait for its public write callback before
- * scheduling the next chunk. The promise returned by write() resolves only
- * after every character from that call has reached the renderer.
+ * scheduling the next chunk. Settlement releases the caller's lock; only a
+ * "written" result confirms processing. Failure and teardown are not success.
  */
 export class TerminalWriteQueue {
   readonly #chunkCharacters: number;
   readonly #writeTimeoutMs: number;
+  readonly #maxQueuedCharacters: number;
+  readonly #maxQueuedChunks: number;
+  readonly #now: () => number;
   readonly #schedule: (callback: () => void) => number;
   readonly #cancel: (handle: number) => void;
   readonly #scheduleTimeout: (
@@ -71,6 +93,7 @@ export class TerminalWriteQueue {
   readonly #onStateChange: (state: TerminalWriteQueueState) => void;
   readonly #onError: (error: unknown) => void;
   readonly #onWriteTimeout: (error: TerminalWriteTimeoutError) => void;
+  readonly #onWriteFailure: (error: TerminalWriteFailure) => void;
 
   #sink: TerminalWriteSink | null = null;
   #chunks: WriteChunk[] = [];
@@ -109,6 +132,15 @@ export class TerminalWriteQueue {
       this.#writeTimeoutMs <= 0
     )
       throw new Error("Terminal write timeout must be a positive integer.");
+    this.#maxQueuedCharacters =
+      options.maxQueuedCharacters ?? MAX_TERMINAL_QUEUED_CHARACTERS;
+    this.#maxQueuedChunks =
+      options.maxQueuedChunks ?? MAX_TERMINAL_QUEUED_CHUNKS;
+    for (const limit of [this.#maxQueuedCharacters, this.#maxQueuedChunks]) {
+      if (!Number.isSafeInteger(limit) || limit <= 0)
+        throw new Error("Terminal queue limits must be positive integers.");
+    }
+    this.#now = options.now ?? Date.now;
     // Parsing/ACK progress must not depend on visible rendering frames.
     // Background tabs pause requestAnimationFrame entirely.
     this.#schedule =
@@ -125,21 +157,38 @@ export class TerminalWriteQueue {
     this.#onStateChange = options.onStateChange ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
     this.#onWriteTimeout = options.onWriteTimeout ?? (() => undefined);
+    this.#onWriteFailure = options.onWriteFailure ?? (() => undefined);
   }
 
   setSink(sink: TerminalWriteSink) {
-    if (this.#disposed) return;
+    if (this.#disposed || this.#failed) return;
     if (this.#sinkTimeout !== null) this.#cancelTimeout(this.#sinkTimeout);
     this.#sinkTimeout = null;
     this.#sink = sink;
     this.#drain();
   }
 
-  write(data: string, replay = false): Promise<void> {
-    if (!data || this.#disposed || this.#failed) return Promise.resolve();
-    const pieces = splitTerminalWrite(data, this.#chunkCharacters);
-    this.#pendingSince ??= Date.now();
-    return new Promise<void>((resolve) => {
+  write(data: string, replay = false): Promise<TerminalWriteResult> {
+    if (this.#disposed) return Promise.resolve("disposed");
+    if (this.#failed) return Promise.resolve("failed");
+    if (!data) return Promise.resolve("written");
+    if (data.length > this.#maxQueuedCharacters - this.#queuedCharacters) {
+      this.#fail(queueCapacityError());
+      return Promise.resolve("failed");
+    }
+    let pieces: string[];
+    try {
+      pieces = splitTerminalWrite(
+        data,
+        this.#chunkCharacters,
+        this.#maxQueuedChunks - this.#chunks.length - Number(this.#writing),
+      );
+    } catch {
+      this.#fail(queueCapacityError());
+      return Promise.resolve("failed");
+    }
+    this.#pendingSince ??= this.#now();
+    return new Promise<TerminalWriteResult>((resolve) => {
       const group: WriteGroup = {
         remaining: pieces.length,
         replay,
@@ -169,13 +218,21 @@ export class TerminalWriteQueue {
   dispose() {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#cancelPending();
+
+    this.#finishPending("disposed");
+  }
+
+  #cancelPending() {
     if (this.#scheduled !== null) this.#cancel(this.#scheduled);
     this.#scheduled = null;
     if (this.#writeTimeout !== null) this.#cancelTimeout(this.#writeTimeout);
     this.#writeTimeout = null;
     if (this.#sinkTimeout !== null) this.#cancelTimeout(this.#sinkTimeout);
     this.#sinkTimeout = null;
+  }
 
+  #finishPending(result: TerminalWriteResult) {
     const groups = new Set(this.#chunks.map((chunk) => chunk.group));
     if (this.#activeChunk) groups.add(this.#activeChunk.group);
     this.#chunks = [];
@@ -183,13 +240,14 @@ export class TerminalWriteQueue {
     this.#writing = false;
     this.#queuedCharacters = 0;
     this.#pendingSince = null;
-    for (const group of groups) this.#finishGroup(group);
+    for (const group of groups) this.#finishGroup(group, result);
     this.#notify();
   }
 
   #drain() {
     if (
       this.#disposed ||
+      this.#failed ||
       !this.#sink ||
       this.#writing ||
       this.#scheduled !== null
@@ -205,8 +263,16 @@ export class TerminalWriteQueue {
     let data = "";
     try {
       data = this.#transform(chunk.data, chunk.replay);
-    } catch (error) {
-      this.#onError(error);
+    } catch {
+      // Keep the active group reachable for cleanup even though it was shifted.
+      this.#activeChunk = chunk;
+      this.#fail(
+        new TerminalWriteFailure(
+          "transform",
+          "Terminal output processing failed.",
+        ),
+      );
+      return;
     }
     if (!data) {
       this.#completeChunk(chunk);
@@ -223,7 +289,7 @@ export class TerminalWriteQueue {
       this.#writeTimeout = null;
       this.#writing = false;
       this.#activeChunk = null;
-      this.#lastCompletedAt = Date.now();
+      this.#lastCompletedAt = this.#now();
       this.#completeChunk(chunk);
     };
     this.#writeTimeout = this.#scheduleTimeout(() => {
@@ -236,24 +302,23 @@ export class TerminalWriteQueue {
     }, this.#writeTimeoutMs);
     try {
       this.#sink(data, complete);
-    } catch (error) {
-      this.#onError(error);
-      complete();
+    } catch {
+      this.#fail(
+        new TerminalWriteFailure("sink", "Terminal renderer rejected output."),
+      );
     }
   }
 
-  #fail(error: TerminalWriteTimeoutError) {
+  #fail(error: TerminalWriteFailure) {
+    if (this.#disposed || this.#failed) return;
     this.#failed = true;
-    this.#writing = false;
-    const groups = new Set(this.#chunks.map((chunk) => chunk.group));
-    if (this.#activeChunk) groups.add(this.#activeChunk.group);
-    this.#chunks = [];
-    this.#activeChunk = null;
-    this.#queuedCharacters = 0;
-    this.#pendingSince = null;
-    for (const group of groups) this.#finishGroup(group);
-    this.#notify();
-    this.#onWriteTimeout(error);
+    this.#cancelPending();
+    this.#finishPending("failed");
+    // Report controlled metadata, not parser exception strings that may contain
+    // terminal text. Never automatically retry input as part of output recovery.
+    this.#onWriteFailure(error);
+    if (error instanceof TerminalWriteTimeoutError) this.#onWriteTimeout(error);
+    else this.#onError(error);
   }
 
   #completeChunk(chunk: WriteChunk) {
@@ -273,11 +338,11 @@ export class TerminalWriteQueue {
     });
   }
 
-  #finishGroup(group: WriteGroup) {
+  #finishGroup(group: WriteGroup, result: TerminalWriteResult = "written") {
     if (group.remaining < 0) return;
     group.remaining = -1;
     if (group.started && group.replay) this.#onReplayEnd();
-    group.resolve();
+    group.resolve(result);
   }
 
   #notify() {
@@ -289,11 +354,16 @@ export class TerminalWriteQueue {
 }
 
 /** Split without leaving a UTF-16 surrogate pair across xterm writes. */
-export function splitTerminalWrite(data: string, maxCharacters: number) {
+export function splitTerminalWrite(
+  data: string,
+  maxCharacters: number,
+  maxChunks = Number.POSITIVE_INFINITY,
+) {
   if (!Number.isSafeInteger(maxCharacters) || maxCharacters <= 0)
     throw new Error("Terminal write chunk size must be a positive integer.");
   const pieces: string[] = [];
   for (let start = 0; start < data.length;) {
+    if (pieces.length >= maxChunks) throw queueCapacityError();
     let end = Math.min(start + maxCharacters, data.length);
     if (
       end < data.length &&
@@ -309,6 +379,13 @@ export function splitTerminalWrite(data: string, maxCharacters: number) {
     start = end;
   }
   return pieces;
+}
+
+function queueCapacityError() {
+  return new TerminalWriteFailure(
+    "capacity",
+    "Terminal output queue exceeded its memory budget.",
+  );
 }
 
 function isHighSurrogate(value: number) {

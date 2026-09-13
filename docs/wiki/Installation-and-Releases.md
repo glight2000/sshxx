@@ -280,6 +280,13 @@ sshxx-daemon terminal-host restart
 
 ### Settings restart versus installation
 
+Daemon 0.11.5 requires a server supporting independent terminal output
+encryption epochs. Upgrade server and Web client before starting this daemon;
+old viewers receive an upgrade error for new encrypted streams. Existing
+workspace files and legacy server snapshots remain readable. Host 0.10.4 also
+fixes final-output ordering, but activating that separate host executable still
+requires an empty terminal list or an explicit destructive restart.
+
 Starting with Release v0.13.2 (client 0.13.1, daemon/server 0.11.2, host
 0.10.2), Settings can reload the installed daemon or host executable. These
 controls do not download a release and do not restart server. After a manual
@@ -461,6 +468,44 @@ Windows x64.
 
 Release checksums and GitHub attestations provide build provenance and integrity
 checks, but do not replace trusted platform code signing.
+
+## v0.13.5 upgrade notes
+
+| Component               | Version | Changes                                                                           |
+| ----------------------- | ------- | --------------------------------------------------------------------------------- |
+| Suite / Runtime archive | 0.13.5  | Terminal output isolation, recovery and bounded history                           |
+| Web / Tauri client      | 0.13.4  | Fresh renderer recovery, successful-parse acknowledgements and checkpoint history |
+| Daemon                  | 0.11.5  | Independent output encryption epochs and bounded embedded terminal checkpoints    |
+| Server                  | 0.11.5  | Retention-gap detection, compatible output routing and subscription cleanup       |
+| Internal core           | 0.11.5  | Additive output epoch and checkpoint protocol fields                              |
+| Terminal host           | 0.10.4  | Drain final PTY output before reporting process exit                              |
+
+Terminal output now uses a fresh encryption key for each daemon/terminal output
+incarnation. Server retention gaps and host replay gaps rebuild the affected
+viewer instead of silently joining discontinuous output. Failed or disposed
+renderers do not acknowledge successful parsing, and replacing or disconnecting
+a subscription cancels its pending forwarding task. Host exit notifications wait
+for the PTY reader to finish forwarding the final output.
+
+The daemon embeds the pinned terminal parser to provide a current checkpoint and
+bounded, on-demand history. Unsupported or expired checkpoints fall back to
+ordered retained output. A raw retained tail cannot reconstruct missing terminal
+state. Parser and recovery tests pass; sustained multi-device, background-tab,
+and application business-flow validation remain outstanding.
+
+Upgrade **server and Web client before daemon**. New daemons require
+output-epoch support from the server; old viewers receive an upgrade message for
+new encrypted streams. Existing workspace files and legacy server snapshots
+remain readable. Source builds require `npm ci` before compiling the daemon;
+installed Runtime binaries need no Node.js service.
+
+Installing this release preserves a compatible running host. Activating the
+host's final-output fix requires a separate host restart, which disconnects all
+hosted processes. Finish or save work first; use a non-forced restart after the
+terminal list becomes empty, or explicitly acknowledge the loss with `--force`.
+
+Downloads contain the supported Runtime/Web bundle and optional Tauri desktop
+client. Electron, Godot and Pocket experiments are not built or packaged.
 
 ## v0.13.4 upgrade notes
 

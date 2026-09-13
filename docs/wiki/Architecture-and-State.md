@@ -66,6 +66,14 @@ preserve the process while losing an exact full-screen presentation. This is
 most visible during repeated frontend hot reloads or after very high-volume
 output; generic input must never be injected automatically to force a redraw.
 
+A fresh browser document has no in-memory output cursor, even without clearing
+browser caches. It therefore starts at the beginning of the server's retained
+encrypted tail (at most 2 MiB per terminal), then follows live output in order.
+That bounded byte range can still represent a long period of terminal activity.
+Parsing and the round trips between 256 KiB acknowledged batches can make older
+output visibly precede the latest prompt. This is output replay, not rerunning
+commands or retrieving a durable archive of all terminal history.
+
 Host connection readers and writers share one cancellation scope. A failed
 writer or failed/panicked output subscription ends that connection and detaches
 its subscriptions; other connections and already registered PTYs stay alive.
@@ -494,6 +502,25 @@ truncation. Diagnostics log terminal IDs, expected/retained byte positions, and
 rejected chunk counts, never terminal contents or credentials.
 
 Browser output delivery uses capability-negotiated renderer backpressure.
+
+Daemon 0.11.5 assigns every new output incarnation a cryptographically random
+128-bit `output_epoch`. This volatile daemon-owned identity changes after daemon
+or PTY reconstruction and after a host retention gap. HKDF-SHA256 derives a
+separate 128-bit CTR key from the session key (salt `sshxx/terminal-output/v1`,
+info the 16 epoch bytes); output and paste checkpoints retain their distinct
+stream numbers under that key. Replaying the same incarnation keeps its epoch
+and byte offsets. Restarting the same terminal ID at byte zero therefore never
+intentionally reuses its old key stream. Epoch metadata is not secret and adds
+no workspace persistence; the server's optional short-lived snapshots retain it
+alongside the ciphertext. Old snapshots and legacy streams default to an empty
+epoch and remain readable by the new client.
+
+New daemons require `output_epoch_supported` from server Open. Updated viewers
+negotiate `terminal-output-epoch-v1` and acknowledge it before subscribing;
+unenrolled viewers receive an upgrade error instead of misdecrypting new
+streams. Upgrade server and Web before daemon. Older daemons remain compatible,
+but do not acquire incarnation-key isolation merely by upgrading the server.
+
 Compatible viewers receive at most 256 KiB per terminal batch; the server does
 not send that terminal's next batch until xterm's public write callback confirms
 that the current batch was parsed. The viewer further writes in 64 KiB chunks
@@ -503,8 +530,8 @@ and acknowledging output through their mounted xterm instances. If a writer is
 not yet available, bounded browser history owns the batch for later replay.
 Evicting a whole history chunk immediately clears its text reference, without
 waiting for array compaction; garbage collection timing remains browser-owned.
-Older viewers retain the legacy subscription behavior, while batch size and
-current-page labeling remain safe on the server side.
+Legacy streams retain their negotiated subscription behavior, while batch size
+and current-page labeling remain safe on the server side.
 
 The browser bounds each xterm write-callback wait to 15 seconds. A timeout
 quarantines that renderer, releases replay/input suppression, clears only that
@@ -529,13 +556,38 @@ rather than being silently discarded.
 Terminal initialization also has a 15-second deadline. Import/font completion
 checks that the instance is still alive and its parent is connected before
 opening xterm; hidden pages remain mounted. A failed initialization shows a
-local Retry action instead of repeatedly remounting; this retry replays bounded
-browser history rather than discarding output received before initialization.
+local Retry action instead of repeatedly remounting. Retrying requests a fresh
+checkpoint, or an ordered retained replay if no checkpoint is available.
 Teardown releases observers, queued writes, and timers. A pending write lasting
 two seconds shows “Catching up”, even if the batch is too small to reach the
 queue-size threshold. Browser timers cannot run while the browser/OS completely
 suspends the page; they resume when scheduling resumes, while the server has its
 independent deadline.
+
+Each Web renderer queue also limits pending output to 4 Mi UTF-16 code units and
+4,096 chunks, including work received before the renderer is ready. Overflow,
+transform exceptions and sink exceptions quarantine the affected renderer using
+the existing local recovery path; they cannot be reported as successful writes.
+Queue results distinguish written, failed and disposed work throughout the
+component and Session boundary. Only a written result applies the paste-mode
+checkpoint and sends a rendered ACK. Failure invalidates the subscription token
+before remounting; the replacement starts from a fresh checkpoint or retained
+replay, without acknowledging the failed batch. Failure/teardown releases
+pending promises, retained queue references and timers; it never retries input.
+These are queue limits, not a limit on the browser's whole heap. Browser-history
+trimming preserves Unicode surrogate pairs, but does not reconstruct ANSI state
+that predates the retained range.
+
+A resumed chunk cursor must remain inside server retention and match the next
+batch exactly. An expired or future cursor produces viewer-local `terminalGap`
+recovery; it cannot silently append a retained suffix to an old ANSI parser. The
+browser also checks continuity and output epochs after reconnect. A raw host gap
+starts a distinct encrypted incarnation, discards the daemon's incomplete parser
+mirror and invalidates that terminal's viewer generations. Sibling PTYs and
+subscriptions remain active. A retained suffix is still incomplete parser state
+and is labeled as such. Each WebSocket owns at most one forwarding task per
+subscribed terminal; replacing a subscription or closing the socket cancels the
+whole task, including its five-second checkpoint fence wait.
 
 Text clipboard events inside xterm are consumed once through public `paste()`.
 xterm owns newline normalization and negotiated bracketed-paste markers; the
@@ -567,6 +619,98 @@ attaches, that state is unknown until the application emits another mode change.
 The viewer then retains xterm's legacy behavior rather than guessing. Activating
 an updated host is a separately planned, disruptive upgrade; this fix does not
 automatically restart it or existing tasks.
+
+#### Latest-first terminal history (development implementation)
+
+The established Web client negotiates `terminal-checkpoint-v1` with the daemon
+through the server. A cold/full/cache-cleared reload requests the current screen
+plus `ceil(rows / 2)` normal-screen history rows, capped by the viewer's
+existing scrollback setting. Live output reserves additional space in
+viewport-related steps. A transition from below the top to the top requests one
+batch of parsed historical rows; remaining at the top does not repeatedly load.
+Prepending rows preserves the viewport and re-arms this edge. Requests start at
+least 300 ms apart, with one in flight and at most one pending top transition
+(cancelled if the viewer scrolls away). The viewer's setting is the maximum, not
+an initial allocation. Switching pages does not reset this policy or remount a
+renderer. The phone text reader uses the same history requests while retaining
+its independent text/style memory caps; its "Recent output only" state still
+limits that projection.
+
+Authority remains in the **daemon**: a same-version `@xterm/headless` 6.0.0
+parser runs inside a bounded, embedded QuickJS runtime. It owns no PTY and emits
+no terminal input, terminal replies, filesystem/network operations or executable
+terminal-provided JavaScript. The host is unchanged. The daemon executable
+embeds the pinned parser at build time: source builds require `npm ci` first,
+but installed runtimes require neither Node.js nor a separate parser service.
+
+`src/lib/terminalCheckpoint/` is the version-locked compatibility boundary. It
+captures normal/alternate buffers, saved cursor, attributes/links, modes, scroll
+margins, charset, partial control sequences, title, OSC 7 location and program
+color overrides. A checkpoint is fenced at the daemon's exact **decoded UTF-8
+byte offset**, not the host's raw PTY offset. The server waits for that offset
+to arrive, then starts that viewer's encrypted subscription at the fence,
+including slicing an overlapping chunk. Historical rows are prepended as cells;
+they are never sent through the live ANSI parser. The viewport anchor and live
+cursor move by the inserted row count, without injecting input or resizing a
+PTY.
+
+The version-locked adapter also invalidates xterm's cached viewport target and
+synchronizes scrollbar dimensions/position on the next paint. Buffer row numbers
+alone are not evidence of correct pagination: browser checks must confirm the
+actual thumb moves off the top after insertion and upward scrolling can continue
+without a reverse scroll. Restoring a checkpoint uses the same synchronization.
+
+Checkpoints/history use authenticated AES-GCM envelopes with fresh 96-bit nonces
+and a dedicated HKDF-SHA256 subkey of the session key (salt
+`sshxx/terminal-checkpoint/v1`, info `aes-128-gcm`, 128-bit output). The new GCM
+key must never equal the legacy CTR key, whose encrypted zero block is publicly
+used during authentication. Terminal ID, generation, request ID and output fence
+are authenticated inside each payload. The server relays opaque data only to the
+requesting viewer, including read-only viewers; it never receives the decryption
+key. Read requests identify the current page but follow a stable terminal
+ID/generation across page moves; geometry and other shared mutations still
+require their page scope. Loading/scroll position and history capacity remain
+viewer-local, with no workspace or browser-disk archive.
+
+Retention and failure boundaries are explicit:
+
+- Daemon history is volatile and limited to 10,000 rows and an adaptive
+  200,000-cell scrollback budget per terminal. Nothing is added to workspace
+  persistence. Old rows beyond retention cannot be fetched back.
+- Each optional parser has a 32 MiB JavaScript heap limit, with a 256 MiB
+  aggregate reservation limit, at most 128 workers, a 2 MiB/512-command queue,
+  and bounded execution deadlines. Individual checkpoints are at most 4 MiB;
+  response work and viewer requests have concurrency limits and deadlines. These
+  bounds do not describe total daemon RSS, which also includes native queues,
+  encrypted responses, raw replay and the existing daemon services.
+- Resize/reset invalidates old archive coordinates. An expired/mismatched
+  historical range produces a local notice instead of mixing unrelated rows.
+  Already retained viewer history and live terminal I/O remain usable.
+- Unsupported image-parser state, lost raw prefixes, an overloaded/failed mirror
+  or incompatible peers fall back to ordered retained-output replay. Failure is
+  visible; it does not terminate the underlying task or sibling PTYs. In this
+  fallback, compact cold loading cannot be guaranteed.
+- Daemon restart rebuilds mirrors from the host's retained output using the
+  current geometry, not a durable resize timeline. A missing prefix cannot
+  reconstruct exact prior parser state. This is not process recovery after a
+  host/OS restart and does not introduce a host upgrade requirement.
+
+Continuation, retention, bounds, authentication, request cleanup and actual
+daemon/gRPC/server/WebSocket fence tests live in the existing runtime and Rust
+test suites. Real browser/device interaction and long-running multi-device load
+still require separate validation; passing parser tests alone is not that claim.
+
+Checkpoint exporters must pass continuation tests, not just an immediate screen
+comparison. Isolated evaluation of `avt` 0.18.0 and xterm's `addon-serialize`
+0.14.0 against the installed xterm 6 parser did not establish a drop-in complete
+checkpoint: the former differed in input modes and some attributes/links; the
+latter lost scroll margins, a saved cursor and a partial CSI in the tested
+continuations. These libraries have not been added as runtime dependencies. The
+matching saved-cursor, fixed-header scroll-region and partial-CSI cases are
+retained in the shared synthetic replay fixtures and the version-locked
+adapter's continuation tests. A replacement must preserve them before it can
+shorten initial replay. The context documentation for an unreleased exporter is
+not evidence that the pinned release supports that state.
 
 #### Output diagnostics
 

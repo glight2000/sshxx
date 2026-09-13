@@ -42,3 +42,25 @@ prototypes, not supported replacements for the established Web client.
 
 The complete code-maintenance contract, including module-size review thresholds
 and required validation commands, is in [`AGENTS.md`](../AGENTS.md).
+
+## Recovery and cross-client verification
+
+Extend the existing `npm run test:runtime` suite and component-local tests
+rather than adding a parallel runner or dated verification report. Synthetic
+terminal streams in `tests/fixtures/terminal-replay.json` define expected
+screen, cursor, and mode state for Web and native parser checks. Review a
+semantic difference before changing a fixture to match a port; platform-specific
+rendering and input checks remain in the relevant client.
+
+| Boundary                              | Existing coverage to extend                                                                                                                                                                                           |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Renderer queue and browser history    | `tests/terminalWriteQueue.test.mjs`, `tests/terminalHistory.test.mjs`: ordered replay/live delivery, missing callbacks, capacity, failure/disposal, late completion, retention rollover and isolation                 |
+| Parsed checkpoints and pagination     | `tests/terminalCheckpoint.test.mjs` and `crates/sshx-server/tests/with_client.rs`: pinned headless/Web continuation, small cold state, live fence, historical row anchors, rollover, encryption and request isolation |
+| Subscriptions and component lifecycle | Existing terminal subscription, output-flow and initialization tests: page identity, generation/token barriers, bounded retry, teardown and background progress                                                       |
+| Host/daemon/server continuity         | Tests alongside Rust stream, runner, output, session and socket implementations: retained ranges, gaps, snapshot/replay ordering, cancellation and per-subscriber ACK deadlines                                       |
+
+Controlled clocks and repeated rollover tests cover state transitions without
+waiting days. Bounded references are not a measurement of process RSS or GPU
+memory; parser conformance is not browser/device performance or input-method
+validation. Report real multi-viewer, background-tab and sustained-load checks
+separately, including gaps. Never restart a production terminal host as a test.

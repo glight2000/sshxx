@@ -1,6 +1,6 @@
 [package]
 name = "sshxx-daemon"
-version = "0.11.4"
+version = "0.11.5"
 authors.workspace = true
 license.workspace = true
 description.workspace = true
@@ -23,11 +23,14 @@ cfg-if = "1.0.4"
 clap.workspace = true
 ctr = "0.10.1"
 encoding_rs = "0.8.35"
+hmac = "0.13.0"
 pin-project = "1.1.13"
 prost.workspace = true
 openssh-sftp-client = "0.15.7"
 serde.workspace = true
 serde_json = "1.0.149"
+sha2 = "0.11.0"
+rquickjs = "=0.13.0"
 sshx-core.workspace = true
 sshxx-terminal-host.workspace = true
 tokio.workspace = true

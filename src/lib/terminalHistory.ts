@@ -37,8 +37,21 @@ export class TerminalHistory {
         history.chunks[history.start] = "";
         history.start += 1;
       } else {
-        history.chunks[history.start] = first.slice(overflow);
-        history.length -= overflow;
+        let trim = overflow;
+        // A retention boundary may land between a UTF-16 surrogate pair.
+        // Discard the complete character, not a dangling low surrogate that
+        // becomes a replacement glyph when a renderer is recreated.
+        const previous = first.charCodeAt(trim - 1);
+        const next = first.charCodeAt(trim);
+        if (
+          previous >= 0xd800 &&
+          previous <= 0xdbff &&
+          next >= 0xdc00 &&
+          next <= 0xdfff
+        )
+          trim += 1;
+        history.chunks[history.start] = first.slice(trim);
+        history.length -= trim;
       }
     }
 

@@ -20,6 +20,11 @@ id_ed25519
 /clients/godot/.godot
 /clients/godot/build
 
+# Temporarily local-only client experiments; .dockerignore shares these exclusions.
+/clients/electron/
+/clients/godot/
+/clients/pocket-local/
+
 # Godot MCP Pro is a local proprietary development tool and must never be
 # committed or included in redistributable client artifacts.
 /clients/godot/addons/godot_mcp

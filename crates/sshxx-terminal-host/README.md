@@ -77,6 +77,11 @@ not yet been registered is cleaned up if creation's awaiter disappears. Partial
 control frames survive normal subscription completion. This does not replay
 uncertain terminal input or guarantee transparent daemon-side recovery.
 
+Starting with 0.10.4, process exit and PTY reader completion are joined before
+publishing the terminal's exit event. Final output cannot be overtaken by the
+independent process-wait thread. Installing this host update does not activate
+it in an existing process; the disruptive-upgrade rules above still apply.
+
 The default local state directory is `cache/terminal-host` relative to the
 working directory. The host owns the local socket and authentication token; the
 daemon adds its stable instance ID and per-terminal shell-history files.

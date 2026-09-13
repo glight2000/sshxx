@@ -37,6 +37,7 @@ impl SshxService for Bridge {
             token: "test-token".into(),
             url: "http://localhost/s/restart-test".into(),
             process_restart_supported: true,
+            output_epoch_supported: true,
         }))
     }
 

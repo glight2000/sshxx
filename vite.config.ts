@@ -12,7 +12,7 @@ const tauriDevHost = process.env.TAURI_DEV_HOST;
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(
-      "0.13.3-" + commitHash + (sourceChanges ? "-dev" : ""),
+      "0.13.4-" + commitHash + (sourceChanges ? "-dev" : ""),
     ),
     __RELEASE_VERSION__: JSON.stringify(
       JSON.parse(
@@ -30,7 +30,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     watch: {
-      ignored: ["**/target/**", "**/build/**"],
+      ignored: ["**/target/**", "**/build/**", "**/clients/pocket-local/**"],
     },
     hmr: tauriDevHost
       ? {

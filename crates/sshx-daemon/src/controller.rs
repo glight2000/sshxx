@@ -295,6 +295,8 @@ impl Controller {
                 PROCESS_RESTART_CAPABILITY.into(),
                 CUSTOM_COMPONENT_CAPABILITY.into(),
                 "workspace-media-v1".into(),
+                "terminal-checkpoint-v1".into(),
+                "terminal-output-epoch-v1".into(),
             ],
             terminal_host_version,
             resume_name: restart_identity
@@ -307,6 +309,10 @@ impl Controller {
                 .unwrap_or_default(),
         };
         let mut resp = client.open(req).await?.into_inner();
+        anyhow::ensure!(
+            resp.output_epoch_supported,
+            "Upgrade sshxx-server: independent terminal output encryption is required"
+        );
         if let Some(identity) = &restart_identity {
             anyhow::ensure!(
                 resp.process_restart_supported && resp.name == identity.name,
@@ -471,6 +477,8 @@ impl Controller {
                 PROCESS_RESTART_CAPABILITY.into(),
                 CUSTOM_COMPONENT_CAPABILITY.into(),
                 "workspace-media-v1".into(),
+                "terminal-checkpoint-v1".into(),
+                "terminal-output-epoch-v1".into(),
             ],
             terminal_host_version: self.runner.terminal_host_version().await,
             resume_name: String::new(),
@@ -478,6 +486,10 @@ impl Controller {
         };
         let mut client = Self::connect(&self.origin).await?;
         let response = client.open(request).await?.into_inner();
+        anyhow::ensure!(
+            response.output_epoch_supported,
+            "Upgrade sshxx-server: independent terminal output encryption is required"
+        );
         self.process_restart_supported = response.process_restart_supported;
         let previous_name = std::mem::replace(&mut self.name, response.name);
         self.token = response.token;
@@ -538,6 +550,31 @@ impl Controller {
             };
 
             match message {
+                ServerMessage::TerminalCheckpoint(request) => {
+                    if request.history > 10000
+                        || request.request_id.len() != 32
+                        || !request
+                            .request_id
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit())
+                    {
+                        continue;
+                    }
+                    if let Some(sender) = self.shells_tx.get(&Sid(request.id)) {
+                        if sender
+                            .try_send(ShellData::Checkpoint(request.clone()))
+                            .is_ok()
+                        {
+                            continue;
+                        }
+                    }
+                    crate::terminal_checkpoint::respond(
+                        request,
+                        None,
+                        self.encrypt.clone(),
+                        self.output_tx.clone(),
+                    );
+                }
                 ServerMessage::Input(input) => {
                     let data = self.encrypt.segment(0x200000000, input.offset, &input.data);
                     if let Some(sender) = self.shells_tx.get(&Sid(input.id)) {

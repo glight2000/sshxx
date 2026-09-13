@@ -61,6 +61,8 @@ pub(crate) struct ShellOptions {
 
 /// Internal message routed to shell runners.
 pub enum ShellData {
+    /// Read-only parsed-state/history request; never input or a PTY resize.
+    Checkpoint(sshx_core::proto::TerminalCheckpointRequest),
     /// Sequence of input bytes from the server.
     Data(Vec<u8>),
     /// Information about the server's current sequence number.
@@ -268,12 +270,15 @@ async fn shell_task(
     let mut term = Terminal::new(program, args, options.working_directory.as_deref()).await?;
     term.set_winsize(options.rows, options.cols)?;
 
-    let mut output = OutputBuffer::default();
+    let mut output = OutputBuffer::with_size(options.rows, options.cols);
+    let mut mirror_tick = time::interval(Duration::from_millis(50));
+    mirror_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut buf = [0u8; 4096]; // buffer for reading
     let mut finished = false; // set when this is done
 
     while !finished {
         tokio::select! {
+            _ = mirror_tick.tick() => output.flush_mirror(),
             result = term.read(&mut buf) => {
                 let n = result?;
                 if n == 0 {
@@ -284,6 +289,7 @@ async fn shell_task(
             }
             item = shell_rx.recv() => {
                 match item {
+                    Some(ShellData::Checkpoint(request)) => output.checkpoint(request, encrypt.clone(), output_tx.clone()),
                     Some(ShellData::Data(data)) => {
                         term.write_all(&data).await?;
                     }
@@ -294,6 +300,7 @@ async fn shell_task(
                     }
                     Some(ShellData::Size(rows, cols)) => {
                         term.set_winsize(rows as u16, cols as u16)?;
+                        output.resize(rows as u16, cols as u16);
                     }
                     Some(ShellData::WorkingDirectory(sender)) => {
                         sender.send(term.working_directory().await).ok();
@@ -385,6 +392,7 @@ async fn hosted_shell_task(
             &mut client,
             &mut shell_rx,
             &output_tx,
+            (options.rows, options.cols),
         )
         .await
         {
@@ -420,14 +428,18 @@ async fn forward_hosted_terminal(
     client: &mut TerminalHostClient,
     shell_rx: &mut mpsc::Receiver<ShellData>,
     output_tx: &mpsc::Sender<ClientMessage>,
+    size: (u16, u16),
 ) -> Result<HostedShellEnd> {
-    let mut output_buffer = OutputBuffer::default();
+    let mut output_buffer = OutputBuffer::with_size(size.0, size.1);
+    let mut mirror_tick = time::interval(Duration::from_millis(50));
+    mirror_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut host_sequence = 0u64;
     let mut pending_working_directories = HashMap::<u64, oneshot::Sender<Option<PathBuf>>>::new();
     let mut finished = false;
 
     while !finished {
         tokio::select! {
+            _ = mirror_tick.tick() => output_buffer.flush_mirror(),
             frame = client.receive() => {
                 let frame = frame?.context("terminal host disconnected")?;
                 match frame.message {
@@ -471,6 +483,7 @@ async fn forward_hosted_terminal(
             }
             item = shell_rx.recv() => {
                 match item {
+                    Some(ShellData::Checkpoint(request)) => output_buffer.checkpoint(request, encrypt.clone(), output_tx.clone()),
                     Some(ShellData::Data(data)) => {
                         client.input(terminal_id, data).await?;
                     }
@@ -483,6 +496,7 @@ async fn forward_hosted_terminal(
                     }
                     Some(ShellData::Size(rows, cols)) => {
                         client.resize(terminal_id, rows, cols).await?;
+                        output_buffer.resize(rows as u16, cols as u16);
                     }
                     Some(ShellData::WorkingDirectory(sender)) => {
                         let request_id = client.get_working_directory(terminal_id).await?;
@@ -769,15 +783,23 @@ async fn echo_task(
     output_tx: mpsc::Sender<ClientMessage>,
 ) -> Result<()> {
     let mut seq = 0;
+    let output_epoch = output::random_output_epoch();
     while let Some(item) = shell_rx.recv().await {
         match item {
             ShellData::Data(data) => {
                 let msg = String::from_utf8_lossy(&data);
                 let term_data = TerminalData {
+                    output_epoch: output_epoch.clone(),
+                    output_gap: false,
                     paste_mode: Default::default(),
                     id: id.0,
                     data: encrypt
-                        .segment(0x100000000 | id.0 as u64, seq, msg.as_bytes())
+                        .output_segment(
+                            &output_epoch,
+                            0x100000000 | id.0 as u64,
+                            seq,
+                            msg.as_bytes(),
+                        )
                         .into(),
                     seq,
                     retained_sequence: None,
@@ -786,6 +808,12 @@ async fn echo_task(
                 seq += msg.len() as u64;
             }
             ShellData::Sync { .. } => (),
+            ShellData::Checkpoint(request) => crate::terminal_checkpoint::respond(
+                request,
+                None,
+                encrypt.clone(),
+                output_tx.clone(),
+            ),
             ShellData::Size(_, _) => (),
             ShellData::WorkingDirectory(sender) => {
                 sender.send(None).ok();
@@ -1076,7 +1104,12 @@ mod tests {
                     .await
                     .context("reattached runner output closed")?
                 {
-                    let plaintext = encrypt.segment(0x100000000 | 7, data.seq, &data.data);
+                    let plaintext = encrypt.output_segment(
+                        &data.output_epoch,
+                        0x100000000 | 7,
+                        data.seq,
+                        &data.data,
+                    );
                     // PTY/transport boundaries need not coincide with a line.
                     received.push_str(&String::from_utf8_lossy(&plaintext));
                     if received
@@ -1205,7 +1238,12 @@ mod tests {
                     .await
                     .context("recovered runner output closed")?
                 {
-                    let plaintext = encrypt.segment(0x100000000 | 11, data.seq, &data.data);
+                    let plaintext = encrypt.output_segment(
+                        &data.output_epoch,
+                        0x100000000 | 11,
+                        data.seq,
+                        &data.data,
+                    );
                     received.push_str(&String::from_utf8_lossy(&plaintext));
                     if received.contains("SSH_PRESET_RECOVERED") {
                         return Ok::<_, anyhow::Error>(());

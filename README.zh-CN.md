@@ -238,10 +238,14 @@ unit 不能连带重启 host unit。
 ## 构建
 
 ```shell
+npm ci
 cargo build --release -p sshxx-daemon -p sshxx-server -p sshxx-terminal-host
 npm run build
 npm run app:build
 ```
+
+daemon 在编译时嵌入固定版本的无界面终端解析器，因此源码构建前需先执行
+`npm ci`；安装后的 Runtime 程序不需要 Node.js 或额外服务。
 
 打包客户端还需要对应平台的 Tauri 系统依赖。Ubuntu 使用：
 
@@ -268,6 +272,7 @@ sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2
 - [ ] 增加可信桌面代码签名/公证，并验证 Android/iOS 目标。
 - [ ] 发布包含 TLS、升级、备份与恢复的长期维护生产部署参考。
 - [ ] 增加版本化工作区迁移，并为页面、便利贴、吸附、搜索、终端输入和多人编辑补充端到端测试。
+- [ ] 完成最新画面优先终端历史的持续多端验证。开发版已按窗口高度加载快照，并在向上浏览时分批加载历史；不支持或过期的状态会回退到顺序回放。参见[保留范围与兼容边界](docs/wiki/Architecture-and-State.md#latest-first-terminal-history-development-implementation)。
 - [ ] 在增加 AI
       Agent 识别或语义化完成提醒前，设计明确的 daemon-to-client 进程状态协议。
 

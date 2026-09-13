@@ -1,6 +1,6 @@
 {
   "name": "sshxx-client",
-  "version": "0.13.3",
+  "version": "0.13.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -46,6 +46,7 @@
     "@types/node": "24.13.3",
     "@typescript-eslint/eslint-plugin": "^8.67.0",
     "@typescript-eslint/parser": "^8.67.0",
+    "@xterm/headless": "6.0.0",
     "eslint": "^10.9.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-svelte": "^3.23.0",

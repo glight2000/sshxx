@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { terminalSubscriptionMessage } from "../src/lib/terminalSubscription.ts";
+import {
+  terminalSubscriptionMessage,
+  terminalBatchIsContinuous,
+} from "../src/lib/terminalSubscription.ts";
+
+test("resuming requires contiguous chunks and the same output incarnation", () => {
+  const epoch = new Uint8Array(16).fill(1);
+  assert.equal(terminalBatchIsContinuous(0, 90), true);
+  assert.equal(terminalBatchIsContinuous(4, 4, epoch, epoch.slice()), true);
+  assert.equal(terminalBatchIsContinuous(4, 90), false);
+  assert.equal(terminalBatchIsContinuous(4, 3), false);
+  assert.equal(
+    terminalBatchIsContinuous(4, 4, epoch, new Uint8Array(16).fill(2)),
+    false,
+  );
+  assert.equal(terminalBatchIsContinuous(4, 4, epoch), false);
+  assert.equal(
+    terminalBatchIsContinuous(0, Number.MAX_SAFE_INTEGER + 1),
+    false,
+  );
+});
 
 test("recoverable subscriptions carry page, generation, checkpoint and viewer token", () => {
   const capabilities = { recovery: true, generation: true, flowControl: true };

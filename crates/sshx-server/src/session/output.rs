@@ -28,6 +28,29 @@ impl Session {
         retained: Option<u64>,
         paste_mode: Bytes,
     ) -> Result<()> {
+        self.add_output_with_epoch(id, data, seq, retained, paste_mode, Bytes::new(), false)
+    }
+
+    /// Store output under its incarnation key, explicitly invalidating old viewers on gaps.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_output_with_epoch(
+        &self,
+        id: Sid,
+        data: Bytes,
+        seq: u64,
+        retained: Option<u64>,
+        paste_mode: Bytes,
+        output_epoch: Bytes,
+        output_gap: bool,
+    ) -> Result<()> {
+        ensure!(
+            output_epoch.is_empty() || output_epoch.len() == 16,
+            "invalid terminal output epoch"
+        );
+        ensure!(
+            !output_gap || output_epoch.len() == 16,
+            "output gap requires an encryption epoch"
+        );
         ensure!(
             paste_mode.len() <= 1,
             "invalid terminal paste checkpoint size"
@@ -43,6 +66,26 @@ impl Session {
         let shell = shells.get_mut(&id).context("terminal does not exist")?;
         if shell.closed || data.is_empty() {
             return Ok(());
+        }
+        ensure!(
+            shell.output_epoch.is_empty() || !output_epoch.is_empty(),
+            "terminal output encryption cannot downgrade"
+        );
+        let changed_epoch = shell.output_epoch != output_epoch;
+        let lost_prefix = changed_epoch && output_gap;
+        let replaced = changed_epoch && (!shell.output_epoch.is_empty() || shell.seqnum != 0);
+        // Do not erase the current incarnation until the new one supplies a
+        // valid replay boundary. Sync can still request its retained prefix.
+        if changed_epoch && seq != 0 && retained != Some(seq) {
+            return Ok(());
+        }
+        if changed_epoch {
+            let notify = shell.notify.clone();
+            *shell = super::State {
+                output_epoch,
+                notify,
+                ..Default::default()
+            };
         }
         shell.last_received_sequence = Some(seq);
 
@@ -91,7 +134,7 @@ impl Session {
         let notify = shell.notify.clone();
         drop(shells);
 
-        if let Some(previous) = recovered {
+        if recovered.is_some() || replaced || lost_prefix {
             // Reuse the existing renderer-generation invalidation. Encryption
             // still uses the original absolute offsets, not this generation.
             self.source.send_modify(|source| {
@@ -101,7 +144,11 @@ impl Session {
             });
             notify.notify_waiters();
             self.sync_now();
-            self.send_error(format!("Terminal {id}: output stream recovered after a gap of {} bytes. Some earlier output is unavailable; replaying retained output. The terminal process was not restarted.", seq - previous));
+            if let Some(previous) = recovered {
+                self.send_error(format!("Terminal {id}: output stream recovered after a gap of {} bytes. Some earlier output is unavailable; replaying retained output. The terminal process was not restarted.", seq - previous));
+            } else if lost_prefix {
+                self.send_error(format!("Terminal {id}: host output retention was exceeded. Rebuilding this terminal view from an incomplete retained tail; its process is still running."));
+            }
         }
         Ok(())
     }
@@ -113,6 +160,84 @@ mod tests {
     use crate::session::tests::session;
     use crate::web::protocol::WsServer;
     use tokio_stream::StreamExt;
+
+    #[tokio::test]
+    async fn output_epochs_preserve_snapshot_keys_and_isolate_host_gaps() {
+        let session = session();
+        add_shell(&session, Sid(60));
+        add_shell(&session, Sid(61));
+        let old = Bytes::from(vec![1; 16]);
+        let next = Bytes::from(vec![2; 16]);
+        session
+            .add_output_with_epoch(
+                Sid(60),
+                Bytes::from_static(b"old"),
+                0,
+                Some(0),
+                Bytes::new(),
+                old.clone(),
+                false,
+            )
+            .unwrap();
+        let restored = Session::restore(&session.snapshot().unwrap()).unwrap();
+        assert_eq!(restored.shells.read()[&Sid(60)].output_epoch, old);
+        assert!(session
+            .add_output_with_epoch(
+                Sid(60),
+                Bytes::from_static(b"bad"),
+                0,
+                Some(0),
+                Bytes::new(),
+                Bytes::from_static(b"short"),
+                false
+            )
+            .is_err());
+        assert!(session
+            .add_data(Sid(60), Bytes::from_static(b"downgrade"), 3)
+            .is_err());
+        // A new epoch without its retained prefix cannot erase the current one.
+        session
+            .add_output_with_epoch(
+                Sid(60),
+                Bytes::from_static(b"late"),
+                10,
+                Some(0),
+                Bytes::new(),
+                next.clone(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(session.shells.read()[&Sid(60)].output_epoch, old);
+        session
+            .add_output_with_epoch(
+                Sid(60),
+                Bytes::from_static(b"tail"),
+                0,
+                Some(0),
+                Bytes::new(),
+                next.clone(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(session.shell_generation(Sid(60)), Some(1));
+        assert_eq!(session.shell_generation(Sid(61)), Some(0));
+        let shells = session.shells.read();
+        assert_eq!(shells[&Sid(60)].data, [Bytes::from_static(b"tail")]);
+        assert_eq!(shells[&Sid(60)].output_epoch, next);
+        drop(shells);
+        session
+            .add_output_with_epoch(
+                Sid(60),
+                Bytes::from_static(b"!"),
+                4,
+                Some(0),
+                Bytes::new(),
+                next,
+                true,
+            )
+            .unwrap();
+        assert_eq!(session.shell_generation(Sid(60)), Some(1));
+    }
 
     #[tokio::test]
     async fn paste_checkpoints_are_pruned_and_restored_with_their_output() {
@@ -140,7 +265,7 @@ mod tests {
         let restored = Session::restore(&session.snapshot().unwrap()).unwrap();
         let stream = restored.subscribe_indexed_chunks(id, 0, 0);
         tokio::pin!(stream);
-        let (_, seq, _, data, mode) = stream.next().await.unwrap();
+        let (_, seq, _, data, mode, _) = stream.next().await.unwrap();
         assert_eq!(seq, SHELL_STORED_BYTES);
         assert_eq!(data, [Bytes::from_static(b"tail")]);
         assert_eq!(mode, Bytes::from_static(b"b"));

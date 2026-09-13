@@ -79,6 +79,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1969,6 +1975,11 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "heck"
@@ -3898,6 +3909,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "relative-path"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3949,6 +3969,35 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7d96fb23e8ff51c8d4772ea84e44b5238543b7d81e9cc23c0219511a8f16482"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c6dbfedfbf458dc119c21ccd032c7527d185210b11a1ae796cd04106e6db280"
+dependencies = [
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53d0aaff245bed1c6f3c39e477fb6b98d710d9d298bfec7c8dfc589bed0e5cef"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -4599,7 +4648,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-client"
-version = "0.13.3"
+version = "0.13.4"
 dependencies = [
  "tauri",
  "tauri-build",
@@ -4607,8 +4656,9 @@ dependencies = [
 
 [[package]]
 name = "sshxx-core"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
+ "bytes",
  "prost",
  "rand 0.10.2",
  "serde",
@@ -4619,7 +4669,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-daemon"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "aes 0.9.2",
  "aes-gcm",
@@ -4634,12 +4684,15 @@ dependencies = [
  "conpty",
  "ctr 0.10.1",
  "encoding_rs",
+ "hmac",
  "nix 0.31.3",
  "openssh-sftp-client",
  "pin-project",
  "prost",
+ "rquickjs",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sshxx-core",
  "sshxx-terminal-host",
  "tempfile",
@@ -4653,7 +4706,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-server"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -4675,6 +4728,7 @@ dependencies = [
  "redis",
  "reqwest",
  "serde",
+ "serde_json",
  "sha2 0.11.0",
  "sshxx-core",
  "sshxx-daemon",
@@ -4693,7 +4747,7 @@ dependencies = [
 
 [[package]]
 name = "sshxx-terminal-host"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -5102,7 +5156,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

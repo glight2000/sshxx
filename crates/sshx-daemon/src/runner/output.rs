@@ -9,12 +9,17 @@ use tracing::{debug, warn};
 
 use super::prev_char_boundary;
 use crate::encrypt::Encrypt;
+use crate::terminal_checkpoint::{TerminalMirror, MAX_APPEND_BYTES};
 
 const CHUNK_BYTES: usize = 1 << 16;
 const ROLLING_BYTES: usize = 8 << 20;
 const PRUNE_BYTES: usize = 12 << 20;
 
 pub(super) struct OutputBuffer {
+    output_epoch: bytes::Bytes,
+    output_gap: bool,
+    mirror: Option<TerminalMirror>,
+    mirror_sent: usize,
     retained_modes: PasteMode,
     sent_modes: PasteMode,
     mode_checkpoints: VecDeque<(usize, PasteMode)>,
@@ -32,6 +37,10 @@ pub(super) struct OutputBuffer {
 impl Default for OutputBuffer {
     fn default() -> Self {
         Self {
+            output_epoch: random_output_epoch(),
+            output_gap: false,
+            mirror: None,
+            mirror_sent: 0,
             retained_modes: PasteMode::fresh(),
             sent_modes: PasteMode::fresh(),
             mode_checkpoints: VecDeque::new(),
@@ -49,11 +58,55 @@ impl Default for OutputBuffer {
 }
 
 impl OutputBuffer {
+    pub fn with_size(rows: u16, cols: u16) -> Self {
+        Self {
+            mirror: Some(TerminalMirror::new(rows, cols)),
+            ..Self::default()
+        }
+    }
+
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.flush_mirror();
+        if let Some(mirror) = &self.mirror {
+            if self.mirror_sent != self.offset + self.content.len() {
+                mirror.invalidate();
+                return;
+            }
+            mirror.resize(rows, cols);
+        }
+    }
+
+    pub fn checkpoint(
+        &mut self,
+        request: sshx_core::proto::TerminalCheckpointRequest,
+        encrypt: Encrypt,
+        output: tokio::sync::mpsc::Sender<sshx_core::proto::client_update::ClientMessage>,
+    ) {
+        self.flush_mirror();
+        let receiver = self.mirror.as_ref().and_then(|mirror| {
+            if self.mirror_sent != self.offset + self.content.len() {
+                return None;
+            }
+            mirror
+                .request(
+                    request.history,
+                    request.archive_epoch.map(|epoch| (epoch, request.before)),
+                )
+                .ok()
+        });
+        crate::terminal_checkpoint::respond(request, receiver, encrypt, output);
+    }
+
     pub fn reset_decoder(&mut self) {
-        self.decoder = UTF_8.new_decoder();
-        // A gap from a legacy host must not imply the default/off state.
-        self.mode_checkpoints
-            .push_back((self.offset + self.content.len(), PasteMode::default()));
+        // A raw retained suffix cannot reconstruct the lost parser state.
+        // Start a distinct encrypted incarnation. Collapsing a raw gap into a
+        // continuous decoded stream would hide it from every existing viewer.
+        *self = Self {
+            output_gap: true,
+            retained_modes: PasteMode::default(),
+            sent_modes: PasteMode::default(),
+            ..Self::default()
+        };
     }
 
     pub fn restore_modes(&mut self, checkpoint: &[u8]) {
@@ -95,6 +148,30 @@ impl OutputBuffer {
             .decoder
             .decode_to_string(bytes, &mut self.content, finished);
         debug_assert!(result == CoderResult::InputEmpty);
+        self.flush_mirror();
+    }
+
+    /// Retry from the bounded replay ring after temporary mirror backpressure.
+    /// Never block PTY forwarding, duplicate a parsed byte, or skip a gap.
+    pub fn flush_mirror(&mut self) {
+        if let Some(mirror) = &self.mirror {
+            if self.mirror_sent < self.offset {
+                mirror.invalidate();
+                return;
+            }
+            let mut start = self.mirror_sent - self.offset;
+            while start < self.content.len() {
+                let end = prev_char_boundary(
+                    &self.content,
+                    (start + MAX_APPEND_BYTES).min(self.content.len()),
+                );
+                if !mirror.append((self.offset + start) as u64, &self.content[start..end]) {
+                    break;
+                }
+                start = end;
+                self.mirror_sent = self.offset + end;
+            }
+        }
     }
 
     /// Sync is an acknowledgement, unlike `sent`, which only means queued.
@@ -155,8 +232,11 @@ impl OutputBuffer {
             .enabled()
             .map_or(0, |enabled| if enabled { 2 } else { 1 });
         Some(TerminalData {
+            output_epoch: self.output_epoch.clone(),
+            output_gap: self.output_gap,
             paste_mode: encrypt
-                .segment(
+                .output_segment(
+                    &self.output_epoch,
                     0x300000000 | id.0 as u64,
                     (self.offset + end - 1) as u64,
                     &[mode_byte],
@@ -164,7 +244,8 @@ impl OutputBuffer {
                 .into(),
             id: id.0,
             data: encrypt
-                .segment(
+                .output_segment(
+                    &self.output_epoch,
                     0x100000000 | id.0 as u64,
                     seq,
                     &self.content.as_bytes()[start..end],
@@ -200,9 +281,37 @@ impl OutputBuffer {
     }
 }
 
+pub(super) fn random_output_epoch() -> bytes::Bytes {
+    use aes_gcm::aead::{rand_core::RngCore, OsRng};
+    let mut epoch = [0; 16];
+    OsRng.fill_bytes(&mut epoch);
+    bytes::Bytes::copy_from_slice(&epoch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_gap_starts_a_distinct_stream_without_old_parser_bytes() {
+        let encrypt = Encrypt::new("synthetic-host-gap");
+        let mut output = OutputBuffer::with_size(24, 80);
+        output.append(b"old\x1b[31", false);
+        let first = drain(&mut output, &encrypt);
+        output.reset_decoder();
+        output.append(b"retained tail", false);
+        let next = drain(&mut output, &encrypt);
+        assert_ne!(first[0].output_epoch, next[0].output_epoch);
+        assert!(next[0].output_gap);
+        assert_eq!(next[0].seq, 0);
+        assert!(output.mirror.is_none());
+        assert_eq!(
+            encrypt.output_segment(&next[0].output_epoch, 0x10000003c, 0, &next[0].data),
+            b"retained tail"
+        );
+        let recreated = OutputBuffer::with_size(24, 80);
+        assert_ne!(recreated.output_epoch, next[0].output_epoch);
+    }
 
     #[test]
     fn paste_checkpoint_survives_pruning_replay_and_host_reattach() {
@@ -218,7 +327,8 @@ mod tests {
         assert!(buffer.mode_checkpoints.is_empty());
         for chunk in &original {
             assert_eq!(
-                encrypt.segment(
+                encrypt.output_segment(
+                    &chunk.output_epoch,
                     0x30000003c,
                     chunk.seq + chunk.data.len() as u64 - 1,
                     &chunk.paste_mode
@@ -231,7 +341,8 @@ mod tests {
         }
         for chunk in drain(&mut buffer, &encrypt) {
             assert_eq!(
-                encrypt.segment(
+                encrypt.output_segment(
+                    &chunk.output_epoch,
                     0x30000003c,
                     chunk.seq + chunk.data.len() as u64 - 1,
                     &chunk.paste_mode
@@ -242,7 +353,8 @@ mod tests {
         buffer.append(b"\x1b[?2004l", false);
         let off = drain(&mut buffer, &encrypt);
         assert_eq!(
-            encrypt.segment(
+            encrypt.output_segment(
+                &off[0].output_epoch,
                 0x30000003c,
                 off[0].seq + off[0].data.len() as u64 - 1,
                 &off[0].paste_mode
@@ -253,7 +365,8 @@ mod tests {
         buffer.append(b"legacy host lost mode", false);
         let unknown = drain(&mut buffer, &encrypt);
         assert_eq!(
-            encrypt.segment(
+            encrypt.output_segment(
+                &unknown[0].output_epoch,
                 0x30000003c,
                 unknown[0].seq + unknown[0].data.len() as u64 - 1,
                 &unknown[0].paste_mode
@@ -313,7 +426,12 @@ mod tests {
         assert_eq!(chunks[0].retained_sequence, Some(chunks[0].seq));
         let mut plaintext = Vec::new();
         for chunk in chunks {
-            plaintext.extend(encrypt.segment(0x10000003c, chunk.seq, &chunk.data));
+            plaintext.extend(encrypt.output_segment(
+                &chunk.output_epoch,
+                0x10000003c,
+                chunk.seq,
+                &chunk.data,
+            ));
         }
         assert_eq!(plaintext, buffer.content.as_bytes());
         assert!(plaintext.ends_with(b"Codex exited\r\n$ "));

@@ -1,6 +1,6 @@
 [package]
 name = "sshxx-server"
-version = "0.11.4"
+version = "0.11.5"
 authors.workspace = true
 license.workspace = true
 description.workspace = true
@@ -51,5 +51,6 @@ tracing-subscriber.workspace = true
 zstd = "0.13.3"
 
 [dev-dependencies]
+serde_json = "1.0.149"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
 sshx-daemon = { package = "sshxx-daemon", path = "../sshx-daemon" }

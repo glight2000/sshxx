@@ -34,5 +34,8 @@ test("terminal initialization guards delayed work and releases owned resources",
     new URL("../src/lib/Session.svelte", import.meta.url),
     "utf8",
   );
-  assert.match(session, /if \(!preserveHistory\) terminalHistory.delete\(id\)/);
+  assert.match(
+    session,
+    /terminalSubscriptionTokens\[id\] = \+\+nextTerminalSubscriptionToken;\s*chunknums\[id\] = 0;/,
+  );
 });

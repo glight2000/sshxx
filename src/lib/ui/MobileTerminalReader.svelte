@@ -1,6 +1,7 @@
 <script lang="ts">
   import MobileTerminalKeypad from "./MobileTerminalKeypad.svelte";
   import { onMount, tick } from "svelte";
+  import { terminalHistoryScroll } from "../terminalCheckpoint/historyScroll";
   import type { ITheme, Terminal } from "@xterm/xterm";
   import { TerminalIcon, SendIcon } from "svelte-feather-icons";
   import {
@@ -11,6 +12,7 @@
     mobileTerminalThemeCss,
     MOBILE_INPUT_CHARACTERS,
     watchTerminalText,
+    readTerminalText,
     type TerminalTextSnapshot,
   } from "$lib/mobileTerminalText";
 
@@ -18,6 +20,7 @@
   export let theme: ITheme = {};
   export let writable: boolean;
   export let blocked = "";
+  export let loadHistory: () => Promise<boolean> = async () => false;
   export let send: (text: string, mode: MobileTerminalSendMode) => boolean;
 
   let snapshot: TerminalTextSnapshot = {
@@ -41,6 +44,26 @@
   let follow = true;
   let interacting = false;
   let syncPause = () => {};
+  let loadingHistory = false;
+  const historyScroll = terminalHistoryScroll(older);
+  async function older() {
+    if (loadingHistory || selected || snapshot.truncated || snapshot.alternate)
+      return;
+    loadingHistory = true;
+    try {
+      const top = reader.scrollTop;
+      const height = reader.scrollHeight;
+      if (!(await loadHistory()) || !reader.isConnected || selected) return;
+      snapshot = readTerminalText(terminal);
+      await tick();
+      if (reader.isConnected) {
+        reader.scrollTop = top + reader.scrollHeight - height;
+        historyScroll.update(reader.scrollTop);
+      }
+    } finally {
+      loadingHistory = false;
+    }
+  }
   function resume() {
     reader.ownerDocument.getSelection()?.removeAllRanges();
     follow = true;
@@ -84,6 +107,7 @@
     syncPause();
     return () => {
       alive = false;
+      historyScroll.dispose();
       observer.dispose();
       resize.disconnect();
       doc.removeEventListener("selectionchange", syncPause);
@@ -137,6 +161,7 @@
       follow =
         reader.scrollHeight - reader.scrollTop - reader.clientHeight < 32;
       syncPause();
+      historyScroll.update(reader.scrollTop);
     }}
   >
     {#each snapshot.runs as run}<span style={run.style}
