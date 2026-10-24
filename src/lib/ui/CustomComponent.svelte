@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { containWheel, scrollWheel } from "$lib/action/containWheel";
+  import { containWheel, scrollWheel } from "#lib/action/containWheel.ts";
   import { surfaceBackground, surfaceTone } from "./surfaceTheme";
-  import { browser } from "$app/environment";
+  import { browser } from "$app/env";
   import { createEventDispatcher, onDestroy } from "svelte";
   import {
     CodeIcon,
@@ -10,14 +10,14 @@
     SettingsIcon,
   } from "svelte-feather-icons";
 
-  import type { WsCustomWindow } from "$lib/protocol";
-  import { resolveCustomComponentUrl } from "$lib/customComponentUrl";
+  import type { WsCustomWindow } from "#lib/protocol.ts";
+  import { resolveCustomComponentUrl } from "#lib/customComponentUrl.ts";
   import {
     CUSTOM_COMPONENT_POINTER_BRIDGE,
     customComponentRequestedUrl,
     mapCustomComponentPointer,
-  } from "$lib/customComponentPointer";
-  import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
+  } from "#lib/customComponentPointer.ts";
+  import { MINIMIZED_WINDOW_HEIGHT } from "#lib/grid.ts";
   import BackgroundPicker from "./BackgroundPicker.svelte";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";

@@ -6,9 +6,9 @@
     XIcon,
     EyeIcon,
   } from "svelte-feather-icons";
-  import type { WorkspaceAttachment } from "$lib/protocol";
-  import type { WorkspaceMedia } from "$lib/workspaceMedia";
-  import { safeDownloadName } from "$lib/fileDownload";
+  import type { WorkspaceAttachment } from "#lib/protocol.ts";
+  import type { WorkspaceMedia } from "#lib/workspaceMedia.ts";
+  import { safeDownloadName } from "#lib/fileDownload.ts";
 
   export let media: WorkspaceMedia | null;
   export let attachments: WorkspaceAttachment[] = [];

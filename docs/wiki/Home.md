@@ -9,6 +9,8 @@ render the same canvas.
 
 ## Guides
 
+- [Maintained requirements](https://github.com/glight2000/sshxx/blob/main/REQUIREMENTS.md)
+- [Engineering, dependencies and validation](https://github.com/glight2000/sshxx/blob/main/ENGINEERING.md)
 - [Complete feature guide and screenshots](Features)
 - [Installation, runtime packages, and releases](Installation-and-Releases)
 - [Keyboard and mouse controls](Keyboard-and-Mouse)

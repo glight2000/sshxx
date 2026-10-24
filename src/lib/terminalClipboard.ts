@@ -1,5 +1,31 @@
 import type { Terminal } from "@xterm/xterm";
 
+/** Own a copy shortcut before starting an asynchronous clipboard write.
+ * Returning false from xterm's key handler alone does not cancel the browser's
+ * native copy, which can overwrite this write after the selection is cleared.
+ */
+export async function copyTerminalSelection(
+  event: KeyboardEvent,
+  terminal: Terminal,
+  clipboard: Pick<Clipboard, "writeText"> | undefined,
+) {
+  event.preventDefault();
+  event.stopPropagation();
+  const selection = terminal.getSelection();
+  if (!selection) throw new Error("No terminal selection to copy.");
+
+  if (clipboard?.writeText) {
+    await clipboard.writeText(selection);
+  } else {
+    // The synchronous copy event uses xterm's selection handler, including on
+    // browsers without the async Clipboard API. Never treat a refusal as success.
+    if (!terminal.element?.ownerDocument.execCommand("copy")) {
+      throw new Error("Clipboard access is unavailable.");
+    }
+  }
+  return selection;
+}
+
 /** Restore negotiated paste behavior without injecting CSI into a possibly
  * incomplete OSC/DCS parser. Unknown legacy state keeps xterm's own behavior.
  */

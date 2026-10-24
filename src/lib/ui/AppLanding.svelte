@@ -1,8 +1,8 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
 
-  import logo from "$lib/assets/logo.svg";
-  import { isUpstreamSshxUrl, viewerRouteFromShareUrl } from "$lib/runtime";
+  import logo from "#lib/assets/logo.svg";
+  import { isUpstreamSshxUrl, viewerRouteFromShareUrl } from "#lib/runtime.ts";
 
   let sessionUrl = "";
   let error = "";

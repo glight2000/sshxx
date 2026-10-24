@@ -2,8 +2,8 @@
   import { createEventDispatcher } from "svelte";
   import { FileIcon, FolderIcon } from "svelte-feather-icons";
 
-  import { samePath } from "$lib/filesystem";
-  import type { FileTreeEntry } from "$lib/protocol";
+  import { samePath } from "#lib/filesystem.ts";
+  import type { FileTreeEntry } from "#lib/protocol.ts";
 
   export let directory: FileTreeEntry;
   export let entries: FileTreeEntry[];

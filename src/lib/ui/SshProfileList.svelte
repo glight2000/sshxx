@@ -2,7 +2,7 @@
   import { createEventDispatcher } from "svelte";
   import { Edit2Icon, PlusIcon, Trash2Icon } from "svelte-feather-icons";
 
-  import type { WsSshProfile } from "$lib/protocol";
+  import type { WsSshProfile } from "#lib/protocol.ts";
 
   export let profiles: WsSshProfile[];
 

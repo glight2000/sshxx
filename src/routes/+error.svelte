@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
 
-  import logo from "$lib/assets/logo.svg";
+  import logo from "#lib/assets/logo.svg";
 </script>
 
 <main class="p-4 max-w-xl mx-auto my-6 md:my-12 lg:my-24">

@@ -6,12 +6,12 @@
     RefreshCwIcon,
   } from "svelte-feather-icons";
 
-  import { settings, updateSettings } from "$lib/settings";
+  import { settings, updateSettings } from "#lib/settings.ts";
   import OverlayMenu from "./OverlayMenu.svelte";
   import ShortcutSettings from "./ShortcutSettings.svelte";
   import themes, { type ThemeName } from "./themes";
-  import type { ColorModePreference } from "$lib/colorMode";
-  import type { WheelInputMode } from "$lib/wheelInput";
+  import type { ColorModePreference } from "#lib/colorMode.ts";
+  import type { WheelInputMode } from "#lib/wheelInput.ts";
 
   export let open: boolean;
   export let serverVersion: string;

@@ -15,7 +15,7 @@ import type {
 import {
   currentTypeAheadAttributes,
   supportsTypeAheadAttributes,
-} from "$lib/xtermCompatibility";
+} from "#lib/xtermCompatibility.ts";
 
 ///// BEGIN PORTS FROM PACKAGES vs/base/* /////
 

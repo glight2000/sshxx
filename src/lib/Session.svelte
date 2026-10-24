@@ -47,7 +47,7 @@
   import ResizeHandles, {
     type ResizeDirection,
   } from "./ui/ResizeHandles.svelte";
-  import type { CanvasSearchItem } from "./ui/TerminalSearch.svelte";
+  import type { CanvasSearchItem } from "./canvasSearch";
   import SessionChrome from "./ui/SessionChrome.svelte";
   import MobileWorkspaceControls from "./ui/MobileWorkspaceControls.svelte";
   import { mobileViewport } from "./action/mobilePage";

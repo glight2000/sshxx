@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
+import adapter from "@sveltejs/adapter-static";
+import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 
 const commitHash = execSync("git rev-parse --short HEAD").toString().trim();
 const sourceChanges =
@@ -21,7 +23,13 @@ export default defineConfig({
     ),
   },
 
-  plugins: [sveltekit()],
+  plugins: [
+    sveltekit({
+      preprocess: vitePreprocess(),
+      adapter: adapter({ fallback: "spa.html", precompress: true }),
+      version: { pollInterval: 0 },
+    }),
+  ],
 
   server: {
     // LAN-reachable development UI; the daemon/server remain loopback-only.

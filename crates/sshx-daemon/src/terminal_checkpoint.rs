@@ -77,7 +77,7 @@ impl TerminalMirror {
         let worker_valid = valid.clone();
         let worker_queued = queued.clone();
         if MIRROR_COUNT
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 128).then_some(count + 1)
             })
             .is_err()
@@ -216,7 +216,7 @@ pub(crate) fn respond(
     };
     tokio::spawn(async move {
         let _permit = permit;
-        use aes_gcm::aead::{rand_core::RngCore, OsRng};
+        use aes_gcm::aead::Generate;
         use sshx_core::proto::{client_update::ClientMessage, TerminalCheckpointResponse};
         let checkpoint = match receiver {
             Some(receiver) => tokio::time::timeout(Duration::from_secs(2), receiver)
@@ -238,8 +238,7 @@ pub(crate) fn respond(
                 "sequence": checkpoint.sequence,
                 "state": serde_json::from_str::<serde_json::Value>(&checkpoint.data).ok(),
             });
-            let mut nonce = [0u8; 12];
-            OsRng.fill_bytes(&mut nonce);
+            let nonce = <[u8; 12]>::generate();
             if let Ok(data) = encrypt.seal_checkpoint(&nonce, payload.to_string().as_bytes()) {
                 response.sequence = checkpoint.sequence;
                 response.data = data.into();

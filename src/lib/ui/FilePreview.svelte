@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { FilePreviewKind } from "$lib/filesystem";
-  import type { FileTreeEntry } from "$lib/protocol";
+  import type { FilePreviewKind } from "#lib/filesystem.ts";
+  import type { FileTreeEntry } from "#lib/protocol.ts";
   import type {
     TextInsertPosition,
     TextInsertResult,

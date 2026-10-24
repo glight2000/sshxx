@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { settings, updateSettings } from "$lib/settings";
+  import { settings, updateSettings } from "#lib/settings.ts";
   import {
     WORKSPACE_SHORTCUTS,
     formatShortcut,
     normalizeShortcutBindings,
     shortcutFromEvent,
     type WorkspaceShortcut,
-  } from "$lib/workspaceShortcuts";
+  } from "#lib/workspaceShortcuts.ts";
 
   let recording: WorkspaceShortcut | null = null;
   let error = "";

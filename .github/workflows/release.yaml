@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  RUST_VERSION: "1.98.0"
+  RUST_VERSION: "1.99.1"
 
 jobs:
   quality:
@@ -32,7 +32,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.22.1"
           cache: npm
 
       - name: Validate release tag and module versions
@@ -111,7 +111,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.22.1"
           cache: npm
 
       - uses: arduino/setup-protoc@v3
@@ -128,6 +128,7 @@ jobs:
       - name: Build Web client and runtime binaries
         shell: bash
         run: |
+          npm install --global npm@12.2.1
           npm ci
           npm run build
           cargo build --release \
@@ -233,7 +234,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.22.1"
           cache: npm
 
       - name: Install Rust targets
@@ -246,7 +247,9 @@ jobs:
           fi
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: |
+          npm install --global npm@12.2.1
+          npm ci
 
       - name: Build and upload desktop bundles
         uses: tauri-apps/tauri-action@v1

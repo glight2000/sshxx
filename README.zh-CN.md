@@ -189,9 +189,15 @@ Secret。完整的持久化、同步、通信、Redis、鉴权和数据可见性
 
 ```shell
 mise install
-npm ci
-mprocs
+mise exec -- npm ci
+./start.sh
 ```
+
+`start.sh` 通过 dekit 的 mprocs 兼容模式运行现有
+`mprocs.yaml`。终端界面显示各进程输出，同时写入已被 Git 和 Docker 忽略的
+`logs/dev/`。在进程列表按 `q`
+退出管理器并停止其管理的 server、daemon 和 Web；独立 host 及其 PTY 继续运行。未激活 mise 的 Shell 也可以用
+`mise exec -- <命令>` 使用项目固定的工具版本。
 
 常规开发和单 server 部署不使用 Redis。仓库只为多 server 协调测试保留显式启用的可选服务：
 
@@ -237,23 +243,8 @@ unit 不能连带重启 host unit。
 
 ## 构建
 
-```shell
-npm ci
-cargo build --release -p sshxx-daemon -p sshxx-server -p sshxx-terminal-host
-npm run build
-npm run app:build
-```
-
-daemon 在编译时嵌入固定版本的无界面终端解析器，因此源码构建前需先执行
-`npm ci`；安装后的 Runtime 程序不需要 Node.js 或额外服务。
-
-打包客户端还需要对应平台的 Tauri 系统依赖。Ubuntu 使用：
-
-```shell
-sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-```
-
-生产环境应在 server 前提供 TLS，使用强 secret；多 server 实例需要 Redis 参与协调。
+源码构建前提、平台依赖及命令统一见
+[ENGINEERING.md](ENGINEERING.md#build)。工具链版本与依赖锁文件一起维护；安装后的 Runtime 程序不需要 Node.js。
 
 ## 文档
 
@@ -292,14 +283,9 @@ sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2
 
 ## 验证
 
-```shell
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-npm run lint
-npm run check
-npm run test:runtime
-npm run build
-```
+必须执行的代码检查统一见
+[ENGINEERING.md](ENGINEERING.md#validation)。终端剪贴板行为和验收条件见
+[REQUIREMENTS.md](REQUIREMENTS.md#terminal-clipboard)。
 
 ## 上游与许可证
 

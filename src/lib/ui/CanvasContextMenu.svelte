@@ -9,9 +9,9 @@
     TerminalIcon,
   } from "svelte-feather-icons";
 
-  import type { WsSshProfile } from "$lib/protocol";
-  import { settings } from "$lib/settings";
-  import { createSshProfileDraft } from "$lib/sshProfiles";
+  import type { WsSshProfile } from "#lib/protocol.ts";
+  import { settings } from "#lib/settings.ts";
+  import { createSshProfileDraft } from "#lib/sshProfiles.ts";
   import SshProfileEditor from "./SshProfileEditor.svelte";
   import SshProfileList from "./SshProfileList.svelte";
 

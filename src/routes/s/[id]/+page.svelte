@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
 
-  import Session from "$lib/Session.svelte";
+  import Session from "#lib/Session.svelte";
 
   let title: string = "Remote Terminal | sshxx";
 </script>

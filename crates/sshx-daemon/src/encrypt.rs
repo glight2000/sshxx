@@ -89,7 +89,7 @@ impl Encrypt {
         let cipher = Aes128Gcm::new_from_slice(&self.aes_key)
             .map_err(|_| anyhow!("invalid AES key length"))?;
         cipher
-            .encrypt(Nonce::from_slice(nonce), plaintext)
+            .encrypt(&Nonce::from(*nonce), plaintext)
             .map_err(|_| anyhow!("failed to encrypt authenticated value"))
     }
 
@@ -98,21 +98,21 @@ impl Encrypt {
         let cipher = Aes128Gcm::new_from_slice(&self.aes_key)
             .map_err(|_| anyhow!("invalid AES key length"))?;
         cipher
-            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .decrypt(&Nonce::from(*nonce), ciphertext)
             .map_err(|_| anyhow!("encrypted value failed authentication"))
     }
 
     /// Domain-separated from CTR, whose encrypted zero block is public.
     pub fn seal_checkpoint(&self, nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
         Aes128Gcm::new(&self.checkpoint_key.into())
-            .encrypt(Nonce::from_slice(nonce), plaintext)
+            .encrypt(&Nonce::from(*nonce), plaintext)
             .map_err(|_| anyhow!("failed to encrypt checkpoint"))
     }
 
     /// Authenticate a checkpoint with its dedicated, domain-separated key.
     pub fn open_checkpoint(&self, nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
         Aes128Gcm::new(&self.checkpoint_key.into())
-            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .decrypt(&Nonce::from(*nonce), ciphertext)
             .map_err(|_| anyhow!("checkpoint failed authentication"))
     }
 }

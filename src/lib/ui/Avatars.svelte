@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fade } from "svelte/transition";
 
-  import type { WsUser } from "$lib/protocol";
+  import type { WsUser } from "#lib/protocol.ts";
   import { userToHue } from "./LiveCursor.svelte";
 
   export let users: [number, WsUser][];

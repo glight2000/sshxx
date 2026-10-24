@@ -4,7 +4,7 @@
   import { fly } from "svelte/transition";
 
   import Toast from "./Toast.svelte";
-  import { toastStore } from "$lib/toast";
+  import { toastStore } from "#lib/toast.ts";
 
   onMount(() => {
     // Remove old toasts periodically.

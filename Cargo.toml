@@ -13,15 +13,15 @@ keywords = ["ssh", "terminal", "collaborative", "self-hosted"]
 
 [workspace.dependencies]
 anyhow = "1.0.104"
-aes-gcm = "0.10.3"
-clap = { version = "4.6.6", features = ["derive", "env"] }
+aes-gcm = "0.11.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
 prost = "0.14.4"
 portable-pty = "0.9.0"
-rand = "0.10.2"
+rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 sshx-core = { package = "sshxx-core", version = "0.11.5", path = "crates/sshx-core" }
 sshxx-terminal-host = { version = "0.10.4", path = "crates/sshxx-terminal-host", default-features = false }
-tokio = { version = "1.53.1", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"] }
 tonic-prost = "0.14.6"

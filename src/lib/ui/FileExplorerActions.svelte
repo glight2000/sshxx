@@ -11,8 +11,8 @@
     UploadCloudIcon,
   } from "svelte-feather-icons";
 
-  import { samePath } from "$lib/filesystem";
-  import type { FileTreeEntry } from "$lib/protocol";
+  import { samePath } from "#lib/filesystem.ts";
+  import type { FileTreeEntry } from "#lib/protocol.ts";
 
   export let target: FileTreeEntry | null;
   export let currentPath: string;

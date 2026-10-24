@@ -8,7 +8,7 @@
     XIcon,
   } from "svelte-feather-icons";
   import type { CanvasRelationItem } from "./CanvasRelations.svelte";
-  import { mobileRelationPress } from "$lib/action/mobileRelationPress";
+  import { mobileRelationPress } from "#lib/action/mobileRelationPress.ts";
 
   export let items: CanvasRelationItem[];
   export let allowAdd: boolean;

@@ -1,9 +1,9 @@
 <script lang="ts">
   import { createEventDispatcher, tick, onDestroy } from "svelte";
   import { SendIcon, XIcon, MessageCircleIcon } from "svelte-feather-icons";
-  import type { ChatRecord, WorkspaceAttachment } from "$lib/protocol";
-  import type { WorkspaceMedia } from "$lib/workspaceMedia";
-  import { containWheel, scrollWheel } from "$lib/action/containWheel";
+  import type { ChatRecord, WorkspaceAttachment } from "#lib/protocol.ts";
+  import type { WorkspaceMedia } from "#lib/workspaceMedia.ts";
+  import { containWheel, scrollWheel } from "#lib/action/containWheel.ts";
   import MediaAttachments from "./MediaAttachments.svelte";
   import ExpressionPicker from "./ExpressionPicker.svelte";
   export let messages: ChatRecord[];

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { containWheel, scrollWheel } from "$lib/action/containWheel";
+  import { containWheel, scrollWheel } from "#lib/action/containWheel.ts";
   import { surfaceBackground, surfaceTone } from "./surfaceTheme";
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { FolderIcon } from "svelte-feather-icons";
@@ -8,7 +8,7 @@
     FileOperationRequest,
     FileOperationResponse,
     FileTreeEntry,
-  } from "$lib/protocol";
+  } from "#lib/protocol.ts";
   import {
     type FilePreviewKind,
     ancestorPaths,
@@ -27,14 +27,14 @@
     safeUploadPath,
     samePath,
     trimTrailingSeparators,
-  } from "$lib/filesystem";
+  } from "#lib/filesystem.ts";
   import {
     decodeDownloadContent,
     FILE_DOWNLOAD_LIMIT_BYTES,
     startBrowserDownload,
-  } from "$lib/fileDownload";
-  import { makeToast } from "$lib/toast";
-  import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
+  } from "#lib/fileDownload.ts";
+  import { makeToast } from "#lib/toast.ts";
+  import { MINIMIZED_WINDOW_HEIGHT } from "#lib/grid.ts";
   import CanvasRelations, {
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";

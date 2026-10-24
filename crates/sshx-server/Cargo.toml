@@ -26,17 +26,17 @@ bytes = { version = "1.12.1", features = ["serde"] }
 ciborium = "0.2.2"
 clap.workspace = true
 dashmap = "6.2.1"
-deadpool = { version = "0.13.0", optional = true }
-deadpool-redis = { version = "0.23.0", optional = true }
+deadpool = { version = "0.13.1", optional = true }
+deadpool-redis = { version = "0.23.1", optional = true }
 futures-util = { version = "0.3.34", features = ["sink"] }
 hmac = "0.13.0"
 http = "1.5.0"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 prost.workspace = true
 rand.workspace = true
-redis = { version = "1.6.0", features = ["tokio-rustls-comp", "tls-rustls-webpki-roots"], optional = true }
+redis = { version = "1.8.0", features = ["tokio-rustls-comp", "tls-rustls-webpki-roots"], optional = true }
 serde.workspace = true
-sha2 = "0.11.0"
+sha2 = "0.11.1"
 sshx-core.workspace = true
 subtle = "2.6.1"
 tokio.workspace = true
@@ -45,12 +45,12 @@ tokio-tungstenite = "0.30.0"
 tonic.workspace = true
 tonic-reflection.workspace = true
 tower = { version = "0.5.3", features = ["steer"] }
-tower-http = { version = "0.7.0", features = ["fs", "redirect", "trace"] }
+tower-http = { version = "0.7.1", features = ["fs", "redirect", "trace"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-zstd = "0.13.3"
+zstd = "0.14.3"
 
 [dev-dependencies]
-serde_json = "1.0.149"
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+serde_json = "1.0.154"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 sshx-daemon = { package = "sshxx-daemon", path = "../sshx-daemon" }

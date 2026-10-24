@@ -1,6 +1,6 @@
 <!-- @component Interactive terminal rendered with xterm.js -->
 <script lang="ts" context="module">
-  import { makeToast } from "$lib/toast";
+  import { makeToast } from "#lib/toast.ts";
 
   let terminalFontPromise: Promise<void> | null = null;
 
@@ -31,10 +31,13 @@
 </script>
 
 <script lang="ts">
-  import { containWheel, forwardTerminalWheel } from "$lib/action/containWheel";
+  import {
+    containWheel,
+    forwardTerminalWheel,
+  } from "#lib/action/containWheel.ts";
   import MobileTerminalReader from "./MobileTerminalReader.svelte";
   import { terminalHistoryScroll } from "../terminalCheckpoint/historyScroll";
-  import { browser } from "$app/environment";
+  import { browser } from "$app/env";
 
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import type { Terminal } from "@xterm/xterm";
@@ -48,15 +51,19 @@
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
   import InlineTitle from "./InlineTitle.svelte";
-  import { settings } from "$lib/settings";
-  import { TerminalWriteQueue } from "$lib/terminalWriteQueue";
-  import { terminalRefresh } from "$lib/terminalRefresh";
-  import { pasteTerminalText, pasteText } from "$lib/terminalClipboard";
-  import { parseOsc7Location } from "$lib/terminalLocation";
-  import { splitTerminalTitle } from "$lib/terminalTitle";
-  import { TypeAheadAddon } from "$lib/typeahead";
-  import { installXtermMouseCoordinateAdapter } from "$lib/xtermMouseCoordinates";
-  import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
+  import { settings } from "#lib/settings.ts";
+  import { TerminalWriteQueue } from "#lib/terminalWriteQueue.ts";
+  import { terminalRefresh } from "#lib/terminalRefresh.ts";
+  import {
+    copyTerminalSelection,
+    pasteTerminalText,
+    pasteText,
+  } from "#lib/terminalClipboard.ts";
+  import { parseOsc7Location } from "#lib/terminalLocation.ts";
+  import { splitTerminalTitle } from "#lib/terminalTitle.ts";
+  import { TypeAheadAddon } from "#lib/typeahead.ts";
+  import { installXtermMouseCoordinateAdapter } from "#lib/xtermMouseCoordinates.ts";
+  import { MINIMIZED_WINDOW_HEIGHT } from "#lib/grid.ts";
 
   /** Used to determine Cmd versus Ctrl keyboard shortcuts. */
   const isMac = browser && navigator.platform.startsWith("Mac");
@@ -134,7 +141,7 @@
   export let hasWriteAccess: boolean | undefined;
   export let fullscreen = false;
   export let mobileDetail = false;
-  import { mobileTerminalKey } from "$lib/mobileTerminalKeys";
+  import { mobileTerminalKey } from "#lib/mobileTerminalKeys.ts";
   export function sendKey(key: string): boolean {
     if (!hasWriteAccess || !inputAvailable || !term) return false;
     if (suppressInput > 0) {
@@ -702,16 +709,24 @@
         event.key.toLowerCase() === "c" &&
         term?.hasSelection()
       ) {
-        const selection = term.getSelection();
-        navigator.clipboard
-          .writeText(selection)
-          .then(() => {
-            term?.clearSelection();
+        const copyingTerminal = term;
+        copyTerminalSelection(event, copyingTerminal, navigator.clipboard)
+          .then((selection) => {
+            if (destroyed || term !== copyingTerminal) return;
+            // A pending write must not clear a newer selection.
+            if (copyingTerminal.getSelection() === selection) {
+              copyingTerminal.clearSelection();
+            }
             makeToast({ kind: "success", message: "Copied selection." });
           })
-          .catch(() =>
-            makeToast({ kind: "error", message: "Could not copy selection." }),
-          );
+          .catch(() => {
+            if (!destroyed && term === copyingTerminal) {
+              makeToast({
+                kind: "error",
+                message: "Could not copy selection.",
+              });
+            }
+          });
         return false;
       }
 

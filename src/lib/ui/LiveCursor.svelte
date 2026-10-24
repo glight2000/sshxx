@@ -1,5 +1,5 @@
 <script lang="ts" context="module">
-  import type { WsUser } from "$lib/protocol";
+  import type { WsUser } from "#lib/protocol.ts";
 
   /** Convert a string into a unique, hashed hue from 0 to 360. */
   export function nameToHue(name: string): number {

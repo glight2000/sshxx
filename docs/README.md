@@ -1,14 +1,17 @@
 # Documentation map
 
-This directory is the single index for versioned sshxx documentation. Product
-behavior is documented once in the Wiki sources; deployment and standalone
-component material stay with the code they operate.
+This index maps root documentation and remaining legacy manuals. Maintained
+topics migrate to the root documents as they are touched; the Wiki keeps links
+instead of duplicate instructions for those topics. Deployment and standalone
+component material stay with their owners.
 
 ## Canonical locations
 
 | Audience                       | Location                                                                                                                                                   | Content                                                                                 |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | New users                      | [`README.md`](../README.md), [`README.zh-CN.md`](../README.zh-CN.md)                                                                                       | Project purpose, boundaries, quick development/build entry points, and links onward     |
+| Users and maintainers          | [`REQUIREMENTS.md`](../REQUIREMENTS.md)                                                                                                                    | Migrated functional behavior and acceptance criteria; currently terminal clipboard      |
+| Contributors                   | [`ENGINEERING.md`](../ENGINEERING.md)                                                                                                                      | Toolchains, dependencies, build and validation, terminal clipboard implementation       |
 | Users and operators            | [`docs/wiki/`](wiki/Home.md)                                                                                                                               | Installation/releases, features, controls, architecture/state/security, and limitations |
 | Terminal-host maintainers      | [`crates/sshxx-terminal-host/README.md`](../crates/sshxx-terminal-host/README.md) and [`docs/PROTOCOL.md`](../crates/sshxx-terminal-host/docs/PROTOCOL.md) | Independently operated host lifecycle and its local protocol                            |
 | Contributors and coding agents | [`AGENTS.md`](../AGENTS.md)                                                                                                                                | Repository architecture, modularity, security, validation, and documentation rules      |
@@ -22,9 +25,9 @@ prototypes, not supported replacements for the established Web client.
 
 - Keep the English and Chinese READMEs structurally equivalent. They summarize;
   they do not duplicate the full feature guide or architecture contract.
-- GitHub Wiki pages use descriptive `Title-Case.md` names. Add every page to
-  `docs/wiki/Home.md` and `docs/wiki/_Sidebar.md`; links inside the repository
-  must continue to work before the Wiki is published.
+- Remaining GitHub Wiki pages use descriptive `Title-Case.md` names. Preserve
+  working repository and Wiki links when moving affected topics to root docs;
+  new canonical topics belong in the corresponding root document.
 - Put target-specific runbooks, scripts, units, Compose files, and verification
   steps together under `deploy/<target>/`. Do not copy them into the Wiki.
   Machine-private deployment material must stay outside the repository or in an
@@ -40,8 +43,9 @@ prototypes, not supported replacements for the established Web client.
   persistence/synchronization rule, security boundary, deployment procedure, or
   known limitation change.
 
-The complete code-maintenance contract, including module-size review thresholds
-and required validation commands, is in [`AGENTS.md`](../AGENTS.md).
+The code-maintenance contract and module-size review thresholds are in
+[`AGENTS.md`](../AGENTS.md). Required validation commands are maintained in
+[`ENGINEERING.md`](../ENGINEERING.md#validation).
 
 ## Recovery and cross-client verification
 

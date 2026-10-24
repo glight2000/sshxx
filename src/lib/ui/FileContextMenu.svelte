@@ -12,7 +12,7 @@
     UploadCloudIcon,
   } from "svelte-feather-icons";
 
-  import type { FileTreeEntry } from "$lib/protocol";
+  import type { FileTreeEntry } from "#lib/protocol.ts";
 
   export let entry: FileTreeEntry;
   export let x: number;

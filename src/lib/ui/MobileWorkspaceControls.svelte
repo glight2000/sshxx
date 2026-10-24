@@ -9,8 +9,8 @@
     FolderIcon,
     CodeIcon,
   } from "svelte-feather-icons";
-  import { MOBILE_NAVIGATION_QUERY } from "$lib/mobileNavigation";
-  import type { CanvasSearchItem } from "./TerminalSearch.svelte";
+  import { MOBILE_NAVIGATION_QUERY } from "#lib/mobileNavigation.ts";
+  import type { CanvasSearchItem } from "../canvasSearch";
   import MobileTerminalKeypad from "./MobileTerminalKeypad.svelte";
 
   export let current: CanvasSearchItem | undefined;

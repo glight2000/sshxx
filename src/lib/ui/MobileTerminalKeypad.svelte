@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MOBILE_TERMINAL_KEYS } from "$lib/mobileTerminalKeys";
+  import { MOBILE_TERMINAL_KEYS } from "#lib/mobileTerminalKeys.ts";
   export let disabled = false;
   export let send: (key: string) => void;
   let open = false;

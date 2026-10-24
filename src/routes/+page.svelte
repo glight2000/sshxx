@@ -1,5 +1,5 @@
 <script lang="ts">
-  import AppLanding from "$lib/ui/AppLanding.svelte";
+  import AppLanding from "#lib/ui/AppLanding.svelte";
 </script>
 
 <svelte:head>

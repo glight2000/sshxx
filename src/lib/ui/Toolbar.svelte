@@ -9,10 +9,10 @@
     SettingsIcon,
     WifiIcon,
   } from "svelte-feather-icons";
-  import logo from "$lib/assets/logo.svg";
-  import { settings } from "$lib/settings";
-  import type { WsSshProfile, WsUser } from "$lib/protocol";
-  import { createSshProfileDraft } from "$lib/sshProfiles";
+  import logo from "#lib/assets/logo.svg";
+  import { settings } from "#lib/settings.ts";
+  import type { WsSshProfile, WsUser } from "#lib/protocol.ts";
+  import { createSshProfileDraft } from "#lib/sshProfiles.ts";
   import NameList from "./NameList.svelte";
   import SshProfileEditor from "./SshProfileEditor.svelte";
   import SshProfileList from "./SshProfileList.svelte";

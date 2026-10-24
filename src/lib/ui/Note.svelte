@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { containWheel, scrollWheel } from "$lib/action/containWheel";
+  import { containWheel, scrollWheel } from "#lib/action/containWheel.ts";
   import { surfaceBackground, surfaceTone } from "./surfaceTheme";
   import { createEventDispatcher, tick } from "svelte";
   import {
@@ -13,9 +13,9 @@
     TerminalIcon,
     Trash2Icon,
   } from "svelte-feather-icons";
-  import { MINIMIZED_WINDOW_HEIGHT } from "$lib/grid";
-  import type { WsNote, WorkspaceAttachment } from "$lib/protocol";
-  import { makeToast } from "$lib/toast";
+  import { MINIMIZED_WINDOW_HEIGHT } from "#lib/grid.ts";
+  import type { WsNote, WorkspaceAttachment } from "#lib/protocol.ts";
+  import { makeToast } from "#lib/toast.ts";
   import {
     deleteParagraphs,
     PARAGRAPH_CLIPBOARD_TYPE,
@@ -23,19 +23,19 @@
     reorderParagraphs,
     selectedParagraphs,
     serializeParagraphs,
-  } from "$lib/paragraphs";
+  } from "#lib/paragraphs.ts";
   import {
     copyParagraphs,
     readParagraphClipboard,
     writeParagraphClipboard,
-  } from "$lib/paragraphClipboard";
+  } from "#lib/paragraphClipboard.ts";
   import CanvasRelations, {
     type CanvasRelationItem,
   } from "./CanvasRelations.svelte";
   import BackgroundPicker from "./BackgroundPicker.svelte";
   import MediaAttachments from "./MediaAttachments.svelte";
   import ExpressionPicker from "./ExpressionPicker.svelte";
-  import type { WorkspaceMedia } from "$lib/workspaceMedia";
+  import type { WorkspaceMedia } from "#lib/workspaceMedia.ts";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
   import InlineTitle from "./InlineTitle.svelte";

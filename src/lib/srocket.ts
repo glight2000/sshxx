@@ -7,7 +7,7 @@
 
 import { encode, decode } from "cbor-x";
 
-import { resolveWebSocketUrl } from "$lib/runtime";
+import { resolveWebSocketUrl } from "#lib/runtime.ts";
 
 /** How long to wait between reconnections (in milliseconds). */
 const RECONNECT_DELAY = 500;

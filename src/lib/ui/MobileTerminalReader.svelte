@@ -7,14 +7,14 @@
   import {
     mobileTerminalKey,
     type MobileTerminalSendMode,
-  } from "$lib/mobileTerminalKeys";
+  } from "#lib/mobileTerminalKeys.ts";
   import {
     mobileTerminalThemeCss,
     MOBILE_INPUT_CHARACTERS,
     watchTerminalText,
     readTerminalText,
     type TerminalTextSnapshot,
-  } from "$lib/mobileTerminalText";
+  } from "#lib/mobileTerminalText.ts";
 
   export let terminal: Terminal;
   export let theme: ITheme = {};

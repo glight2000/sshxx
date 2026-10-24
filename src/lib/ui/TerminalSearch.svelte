@@ -1,15 +1,5 @@
-<script lang="ts" context="module">
-  export type CanvasSearchItem = {
-    id: number;
-    kind: "terminal" | "note" | "file" | "custom";
-    pageId: number;
-    pageName: string;
-    title: string;
-    content: string;
-  };
-</script>
-
 <script lang="ts">
+  import type { CanvasSearchItem } from "../canvasSearch";
   import { createEventDispatcher, tick } from "svelte";
   import {
     ChevronRightIcon,

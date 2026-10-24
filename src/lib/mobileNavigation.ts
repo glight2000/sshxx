@@ -1,5 +1,5 @@
 import type { WsNote } from "./protocol";
-import type { CanvasSearchItem } from "./ui/TerminalSearch.svelte";
+import type { CanvasSearchItem } from "./canvasSearch";
 
 // A narrow desktop window is not a phone. Also allow touch-screen landscape.
 export const MOBILE_NAVIGATION_QUERY =

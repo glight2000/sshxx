@@ -589,10 +589,8 @@ and is labeled as such. Each WebSocket owns at most one forwarding task per
 subscribed terminal; replacing a subscription or closing the socket cancels the
 whole task, including its five-second checkpoint fence wait.
 
-Text clipboard events inside xterm are consumed once through public `paste()`.
-xterm owns newline normalization and negotiated bracketed-paste markers; the
-browser's default insertion into its hidden textarea is canceled. Title fields,
-settings, and the phone's independent text composer retain native text editing.
+Browser-local copy and paste handling is maintained in
+[ENGINEERING.md](https://github.com/glight2000/sshxx/blob/main/ENGINEERING.md#terminal-clipboard).
 
 Bracketed-paste negotiation is retained separately from scrollback. The host
 keeps a bounded 10-byte parser checkpoint at its retained output boundary; this

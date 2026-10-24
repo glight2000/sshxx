@@ -237,9 +237,16 @@ runtimes:
 
 ```shell
 mise install
-npm ci
-mprocs
+mise exec -- npm ci
+./start.sh
 ```
+
+`start.sh` uses the existing `mprocs.yaml` through dekit's mprocs compatibility
+mode. Process output is visible in its terminal interface and saved under
+`logs/dev/` (ignored by Git and Docker). Press `q` in the process list to quit
+the manager and stop its managed server, daemon and Web processes. The
+independent terminal host and its PTYs remain alive. Project-pinned tools also
+run through `mise exec -- <command>` outside an activated mise shell.
 
 Normal development and single-server deployments do not use Redis. The
 repository keeps an opt-in service only for multi-server coordination tests:
@@ -297,26 +304,9 @@ activate a newly installed terminal-host binary.
 
 ## Build
 
-```shell
-npm ci
-cargo build --release -p sshxx-daemon -p sshxx-server -p sshxx-terminal-host
-npm run build
-npm run app:build
-```
-
-The daemon embeds its pinned headless terminal parser during compilation.
-`npm ci` is a source-build prerequisite; installed Runtime binaries do not need
-Node.js or an additional service.
-
-The packaged client requires the platform-specific Tauri system dependencies. On
-Ubuntu:
-
-```shell
-sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-```
-
-For production, run the server behind TLS with a strong secret and use Redis
-when coordinating multiple server instances.
+See [ENGINEERING.md](ENGINEERING.md#build) for the source-build prerequisites,
+platform dependencies and commands. Toolchain versions and dependency lockfiles
+are maintained together; installed Runtime packages do not require Node.js.
 
 ## Documentation
 
@@ -372,14 +362,10 @@ when coordinating multiple server instances.
 
 ## Validation
 
-```shell
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-npm run lint
-npm run check
-npm run test:runtime
-npm run build
-```
+The required code checks are maintained in
+[ENGINEERING.md](ENGINEERING.md#validation). Terminal clipboard behavior and its
+acceptance criteria are in
+[REQUIREMENTS.md](REQUIREMENTS.md#terminal-clipboard).
 
 ## Upstream and license
 

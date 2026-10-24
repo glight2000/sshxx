@@ -2,17 +2,16 @@
   import { createEventDispatcher } from "svelte";
   import { EyeIcon } from "svelte-feather-icons";
 
-  import type { WsPage, WsSshProfile, WsUser } from "$lib/protocol";
+  import type { WsPage, WsSshProfile, WsUser } from "#lib/protocol.ts";
   import Chat from "./Chat.svelte";
-  import type { ChatRecord, WorkspaceAttachment } from "$lib/protocol";
-  import type { WorkspaceMedia } from "$lib/workspaceMedia";
+  import type { ChatRecord, WorkspaceAttachment } from "#lib/protocol.ts";
+  import type { WorkspaceMedia } from "#lib/workspaceMedia.ts";
   import ChooseName from "./ChooseName.svelte";
   import NetworkInfo from "./NetworkInfo.svelte";
   import PagePager from "./PagePager.svelte";
   import Settings from "./Settings.svelte";
-  import TerminalSearch, {
-    type CanvasSearchItem,
-  } from "./TerminalSearch.svelte";
+  import TerminalSearch from "./TerminalSearch.svelte";
+  import type { CanvasSearchItem } from "../canvasSearch";
   import Toolbar from "./Toolbar.svelte";
 
   export let connected: boolean;

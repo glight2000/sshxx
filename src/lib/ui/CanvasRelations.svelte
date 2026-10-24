@@ -9,7 +9,7 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from "svelte";
   import MobileCanvasRelations from "./MobileCanvasRelations.svelte";
-  import { MOBILE_NAVIGATION_QUERY } from "$lib/mobileNavigation";
+  import { MOBILE_NAVIGATION_QUERY } from "#lib/mobileNavigation.ts";
   import {
     Edit3Icon,
     FileTextIcon,

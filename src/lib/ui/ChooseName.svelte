@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { browser } from "$app/environment";
+  import { browser } from "$app/env";
 
   import OverlayMenu from "./OverlayMenu.svelte";
-  import { settings, updateSettings } from "$lib/settings";
+  import { settings, updateSettings } from "#lib/settings.ts";
 
   let value = "";
 

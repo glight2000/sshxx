@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
 
-  import type { WsSshProfile } from "$lib/protocol";
+  import type { WsSshProfile } from "#lib/protocol.ts";
   import OverlayMenu from "./OverlayMenu.svelte";
   import themes from "./themes";
 

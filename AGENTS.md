@@ -100,11 +100,13 @@ invariants here; consult the linked manuals only when their subject is involved.
 
 ## Documentation ownership
 
-- Use `docs/README.md` for documentation locations, naming, audience and
-  ownership. The two READMEs remain equivalent overviews; `docs/wiki/` is the
-  canonical versioned manual mirrored to GitHub Wiki, with
-  `Architecture-and-State.md` normative for state and trust boundaries.
-  Deployment runbooks stay with their targets, not in the general Wiki.
+- Keep maintained topics in root `README.md`, `REQUIREMENTS.md` and
+  `ENGINEERING.md`, according to the global documentation policy. The Chinese
+  README remains an equivalent overview. `docs/README.md` maps migrated topics
+  and remaining legacy manuals; replace migrated content with links rather than
+  maintaining duplicate facts. Untouched state and trust contracts remain in
+  `docs/wiki/Architecture-and-State.md` until their relevant work migrates them.
+  Private deployment runbooks stay outside public source and export artifacts.
 - Update the existing relevant docs in the same change as behavior, workflow,
   protocol, persistence, synchronization, security, deployment or limitations.
   Pure refactors need only affected maintainer docs. Do not add ad hoc root docs
@@ -119,16 +121,13 @@ invariants here; consult the linked manuals only when their subject is involved.
   formatting checks, not unrelated runtime builds.
 - Before handing off cross-module runtime, protocol or dependency changes, or
   committing/releasing executable changes, pass the full gates for affected
-  stacks below. Reuse results only while their code, dependencies and relevant
-  configuration remain unchanged; do not repeat every gate after every edit.
-  - Frontend: `npm run lint`, `npm run check`, `npm run test:runtime`,
-    `npm run build`.
-  - Rust: `cargo fmt --all -- --check`, `cargo test --workspace --all-targets`,
-    `cargo clippy --workspace --all-targets -- -D warnings`.
-- For server state/dependency changes also verify the opt-in path with
-  `cargo test -p sshxx-server --all-targets --features redis-mesh`. The default
-  build remains Redis-free; this gate is not authority to deploy Redis or change
-  production services. Report blocked checks instead of claiming they passed.
+  stacks in `ENGINEERING.md#validation`. Reuse results only while their code,
+  dependencies and relevant configuration remain unchanged; do not repeat every
+  gate after every edit.
+- For server state/dependency changes also pass the documented `redis-mesh`
+  gate. The default build remains Redis-free; this gate is not authority to
+  deploy Redis or change production services. Report blocked checks instead of
+  claiming they passed.
 - Extend nearby tests rather than adding a parallel runner. For recovery work,
   use the existing coverage map in `docs/README.md`: synthetic streams,
   controlled clocks, stale generations, retention rollover, cleanup, bounded

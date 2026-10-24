@@ -282,9 +282,8 @@ impl OutputBuffer {
 }
 
 pub(super) fn random_output_epoch() -> bytes::Bytes {
-    use aes_gcm::aead::{rand_core::RngCore, OsRng};
-    let mut epoch = [0; 16];
-    OsRng.fill_bytes(&mut epoch);
+    use aes_gcm::aead::Generate;
+    let epoch = <[u8; 16]>::generate();
     bytes::Bytes::copy_from_slice(&epoch)
 }
 

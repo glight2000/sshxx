@@ -2,7 +2,7 @@
   import { createEventDispatcher, tick } from "svelte";
   import { PlusIcon, Trash2Icon } from "svelte-feather-icons";
 
-  import type { WsPage } from "$lib/protocol";
+  import type { WsPage } from "#lib/protocol.ts";
 
   export let pages: WsPage[];
   export let activePageId: number;

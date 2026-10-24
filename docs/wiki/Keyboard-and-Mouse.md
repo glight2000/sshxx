@@ -156,8 +156,9 @@ for platform-specific browser bindings.
   outside tap, or Escape. Disconnected, read-only or replay-blocked terminals
   cannot send text or special keys.
 
-- If terminal text is selected, `Ctrl+C` copies it and clears the selection.
-  Otherwise `Ctrl+C` is sent to the foreground process.
+- Terminal copy shortcuts, completion behavior and failure handling are
+  maintained in
+  [REQUIREMENTS.md](https://github.com/glight2000/sshxx/blob/main/REQUIREMENTS.md#terminal-clipboard).
 - Enter sends normal terminal input. `Shift+Enter` sends LF for applications
   that support multiline input. The foreground program ultimately decides how LF
   is interpreted.

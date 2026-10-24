@@ -33,6 +33,7 @@ id_ed25519
 /.svelte-kit
 /build
 /cache/
+/logs/
 .sshx-workspace
 .sshx-restart
 .sshx-workspace.tmp

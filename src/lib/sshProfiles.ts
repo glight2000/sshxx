@@ -1,4 +1,4 @@
-import type { WsSshProfile } from "$lib/protocol";
+import type { WsSshProfile } from "#lib/protocol.ts";
 
 export function uniqueSshProfileName(profiles: WsSshProfile[]) {
   const used = new Set(

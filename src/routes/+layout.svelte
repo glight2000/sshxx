@@ -1,15 +1,15 @@
 <script lang="ts">
-  import { browser } from "$app/environment";
+  import { browser } from "$app/env";
   import { onMount } from "svelte";
   import "@fontsource-variable/inter";
 
   import "@xterm/xterm/css/xterm.css";
   import "../app.css";
 
-  import ToastContainer from "$lib/ui/ToastContainer.svelte";
-  import { resolveColorMode } from "$lib/colorMode";
-  import { shouldReloadAfterPreloadError } from "$lib/preloadRecovery";
-  import { settings } from "$lib/settings";
+  import ToastContainer from "#lib/ui/ToastContainer.svelte";
+  import { resolveColorMode } from "#lib/colorMode.ts";
+  import { shouldReloadAfterPreloadError } from "#lib/preloadRecovery.ts";
+  import { settings } from "#lib/settings.ts";
 
   let systemPrefersDark = browser
     ? window.matchMedia("(prefers-color-scheme: dark)").matches

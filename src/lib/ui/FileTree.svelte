@@ -6,7 +6,7 @@
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { ChevronRightIcon, FolderIcon } from "svelte-feather-icons";
 
-  import type { FileTreeEntry } from "$lib/protocol";
+  import type { FileTreeEntry } from "#lib/protocol.ts";
 
   export type FileNode = FileTreeEntry & { children?: FileNode[] };
   type Props = {
