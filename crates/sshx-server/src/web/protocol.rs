@@ -523,6 +523,8 @@ pub enum WsClient {
     CreatePage(String),
     /// Rename an existing canvas page.
     RenamePage(u32, String),
+    /// Move a page before another page, or append when the anchor is absent.
+    ReorderPage(u32, Option<u32>),
     /// Delete a canvas page and close its components. At least one page remains.
     DeletePage(u32),
     /// Create or update a reusable SSH connection profile.

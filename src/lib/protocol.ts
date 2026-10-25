@@ -383,6 +383,7 @@ export type WsClient = {
   updateCustomWindow?: [Sid, number, WsCustomWindow | null];
   createPage?: string;
   renamePage?: [number, string];
+  reorderPage?: [number, number | null];
   deletePage?: number;
   upsertSshProfile?: WsSshProfile;
   deleteSshProfile?: string;

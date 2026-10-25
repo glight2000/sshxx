@@ -1,6 +1,39 @@
 use super::*;
 
 impl Session {
+    /// Move a page before a stable anchor (or to the end). Mutate the current
+    /// registry atomically rather than replacing it with a client's stale list.
+    pub fn reorder_page(&self, id: u32, before_id: Option<u32>) -> Result<()> {
+        let mut result = Ok(());
+        let changed = self.pages.send_if_modified(|pages| {
+            let Some(from) = pages.iter().position(|page| page.id == id) else {
+                result = Err(anyhow::anyhow!("cannot reorder missing page"));
+                return false;
+            };
+            let target = match before_id {
+                Some(before) => match pages.iter().position(|page| page.id == before) {
+                    Some(index) => index,
+                    None => {
+                        result = Err(anyhow::anyhow!("cannot reorder before missing page"));
+                        return false;
+                    }
+                },
+                None => pages.len(),
+            };
+            let to = if target > from { target - 1 } else { target };
+            if from == to {
+                return false;
+            }
+            let page = pages.remove(from);
+            pages.insert(to, page);
+            true
+        });
+        if changed {
+            self.workspace_changed();
+        }
+        result
+    }
+
     /// Delete a page under its registry's write lock. Creation and cross-page
     /// moves hold a read guard until their mutations finish, so no late insert
     /// can resurrect components on the removed page.
@@ -67,6 +100,80 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reordering_preserves_page_identity_and_survives_both_restore_paths() {
+        let session = super::super::tests::session();
+        let second = session.create_page("Second".into()).unwrap();
+        let third = session.create_page("Third".into()).unwrap();
+        session.add_note(Sid(7), (12, 34), second, None).unwrap();
+        session.reorder_page(third, Some(1)).unwrap();
+        session.reorder_page(1, None).unwrap();
+        let expected = vec![third, second, 1];
+        assert_eq!(
+            session
+                .pages
+                .borrow()
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let workspace = session.workspace_state();
+        assert_eq!(workspace.notes[0].page_id, second);
+        assert_eq!(workspace.notes[0].x, 12);
+        assert_eq!(workspace.pages[0].name, "Third");
+        let restored = super::super::tests::session();
+        restored.restore_workspace(workspace).unwrap();
+        assert_eq!(*restored.pages.borrow(), *session.pages.borrow());
+        let restored = Session::restore(&session.snapshot().unwrap()).unwrap();
+        assert_eq!(*restored.pages.borrow(), *session.pages.borrow());
+        assert!(restored.create_page("Next".into()).unwrap() > third);
+    }
+
+    #[test]
+    fn invalid_and_noop_moves_do_not_publish_or_change_the_registry() {
+        let session = super::super::tests::session();
+        let second = session.create_page("Second".into()).unwrap();
+        let watcher = session.pages.subscribe();
+        assert!(session.reorder_page(999, Some(1)).is_err());
+        assert!(session.reorder_page(1, Some(999)).is_err());
+        session.reorder_page(1, Some(1)).unwrap();
+        session.reorder_page(1, Some(second)).unwrap();
+        session.reorder_page(second, None).unwrap();
+        assert!(!watcher.has_changed().unwrap());
+        assert_eq!(
+            session
+                .pages
+                .borrow()
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            vec![1, second]
+        );
+    }
+
+    #[test]
+    fn anchored_move_preserves_concurrent_creates_and_renames() {
+        let session = super::super::tests::session();
+        let second = session.create_page("Second".into()).unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                barrier.wait();
+                session.create_page("New".into()).unwrap();
+                session.rename_page(second, "Renamed".into()).unwrap();
+            });
+            barrier.wait();
+            session.reorder_page(second, Some(1)).unwrap();
+        });
+        let pages = session.pages.borrow();
+        assert_eq!(pages.len(), 3);
+        assert_eq!(pages[0].id, second);
+        assert_eq!(pages[0].name, "Renamed");
+        assert_eq!(pages[1].id, 1);
+        assert_eq!(pages[2].name, "New");
+    }
 
     #[test]
     fn concurrent_creation_cannot_leave_notes_on_a_deleted_page() {

@@ -231,17 +231,11 @@ session name; a random-name deployment necessarily receives a new URL.
   existing local page/search actions; ordinary cursor/focus presence can still
   change, but no shared page, geometry, or PTY-size mutation is emitted. Phone
   mode, modal dialogs, and IME composition do not use these bindings.
-- Scroll input routing is viewer-local. Mouse wheels scroll the focused
-  component regardless of pointer position; without focus they zoom the canvas.
-  Trackpads scroll a component only when the gesture starts inside the focused
-  window; otherwise they pan the canvas. The starting window remains the
-  gesture's destination until a pause, focus change, or menu/pinch interaction.
-  The Auto / Mouse wheel / Trackpad preference is browser-persisted. The device
-  classifier's current gesture and each file window's last-clicked scroll pane
-  are ephemeral browser memory; they are not daemon state or synchronized input.
-  Existing page-aware file-tree scroll synchronization is unchanged.
-  Menus/dialogs keep their native scrolling, and cross-origin iframe input stays
-  inside the frame.
+- Scroll input ownership, gesture routing and device-classification limits are
+  maintained in
+  [Engineering](../../ENGINEERING.md#canvas-wheel-and-trackpad-input).
+- Shared page ordering and its persistence/protocol contract are maintained in
+  [Engineering](../../ENGINEERING.md#page-ordering).
 - Page deletion is a shared, write-authorized workspace operation. Right-click a
   page and choose **Delete page**, then confirm. Its terminals are terminated,
   its notes/custom components/file windows are removed, and dangling note links

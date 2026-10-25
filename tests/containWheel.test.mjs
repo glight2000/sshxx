@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { wheelDestination } from "../src/lib/wheelInput.ts";
+import {
+  WheelInputClassifier,
+  wheelDestination,
+} from "../src/lib/wheelInput.ts";
 import {
   containWheel,
   scrollWheel,
@@ -144,8 +147,8 @@ test("canvas capture routes to the focused surface, not the hovered window", () 
     wheel(focused, false, 200);
     wheel(canvas, false, 220);
     assert.equal(scrolls, 4, "a gesture starting inside stays inside");
-    wheel(canvas, false, 500);
-    wheel(focused, false, 520);
+    wheel(canvas, false, 600);
+    wheel(focused, false, 620);
     assert.equal(scrolls, 4, "a gesture starting outside keeps panning");
     assert.deepEqual(camera, ["pan", "pan"]);
     camera.length = 0;
@@ -174,6 +177,90 @@ test("fallback scrolling preserves wheel units and both file-pane axes", () => {
   scrollWheel(pane, { deltaX: 0, deltaY: 1, deltaMode: 2 });
   assert.deepEqual(result, { left: 0, top: 200 });
   scrollWheel(null, {});
+});
+
+test("sparse trackpad samples preserve canvas ownership until a pause or explicit click", () => {
+  const previous = {
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    document: globalThis.document,
+  };
+  class Element extends EventTarget {
+    classList = { add() {}, remove() {} };
+    parentElement = null;
+    closest() {
+      return null;
+    }
+    contains(target) {
+      return target === this;
+    }
+    querySelector() {
+      return this;
+    }
+  }
+  globalThis.Element = globalThis.HTMLElement = Element;
+  globalThis.document = { activeElement: null };
+  try {
+    const canvas = new Element(),
+      focused = new Element();
+    const input = new WheelInputClassifier(),
+      camera = [];
+    let scrolls = 0,
+      leakedEvents = 0;
+    const surface = containWheel(focused, () => scrolls++);
+    const cleanup = installCanvasWheel(
+      canvas,
+      () => focused,
+      (event, hasFocus, overFocus) =>
+        wheelDestination(hasFocus, input.classify(event, "auto"), overFocus),
+      (_event, mode) => camera.push(mode),
+    );
+    canvas.addEventListener("wheel", () => leakedEvents++);
+    const wheel = (target, timeStamp, deltaX, deltaY) => {
+      const event = new Event("wheel", { cancelable: true });
+      Object.defineProperties(event, {
+        target: { value: target },
+        timeStamp: { value: timeStamp },
+        deltaX: { value: deltaX },
+        deltaY: { value: deltaY },
+        deltaMode: { value: 0 },
+      });
+      canvas.dispatchEvent(event);
+      assert.equal(
+        event.defaultPrevented,
+        true,
+        "canvas input cannot scroll the outer page",
+      );
+    };
+    wheel(canvas, 0, 12, 1);
+    wheel(canvas, 60, 8, 2);
+    wheel(focused, 300, 0, 80);
+    wheel(focused, 320, 3, 2);
+    assert.deepEqual(camera, ["pan", "pan", "pan", "pan"]);
+    assert.equal(scrolls, 0, "the moving window must not steal a sparse pan");
+    wheel(focused, 700, 0, 0);
+    assert.equal(scrolls, 0, "empty samples cannot pick a scroll target");
+    wheel(focused, 850, 0, 120);
+    wheel(canvas, 870, 4, 2);
+    assert.equal(
+      scrolls,
+      2,
+      "a new gesture inside the focused window still scrolls it",
+    );
+    wheel(canvas, 1300, 4, 2);
+    canvas.dispatchEvent(new Event("pointerdown"));
+    wheel(focused, 1320, 0, 2);
+    assert.equal(
+      scrolls,
+      3,
+      "a deliberate click ends the previous pan immediately",
+    );
+    assert.equal(leakedEvents, 0);
+    cleanup();
+    surface.destroy();
+  } finally {
+    Object.assign(globalThis, previous);
+  }
 });
 
 test("a focused file window uses the clicked pane until editing selects another", () => {

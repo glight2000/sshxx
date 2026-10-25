@@ -363,9 +363,9 @@ are maintained together; installed Runtime packages do not require Node.js.
 ## Validation
 
 The required code checks are maintained in
-[ENGINEERING.md](ENGINEERING.md#validation). Terminal clipboard behavior and its
-acceptance criteria are in
-[REQUIREMENTS.md](REQUIREMENTS.md#terminal-clipboard).
+[ENGINEERING.md](ENGINEERING.md#validation). Terminal clipboard and page
+ordering behavior and acceptance criteria are in
+[REQUIREMENTS.md](REQUIREMENTS.md).
 
 ## Upstream and license
 

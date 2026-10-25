@@ -1718,6 +1718,15 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     send(socket, WsServer::Error(err.to_string())).await?;
                 }
             }
+            WsClient::ReorderPage(id, before_id) => {
+                if let Err(error) = session.check_write_permission(user_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                    continue;
+                }
+                if let Err(error) = session.reorder_page(id, before_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
             WsClient::DeletePage(id) => {
                 if let Err(e) = session.check_write_permission(user_id) {
                     send(socket, WsServer::Error(e.to_string())).await?;

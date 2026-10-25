@@ -3,6 +3,7 @@
   import { EyeIcon } from "svelte-feather-icons";
 
   import type { WsPage, WsSshProfile, WsUser } from "#lib/protocol.ts";
+  import type { PageMove } from "#lib/pageOrder.ts";
   import Chat from "./Chat.svelte";
   import type { ChatRecord, WorkspaceAttachment } from "#lib/protocol.ts";
   import type { WorkspaceMedia } from "#lib/workspaceMedia.ts";
@@ -68,6 +69,7 @@
     createPage: void;
     renamePage: { id: number; name: string };
     deletePage: number;
+    reorderPage: PageMove;
   }>();
 </script>
 
@@ -153,6 +155,7 @@
 
 <div class="desktop-page-pager contents">
   <PagePager
+    {connected}
     {pages}
     {activePageId}
     {canvasDropPageId}
@@ -161,6 +164,7 @@
     on:create={() => dispatch("createPage")}
     on:rename={(event) => dispatch("renamePage", event.detail)}
     on:delete={(event) => dispatch("deletePage", event.detail)}
+    on:reorder={(event) => dispatch("reorderPage", event.detail)}
   />
 </div>
 

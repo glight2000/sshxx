@@ -284,8 +284,8 @@ unit 不能连带重启 host unit。
 ## 验证
 
 必须执行的代码检查统一见
-[ENGINEERING.md](ENGINEERING.md#validation)。终端剪贴板行为和验收条件见
-[REQUIREMENTS.md](REQUIREMENTS.md#terminal-clipboard)。
+[ENGINEERING.md](ENGINEERING.md#validation)。终端剪贴板和页面排序的行为及验收条件见
+[REQUIREMENTS.md](REQUIREMENTS.md)。
 
 ## 上游与许可证
 

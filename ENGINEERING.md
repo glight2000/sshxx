@@ -1,10 +1,10 @@
 # Engineering
 
 This document owns development dependencies, build and validation procedures,
-and the terminal clipboard implementation. Existing state, protocol and trust
-boundaries remain in
+and the terminal clipboard, page ordering and canvas input implementations.
+Existing state, protocol and trust boundaries remain in
 [Architecture and State](docs/wiki/Architecture-and-State.md). User-visible
-clipboard requirements live in [REQUIREMENTS.md](REQUIREMENTS.md).
+requirements live in [REQUIREMENTS.md](REQUIREMENTS.md).
 
 ## Toolchain and dependencies
 
@@ -91,6 +91,82 @@ default insertion into its hidden textarea is canceled. Title fields, settings,
 and the phone's independent text composer retain native text editing. The
 existing encrypted paste-mode checkpoint contract remains documented in
 [Architecture and State](docs/wiki/Architecture-and-State.md).
+
+## Page ordering
+
+The server owns the live ordered page registry; its existing ordered
+`WorkspaceState.pages` vector is persisted by the daemon and included in server
+snapshots. The browser owns only the temporary drag preview and its active page.
+No new persistence fields or format version are needed, and no terminal-host
+operation is involved. Existing workspace/snapshot readers preserve vector
+order. Canvas layers remain keyed by stable page IDs.
+
+The additive client message `reorderPage: [pageId, beforePageId | null]` moves a
+page before an existing anchor, or appends it when the anchor is null. The
+server requires write permission and validates both IDs under the page registry
+write lock before mutating. Missing IDs fail without modifying state;
+same-position moves do not publish. Applying a move to the current registry
+preserves concurrent creates, renames and unrelated pages instead of replacing
+the list with a stale client permutation. Successful changes use the existing
+Pages broadcast and workspace persistence pipeline. Deploy the supporting server
+before enabling the updated client's ordering control.
+
+`pageOrder.ts` owns the pure ordering and edge-scroll calculations.
+`action/pageReorder.ts` owns desktop pointer tracking, layout-based hit testing,
+preview/cancel/drop lifecycle and bounded optimistic feedback;
+`action/mobilePageReorder.ts` keeps phone hold-versus-scroll handling separate.
+`PagePager.svelte` renders the keyed preview, FLIP animation, placeholder and
+pointer-transparent floating item. A drop holds its preview until the next
+authoritative page list, or at most two seconds; an unacknowledged move is never
+automatically retried. New shared page data cancels a current drag so deleted or
+renamed targets cannot leave stale local state. The existing error notification
+handles rejected moves.
+
+Pending page creation selects only a newly observed page ID, wherever it appears
+in the next list. Rename/reorder-only broadcasts cannot complete that intent;
+errors and disconnects cancel it. Phone sorting also watches touch starts at
+window capture so a second finger outside the pager cancels both a pending hold
+and an active drag before other canvas handlers consume the event.
+
+Regression tests cover drag thresholds, click suppression, cancellation,
+readonly/disconnected clients, touch scrolling, timer/listener cleanup,
+ordering, edge-scroll calculations, shared delivery, server validation,
+concurrent page creation/rename and both workspace/snapshot restoration. Browser
+display checks can use an isolated pager with synthetic pages, without
+connecting to a real session or executing App business flows.
+
+## Canvas wheel and trackpad input
+
+Scroll routing is viewer-local. `wheelInput.ts` classifies device samples;
+`action/containWheel.ts` chooses the gesture's starting destination before child
+widgets consume wheel events. `TouchZoom` moves the local camera, while focused
+components retain their existing scroll paths. File-pane selection and current
+gesture evidence live only in browser memory; the Auto / Mouse wheel / Trackpad
+preference uses the browser settings store. Existing page-aware file-tree scroll
+synchronization is unchanged. User behavior is specified in
+[Requirements](REQUIREMENTS.md#canvas-wheel-and-trackpad-input).
+
+The classifier and router share a 350 ms gesture gap, so a slow swipe does not
+lose its destination after a brief pause. A pointer press explicitly resets
+routing. Auto retains recognized trackpad evidence for up to 1.5 seconds across
+gesture boundaries: a large integer pixel delta alone cannot overturn that
+recent evidence. Horizontal, fractional or small pixel samples can correct an
+initial mouse guess within a gesture; a recognized trackpad gesture never
+changes back to mouse zoom mid-stream. Line/page events at the start of a new
+gesture, explicit device overrides, clock resets and sufficiently long idle
+periods allow fresh classification. Zero-delta samples neither choose a target
+nor prolong gesture/device memory.
+
+These are bounded heuristics, not device identification. The first large integer
+pixel sample after idle can be ambiguous; an explicit Trackpad or Mouse wheel
+setting bypasses guessing. The
+[WheelEvent contract](https://w3c.github.io/pointerevents/#events-wheelevents)
+allows platform-dependent deltas and transaction timing. Do not infer physical
+finger contact or hardware identity from an idle timeout. Regression coverage in
+`tests/wheelInput.test.mjs` and `tests/containWheel.test.mjs` exercises sparse
+samples, acceleration, recovery from an ambiguous first sample, routing
+continuity, explicit clicks/overrides, idle/clock resets, native-scroll
+cancellation and existing focused-content scrolling.
 
 ## Validation
 

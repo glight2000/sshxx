@@ -77,6 +77,7 @@
   import { TouchZoom, INITIAL_ZOOM } from "./action/touchZoom";
   import { installCanvasWheel } from "./action/containWheel";
   import { WheelInputClassifier, wheelDestination } from "./wheelInput";
+  import { addedPageId } from "./pageOrder";
   import {
     arrangeNewCanvasItem,
     arrangeNewCanvasItemNear,
@@ -2169,12 +2170,15 @@
             },
           ]);
         } else if (message.pages) {
+          const createdPageId = selectCreatedPage
+            ? addedPageId(pages, message.pages)
+            : null;
           pages = message.pages.length
             ? message.pages
             : [{ id: 1, name: "Page 1" }];
-          if (selectCreatedPage) {
+          if (createdPageId !== null) {
             selectCreatedPage = false;
-            switchPage(pages.at(-1)?.id ?? pages[0].id);
+            switchPage(createdPageId);
           } else if (pages.some((page) => page.id === preferredPageId)) {
             switchPage(preferredPageId);
           } else if (!pages.some((page) => page.id === activePageId)) {
@@ -2275,6 +2279,7 @@
           const serverLatency = Date.now() - Number(message.pong);
           serverLatencies = [...serverLatencies, serverLatency].slice(-10);
         } else if (message.error) {
+          selectCreatedPage = false;
           console.warn("Server error: " + message.error);
           makeToast({ kind: "error", message: message.error });
         }
@@ -2298,6 +2303,7 @@
         mediaAvailable = false;
         chatHistoryAvailable = false;
         connected = false;
+        selectCreatedPage = false;
         sessionReady = false;
         userId = 0;
         subscriptions.clear();
@@ -4195,6 +4201,12 @@
     on:updateRuntime={() => requestSystemAction("updateRuntime")}
     on:restartTerminalHost={() => requestSystemAction("restartTerminalHost")}
     on:selectPage={(event) => switchPage(event.detail)}
+    on:reorderPage={(event) => {
+      if (connected && hasWriteAccess)
+        srocket?.send({
+          reorderPage: [event.detail.id, event.detail.beforeId],
+        });
+    }}
     on:createPage={() => {
       selectCreatedPage = true;
       srocket?.send({ createPage: "" });

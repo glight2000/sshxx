@@ -311,6 +311,47 @@ async fn test_grpc_retention_recovery_reaches_viewers_without_restarting_other_s
 }
 
 #[tokio::test]
+async fn test_page_reordering_is_shared_and_requires_write_access() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, true).await?;
+    let name = controller.name().to_owned();
+    let key = controller.encryption_key().to_owned();
+    let password = controller
+        .write_url()
+        .unwrap()
+        .split(',')
+        .nth(1)
+        .unwrap()
+        .to_owned();
+    tokio::spawn(async move { controller.run().await });
+    let endpoint = server.ws_endpoint(&name);
+    let mut writer = ClientSocket::connect(&endpoint, &key, Some(&password)).await?;
+    let mut reader = ClientSocket::connect(&endpoint, &key, None).await?;
+    writer.send(WsClient::CreatePage("Second".into())).await;
+    writer.send(WsClient::CreatePage("Third".into())).await;
+    writer.flush().await;
+    reader.flush().await;
+    let third = writer.pages[2].id;
+    reader.send(WsClient::ReorderPage(third, Some(1))).await;
+    reader.flush().await;
+    assert_eq!(reader.errors.len(), 1);
+    assert_eq!(reader.pages, writer.pages);
+    writer.send(WsClient::ReorderPage(third, Some(1))).await;
+    writer.flush().await;
+    reader.flush().await;
+    assert_eq!(reader.pages[0].id, third);
+    assert_eq!(reader.pages, writer.pages);
+    writer.send(WsClient::ReorderPage(third, Some(999))).await;
+    writer.flush().await;
+    assert_eq!(writer.errors.len(), 1);
+    assert_eq!(reader.pages, writer.pages);
+    let mut newcomer = ClientSocket::connect(&endpoint, &key, None).await?;
+    newcomer.flush().await;
+    assert_eq!(newcomer.pages, writer.pages);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_delete_page_is_shared_and_requires_write_access() -> Result<()> {
     let server = TestServer::new().await;
     let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, true).await?;

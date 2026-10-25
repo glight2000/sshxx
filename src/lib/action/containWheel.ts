@@ -118,6 +118,11 @@ export function installCanvasWheel(
   let lastTime = -Infinity;
   let gestureWindow: HTMLElement | null = null;
   let gestureTarget: Element | null = null;
+  const reset = () => {
+    lastTime = -Infinity;
+    gestureWindow = null;
+    gestureTarget = null;
+  };
   const wheel = (event: WheelEvent) => {
     // Ctrl+wheel/pinch is handled by the existing camera capture listener.
     if (forwardedWheels.has(event)) return;
@@ -132,6 +137,8 @@ export function installCanvasWheel(
     }
     event.preventDefault();
     event.stopImmediatePropagation();
+    // Empty samples must not choose a new destination or extend a gesture.
+    if (event.deltaX === 0 && event.deltaY === 0) return;
     const focused = focusedWindow();
     if (
       event.timeStamp - lastTime > WHEEL_GESTURE_GAP_MS ||
@@ -156,7 +163,13 @@ export function installCanvasWheel(
     if (surface) surfaces.get(surface)?.(event);
   };
   node.addEventListener("wheel", wheel, { capture: true, passive: false });
-  return () => node.removeEventListener("wheel", wheel, { capture: true });
+  // An explicit click starts a new interaction even within the wheel gap.
+  node.addEventListener("pointerdown", reset, true);
+  return () => {
+    node.removeEventListener("wheel", wheel, { capture: true });
+    node.removeEventListener("pointerdown", reset, true);
+    reset();
+  };
 }
 
 /** Reuse xterm's DOM wheel path, including alternate-screen mouse reporting. */

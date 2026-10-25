@@ -12,23 +12,13 @@
   stationary right-click still opens the canvas action menu; a completed
   right-drag does not.
 - Middle-button drag always pans, even when the pointer is over a window.
-- `Ctrl` + wheel always zooms the canvas and suppresses browser zoom. Wheel zoom
-  uses the faster canvas step; it does not change browser page scale.
-- With a focused component, mouse wheels scroll it regardless of pointer
-  position. Two-finger trackpad gestures scroll it only when starting inside
-  that window; starting outside pans the canvas instead. The gesture retains its
-  starting destination. File explorers support horizontal and vertical
-  scrolling, using the actively edited or last-clicked pane.
-- Without component focus, a mouse wheel zooms and a trackpad pans the canvas,
-  even when the pointer is over a window. Neither action changes focus.
-- **Scroll input device** in Settings defaults to Auto. Because browsers do not
-  expose the physical device, choose Mouse wheel or Trackpad if Auto guesses
-  incorrectly. The choice is local to this browser. Menus/dialogs scroll
-  themselves; cross-origin embedded pages handle their own input.
+- Mouse wheel, two-finger trackpad and `Ctrl` + wheel behavior, including device
+  overrides and scrolling boundaries, is maintained in
+  [Canvas wheel and trackpad input](../../REQUIREMENTS.md#canvas-wheel-and-trackpad-input).
 - When a component is full-screen, canvas pan/zoom is disabled. Clicking the
   visible space outside the component exits full-screen.
-- Double-click a page name in the bottom pager to rename it inline; there is no
-  separate edit action.
+- Bottom pager dragging, touch holding, keyboard reordering and inline renaming
+  are documented in [Page ordering](../../REQUIREMENTS.md#page-ordering).
 
 ## Desktop workspace shortcuts
 

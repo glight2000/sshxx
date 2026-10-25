@@ -105,6 +105,9 @@ daemon startup.
 
 ## Pages, canvas navigation, and search
 
+Pager ordering and its pointer, touch and keyboard controls are maintained in
+[Page ordering](../../REQUIREMENTS.md#page-ordering).
+
 Right-click a page tab and choose **Delete page** to remove it after
 confirmation. This closes its terminals and removes its components for every
 viewer; unsaved edits are lost, but files on disk are not deleted. File browsers
