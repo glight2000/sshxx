@@ -120,6 +120,7 @@ export type FileTreeEntry = {
 
 export type FileOperationRequest = {
   operation:
+    | "terminalDirectory"
     | "list"
     | "read"
     | "write"
@@ -136,6 +137,7 @@ export type FileOperationRequest = {
 };
 
 export type FileOperationResponse = {
+  directoryHost?: string;
   ok: boolean;
   operation: FileOperationRequest["operation"];
   path: string;
@@ -377,6 +379,7 @@ export type WsClient = {
     number,
   ];
   closeFileWindow?: [Sid, number];
+  followFileDirectory?: [Sid, number, Sid, number, string, string[]];
   updateFileWindow?: [Sid, number, WsFileWindow | null];
   createCustomWindow?: [number, number, number, number, number];
   closeCustomWindow?: [Sid, number];

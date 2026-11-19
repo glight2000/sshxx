@@ -15,6 +15,7 @@ type PendingRequest = {
 
 const FILE_OPERATIONS = new Set<FileOperationRequest["operation"]>([
   "list",
+  "terminalDirectory",
   "read",
   "write",
   "createFile",

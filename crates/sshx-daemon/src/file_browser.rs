@@ -34,6 +34,7 @@ pub(crate) struct FileOperationRequest {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum FileOperation {
+    TerminalDirectory,
     List,
     Read,
     Write,
@@ -52,6 +53,8 @@ pub(crate) struct FileOperationResponse {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entries: Option<Vec<FileEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,6 +81,7 @@ impl FileOperationResponse {
             operation: request.operation,
             path: request.path.clone(),
             error: Some(error.to_string()),
+            directory_host: None,
             entries: None,
             content: None,
             encoding: None,
@@ -124,7 +128,13 @@ async fn execute_local(
     request: &FileOperationRequest,
     working_directory: Option<PathBuf>,
 ) -> Result<FileOperationResponse> {
-    let base = working_directory.unwrap_or(std::env::current_dir()?);
+    let base = match working_directory {
+        Some(path) => path,
+        None if matches!(request.operation, FileOperation::TerminalDirectory) => {
+            bail!("The terminal host cannot report this shell's directory.")
+        }
+        None => std::env::current_dir()?,
+    };
     let requested = Path::new(&request.path);
     let path = if requested == Path::new(".") {
         base.clone()
@@ -135,6 +145,7 @@ async fn execute_local(
     };
 
     match request.operation {
+        FileOperation::TerminalDirectory => Ok(success(request, base, None, None, None, None)),
         FileOperation::List => {
             let canonical = tokio::fs::canonicalize(&path)
                 .await
@@ -276,10 +287,22 @@ async fn execute_remote(
         "BatchMode=yes".into(),
         "-o".into(),
         "ConnectTimeout=10".into(),
-        "-s".into(),
-        host,
-        "sftp".into(),
     ]);
+    if matches!(request.operation, FileOperation::TerminalDirectory) {
+        // A config alias or IP may differ from the hostname used in OSC 7.
+        // Only the daemon-selected profile determines the SSH destination.
+        args.extend([
+            "-o".into(),
+            "ClearAllForwardings=yes".into(),
+            "-T".into(),
+            host,
+            "hostname".into(),
+        ]);
+        let mut response = success(request, "", None, None, None, None);
+        response.directory_host = Some(read_ssh_hostname(Command::new(program).args(args)).await?);
+        return Ok(response);
+    }
+    args.extend(["-s".into(), host, "sftp".into()]);
     let mut child = Command::new(program)
         .args(args)
         .stdin(std::process::Stdio::piped())
@@ -297,6 +320,37 @@ async fn execute_remote(
     sftp.close().await.ok();
     child.wait().await.ok();
     result
+}
+
+async fn read_ssh_hostname(command: &mut Command) -> Result<String> {
+    use tokio::io::AsyncReadExt;
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut output = Vec::new();
+    child
+        .stdout
+        .take()
+        .context("SSH stdout is missing")?
+        .take(258)
+        .read_to_end(&mut output)
+        .await?;
+    if output.len() >= 258 || !child.wait().await?.success() {
+        bail!("Cannot identify the configured SSH host for directory following.");
+    }
+    let host = std::str::from_utf8(&output)?.trim_end_matches(['\r', '\n']);
+    if host.is_empty()
+        || host.len() > 255
+        || !host
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b".-_".contains(&c))
+    {
+        bail!("The SSH host did not return a valid hostname.");
+    }
+    Ok(host.to_ascii_lowercase())
 }
 
 async fn execute_sftp(
@@ -319,6 +373,9 @@ async fn execute_sftp(
         fs.canonicalize(&request.path).await?
     };
     match request.operation {
+        FileOperation::TerminalDirectory => {
+            bail!("terminal directory lookup requires the bound SSH profile")
+        }
         FileOperation::List => {
             let directory = fs.open_dir(&canonical).await?.read_dir();
             tokio::pin!(directory);
@@ -596,6 +653,7 @@ fn success(
         operation: request.operation,
         path: path.as_ref().to_string_lossy().into_owned(),
         error: None,
+        directory_host: None,
         entries,
         content,
         encoding,
@@ -606,6 +664,35 @@ fn success(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn directory_follow_accepts_a_single_bounded_ssh_hostname() -> Result<()> {
+        assert_eq!(
+            read_ssh_hostname(Command::new("printf").arg("Build.example.test\r\n")).await?,
+            "build.example.test"
+        );
+        for invalid in ["".to_owned(), "greeting\nother".into(), "x".repeat(258)] {
+            assert!(
+                read_ssh_hostname(Command::new("printf").arg("%s").arg(invalid))
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(read_ssh_hostname(&mut Command::new("false")).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_directory_uses_only_the_live_shell_cwd() -> Result<()> {
+        let cwd = tempfile::tempdir()?;
+        let query = request(FileOperation::TerminalDirectory, Path::new("."), None);
+        let response = execute(&query, Some(cwd.path().to_owned()), None).await?;
+        assert_eq!(Path::new(&response.path), cwd.path());
+        assert!(response.directory_host.is_none());
+        assert!(execute(&query, None, None).await.is_err());
+        Ok(())
+    }
 
     #[cfg(unix)]
     #[tokio::test]

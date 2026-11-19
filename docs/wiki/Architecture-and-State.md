@@ -89,6 +89,9 @@ here”—must create a fresh PTY. If an orphaned host entry collides with that 
 ID, the daemon replaces the orphan so the request's working directory and SSH
 profile cannot be silently discarded.
 
+Saved SSH windows can also use
+[per-window remote Bash state](../../ENGINEERING.md#keeping-terminal-state-through-a-daemon-restart).
+
 ## Terminal-host lifecycle and upgrades
 
 Outside a service manager, `sshxx-daemon` starts its sibling

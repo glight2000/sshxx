@@ -870,6 +870,15 @@
     (data: string, execute?: boolean) => void
   > = {};
   const terminalKeySenders: Record<number, (key: string) => boolean> = {};
+  let followAvailable = false;
+  let terminalReports: Record<
+    number,
+    import("./terminalLocation").TerminalLocation | null
+  > = {};
+  const fileExplorers: Record<
+    number,
+    { revealTerminalDirectory(path: string): Promise<void> } | null
+  > = {};
   const fileTextSenders: Record<
     number,
     (data: string, position?: TextInsertPosition) => TextInsertResult
@@ -997,6 +1006,9 @@
   let focusedTerminalId: number | null = null;
   let focusedNoteId: number | null = null;
   let focusedFileWindowId: number | null = null;
+  $: focusedFileShellId = fileWindows.find(
+    ([id]) => id === focusedFileWindowId,
+  )?.[1].shellId;
   let focusedCustomWindowId: number | null = null;
   $: mobileFocusedKey =
     mobileFullscreenKey ??
@@ -1059,6 +1071,7 @@
     chunknums[id] = 0;
     checkpointLoading.delete(id);
     delete replayedWriters[id];
+    delete terminalReports[id];
     terminalRendererRevisions = {
       ...terminalRendererRevisions,
       [id]: (terminalRendererRevisions[id] ?? 0) + 1,
@@ -1922,6 +1935,9 @@
           exitReason = null;
           failureStage = null;
         } else if (message.capabilities) {
+          followAvailable = message.capabilities.includes(
+            "file-directory-follow-v1",
+          );
           if (message.capabilities.includes("terminal-output-epoch-v1"))
             srocket?.send({ terminalOutputEpoch: null });
           checkpointAvailable = message.capabilities.includes(
@@ -2061,6 +2077,7 @@
             delete replayedWriters[shellId];
             delete terminalRendererRevisions[shellId];
             delete terminalTitles[shellId];
+            delete terminalReports[shellId];
             checkpointLoading.delete(shellId);
             checkpointTerminals.delete(shellId);
             terminalRendererRecoveries.delete(shellId);
@@ -2077,6 +2094,7 @@
             delete replayedWriters[shellId];
             delete terminalRendererRevisions[shellId];
             delete terminalTitles[shellId];
+            delete terminalReports[shellId];
             checkpointLoading.delete(shellId);
             checkpointTerminals.delete(shellId);
             terminalRendererRecoveries.delete(shellId);
@@ -2297,6 +2315,8 @@
       },
 
       onDisconnect() {
+        terminalReports = {};
+        followAvailable = false;
         checkpointAvailable = false;
         checkpointLoading.clear();
         checkpointClient?.reset();
@@ -3092,7 +3112,18 @@
       ([, window]) => window.shellId === shellId && window.pageId === pageId,
     );
     if (existing) {
-      bringFileWindowToFront(existing[0], pageId);
+      const [id, fileWindow] = existing;
+      if (fileWindow.minimized)
+        updateFileWindowSharedState(id, pageId, { minimized: false });
+      bringFileWindowToFront(id, pageId);
+      const explorer = fileExplorers[id];
+      if (explorer) void explorer.revealTerminalDirectory(path || ".");
+      else
+        makeToast({
+          kind: "info",
+          message:
+            "The file browser is still loading. Try again when it opens.",
+        });
       return;
     }
     const source = terminalCanvasRect(shellId);
@@ -4396,13 +4427,24 @@
                   opacity={ws.opacity}
                   minimized={ws.minimized}
                   fullscreen={fullscreenItems[`terminal:${id}`] ?? false}
-                  linkedNotes={notes
-                    .filter(([, note]) => note.linkedShellIds.includes(id))
-                    .map(([noteId, note]) => ({
-                      id: noteId,
-                      label: noteTitle(noteId, note),
-                      kind: "note" as const,
-                    }))}
+                  linkedItems={[
+                    ...fileWindows
+                      .filter(([, file]) => file.shellId === id)
+                      .map(([fileId, file]) => ({
+                        id: fileId,
+                        kind: "file" as const,
+                        label: `File browser for terminal #${id} · ${fileWindowTitle(fileId, file)}`,
+                        boundTerminalId: id,
+                      })),
+                    ...notes
+                      .filter(([, note]) => note.linkedShellIds.includes(id))
+                      .map(([noteId, note]) => ({
+                        id: noteId,
+                        label: noteTitle(noteId, note),
+                        kind: "note" as const,
+                      })),
+                  ]}
+                  bindingHighlighted={focusedFileShellId === id}
                   linkedHighlight={focusedNoteId !== null &&
                     (notes
                       .find(([noteId]) => noteId === focusedNoteId)?.[1]
@@ -4443,7 +4485,7 @@
                   on:toggleFullscreen={() => toggleFullscreen("terminal", id)}
                   on:minimized={(event) =>
                     setTerminalMinimized(id, ws, event.detail)}
-                  on:navigateNote={(event) =>
+                  on:navigateRelation={(event) =>
                     navigateCanvasRelation(event.detail)}
                   on:unlinkNote={(event) =>
                     removeCanvasRelation(event.detail.id, {
@@ -4451,6 +4493,16 @@
                       kind: "terminal",
                       label: terminalTitle(id, ws),
                     })}
+                  on:directoryReport={({ detail }) => {
+                    if (
+                      connected &&
+                      shells.some(
+                        ([sid, state]) =>
+                          sid === id && state.generation === winsize.generation,
+                      )
+                    )
+                      terminalReports[id] = detail;
+                  }}
                   on:openFiles={(event) => {
                     openFileWindow(
                       id,
@@ -4796,6 +4848,9 @@
           {/each}
 
           {#each fileWindows.filter(([, window]) => window.pageId === page.id) as [id, fileWindow] (id)}
+            {@const boundShell = shells.find(
+              ([sid]) => sid === fileWindow.shellId,
+            )?.[1]}
             {@const displayFileWindow =
               groupFileStates[id] ??
               (id === movingFile
@@ -4847,6 +4902,11 @@
                 {:then fileExplorerModule}
                   <svelte:component
                     this={fileExplorerModule.default}
+                    bind:this={fileExplorers[id]}
+                    terminalReport={terminalReports[fileWindow.shellId] ?? null}
+                    followScope={followAvailable && boundShell
+                      ? `${fileWindow.shellId}:${boundShell.pageId}:${boundShell.generation}:${fileWindow.pageId}`
+                      : null}
                     title={displayFileWindow.title}
                     background={displayFileWindow.background}
                     initialPath={displayFileWindow.path}
@@ -4867,15 +4927,35 @@
                     treeRevision={displayFileWindow.treeRevision}
                     minimized={displayFileWindow.minimized}
                     online={sessionReady}
-                    linkedNotes={notes
-                      .filter(([, note]) =>
-                        note.linkedFileWindowIds.includes(id),
-                      )
-                      .map(([noteId, note]) => ({
-                        id: noteId,
-                        label: noteTitle(noteId, note),
-                        kind: "note" as const,
-                      }))}
+                    linkedItems={[
+                      ...(boundShell
+                        ? [
+                            {
+                              id: fileWindow.shellId,
+                              kind: "terminal" as const,
+                              label: [
+                                `Terminal #${fileWindow.shellId}`,
+                                boundShell.title ||
+                                  terminalTitles[fileWindow.shellId],
+                              ]
+                                .filter(Boolean)
+                                .join(" · "),
+                              boundTerminalId: fileWindow.shellId,
+                            },
+                          ]
+                        : []),
+                      ...notes
+                        .filter(([, note]) =>
+                          note.linkedFileWindowIds.includes(id),
+                        )
+                        .map(([noteId, note]) => ({
+                          id: noteId,
+                          label: noteTitle(noteId, note),
+                          kind: "note" as const,
+                        })),
+                    ]}
+                    bindingHighlighted={focusedTerminalId ===
+                      fileWindow.shellId}
                     linkedHighlight={focusedNoteId !== null &&
                       (notes
                         .find(([noteId]) => noteId === focusedNoteId)?.[1]
@@ -4906,6 +4986,19 @@
                         )?.[1].pageId ?? displayFileWindow.pageId,
                         request,
                       )}
+                    on:followDirectory={({ detail }) => {
+                      if (hasWriteAccess && followAvailable && boundShell)
+                        srocket?.send({
+                          followFileDirectory: [
+                            id,
+                            fileWindow.pageId,
+                            fileWindow.shellId,
+                            boundShell.generation,
+                            detail.path,
+                            detail.expandedPaths,
+                          ],
+                        });
+                    }}
                     on:close={() =>
                       hasWriteAccess &&
                       srocket?.send({
@@ -4921,7 +5014,7 @@
                         event.detail,
                         displayFileWindow,
                       )}
-                    on:navigateNote={(event) =>
+                    on:navigateRelation={(event) =>
                       navigateCanvasRelation(event.detail)}
                     on:unlinkNote={(event) =>
                       removeCanvasRelation(event.detail.id, {

@@ -40,8 +40,146 @@ not start Redis or migrate an existing deployment.
   update only one side. QuickJS and cryptographic library upgrades must pass
   existing parser-continuation, cross-language encryption and persistence tests.
 
-Godot, Electron and Pocket experiments remain outside this maintenance scope.
+The Electron shell has its own npm lockfile under `clients/electron`. Audit its
+builder dependencies separately from the root client. The Svelte formatter
+plugin stays at 4.1.1 to preserve the repository's existing markup formatting.
 Target-specific deployment addresses, credentials and runbooks stay private.
+
+## Source deployment on Linux
+
+Use `./start.sh build-runtime /absolute/path/to/new-build` for an existing
+single-server systemd test instance. Run it as the service account with the
+pinned mise tools, a native C toolchain, Make, protoc, and GNU coreutils and
+flock installed. It installs the locked npm dependencies, builds the Web client
+and the two release-mode binaries, and publishes a new directory after all three
+succeed. Use a local disk readable by the service account. Build from a separate
+checkout if a Vite development server also needs to run during builds.
+
+For activation, point a local `current` symlink at the completed directory. Use
+machine-local systemd drop-ins for the server and daemon. Choose filenames that
+sort after existing site overrides. After reloading systemd, verify that each
+unit's effective `ExecStart` selects the source binary before restarting.
+Preserve each unit's existing arguments, user, and environment files when
+overriding its `ExecStart` to use `current/bin/sshxx-server` or
+`current/bin/sshxx-daemon`. Set the server's `WorkingDirectory` to `current` so
+it serves the matching `build/`. Keep the daemon's durable working directory and
+existing terminal-host service. Set `UnsetEnvironment=SSHXX_WEB_UPDATE` on the
+daemon and suspend any site-specific GitHub update jobs for this instance while
+testing source builds.
+
+Reload systemd after changing drop-ins. To apply subsequent edits, build a fresh
+directory, switch the symlink atomically, then restart `sshxx-server.service`
+and `sshxx-daemon.service` together. Browsers reconnect and can reload the new
+client. Verify both executables and the server's working directory via the
+running PIDs before retiring a superseded build. Keep the previous build for
+rollback. To return to GitHub releases, remove only the source drop-ins, reload
+systemd, restart the same two units and restore the site's updater.
+
+## SSH directory reporting
+
+The terminal consumes OSC 7 file URIs from the live output stream and the
+encrypted terminal checkpoint. Its folder button uses the decoded directory with
+the file browser attached to the same terminal. OpenSSH SFTP uses the daemon's
+saved connection, so the reporting hostname never selects a destination.
+
+For an interactive remote Bash account that does not already emit OSC 7, add the
+following to the remote `~/.bashrc`. It appends to existing prompt commands,
+preserves the previous exit status and percent-encodes path bytes, including
+spaces, Unicode and shell punctuation.
+
+```bash
+sshxx_report_directory() {
+  local status=$? LC_ALL=C path= byte escaped i
+  for ((i = 0; i < ${#PWD}; i++)); do
+    byte=${PWD:i:1}
+    case $byte in
+      [a-zA-Z0-9/._~-]) path+=$byte ;;
+      *) printf -v escaped '%%%02X' "'$byte"; path+=$escaped ;;
+    esac
+  done
+  printf '\033]7;file://%s%s\033\\' "$HOSTNAME" "$path"
+  return "$status"
+}
+if [[ $- == *i* && " ${PROMPT_COMMAND[*]} " != *" sshxx_report_directory "* ]]; then
+  PROMPT_COMMAND+=(sshxx_report_directory)
+fi
+```
+
+The next prompt reports the new directory. SFTP requires a profile that can
+authenticate non-interactively, such as a key or SSH agent.
+
+### Live directory following
+
+An enabled file window queries `terminalDirectory` through the existing
+encrypted, page-checked file request channel. A local reply contains the live
+shell process directory. If the terminal host cannot supply it, the UI shows the
+error. The viewer checks again 1.5 seconds after a successful local probe. A
+saved SSH profile runs the fixed command `hostname` in batch mode at the
+configured destination, once per active binding. Its bounded result identifies
+which live OSC 7 reports to use, including when the profile uses an IP address
+or a config alias. Reports must match that hostname after case and trailing-dot
+normalization. Terminal output never supplies an SSH destination.
+
+Each viewer owns its follow switch and transient hostname, report and timer. One
+follow request runs at a time per enabled window. A newer target, disabled
+switch, disconnect or changed binding invalidates an outstanding result.
+Historical replay and checkpoints do not drive automatic navigation. The server
+applies a page- and generation-checked navigation update to the latest file
+window. It preserves geometry, stacking order and any open editor. The existing
+file-window snapshot carries the resulting directory to viewers. Following does
+not create file windows, persist a subscription or change SSH credentials. The
+server advertises the follow capability only when the daemon supports the query.
+Older deployments retain ordinary file browsing.
+
+OpenSSH starts an SFTP subsystem for file operations. If the daemon user's
+OpenSSH config enables connection multiplexing for the same destination, OpenSSH
+can share the underlying transport through its control socket. An SSH client
+started on a jump host has its control socket on that host. The daemon cannot
+attach to it through the interactive terminal. Password-only profiles are
+excluded from file browsing.
+
+## Keeping terminal state through a daemon restart
+
+The terminal host owns the live PTY. A daemon restart reattaches using the
+workspace terminal ID. This retains the foreground process, working directory
+and in-memory shell history while the original PTY lives. After an interrupted
+host subscription, local and saved SSH windows first reattach to their own PTYs.
+A local window closes if its original PTY is gone. For source-derived windows,
+orphan replacement applies only to the first launch. Both process replacement
+and graceful system-service shutdown drain the workspace writer before the final
+save. A remote disconnect or a terminal-host restart can end the process itself.
+
+Saved SSH windows can isolate their **remote Bash history** and recover their
+last prompt directory if the SSH process has to be recreated. To enable this on
+a remote account:
+
+1. Have the remote OpenSSH server accept `SSHXX_HISTORY_ID` through its
+   `AcceptEnv` configuration. The daemon requests this variable only for saved
+   interactive SSH profiles. SFTP continues to use the original profile.
+2. Install [the Bash integration](scripts/remote-bash-state.bash) on that
+   account, for example as `~/.config/sshxx/remote-bash-state.bash`. Source it
+   at the end of the interactive Bash startup file, after normal history and
+   prompt configuration:
+
+   ```bash
+   [[ -r ~/.config/sshxx/remote-bash-state.bash ]] &&
+     source ~/.config/sshxx/remote-bash-state.bash
+   ```
+
+3. Open a new saved SSH window. The shell writes its own history (up to 10,000
+   entries, respecting smaller limits and history exclusions) and its last
+   prompt directory under `${XDG_STATE_HOME:-$HOME/.local/state}/sshxx/` on the
+   remote host. The directory is private to that account. A supplied “Open
+   terminal here” directory takes precedence. The hook leaves other logins
+   alone.
+
+The daemon retains only the opaque history namespace beside its per-terminal
+local history. Closing the window retires that namespace; a duplicate gets a
+separate one. Remote files remain under the remote account's control. An
+already-running SSH login keeps its current environment on reattach. Shells
+started through a manually typed nested SSH command use the remote account's
+normal shell configuration. sshxx does not record the PTY input stream or
+re-execute old commands to recreate a program.
 
 ## Build
 
@@ -109,7 +247,10 @@ same-position moves do not publish. Applying a move to the current registry
 preserves concurrent creates, renames and unrelated pages instead of replacing
 the list with a stale client permutation. Successful changes use the existing
 Pages broadcast and workspace persistence pipeline. Deploy the supporting server
-before enabling the updated client's ordering control.
+before enabling the updated client's ordering control. In local development,
+rebuilding the server binary does not replace the running process: restart the
+server entry in the existing process manager after server protocol changes. Vite
+hot reload updates only the Web client.
 
 `pageOrder.ts` owns the pure ordering and edge-scroll calculations.
 `action/pageReorder.ts` owns desktop pointer tracking, layout-based hit testing,
@@ -167,6 +308,13 @@ finger contact or hardware identity from an idle timeout. Regression coverage in
 samples, acceleration, recovery from an ambiguous first sample, routing
 continuity, explicit clicks/overrides, idle/clock resets, native-scroll
 cancellation and existing focused-content scrolling.
+
+`TouchZoom` deduplicates only identical wheel event objects using a `WeakSet`.
+Do not deduplicate by timestamp: separate horizontal and vertical events can
+share one timestamp, and discarding the second event loses an axis. Both deltas
+accumulate before the existing animation-frame notification. Camera regression
+tests in `tests/touchZoom.test.mjs` cover either starting axis, equal
+timestamps, diagonal movement, reversals and duplicate listener delivery.
 
 ## Validation
 

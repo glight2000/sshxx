@@ -25,7 +25,7 @@ async fn test_basic_restore() -> Result<()> {
     s.flush().await;
     assert_eq!(s.user_id, Uid(1));
     assert_eq!(s.server_version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(s.daemon_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(s.daemon_version, sshx_daemon::VERSION);
 
     s.send(WsClient::CreatePage("Work".into())).await;
     s.flush().await;
@@ -141,7 +141,7 @@ async fn test_basic_restore() -> Result<()> {
     assert_eq!(s.file_windows.get(&Sid(3)), Some(&file_window));
     assert_eq!(s.custom_windows.get(&Sid(4)), Some(&custom_window));
     assert_eq!(s.pages.last().unwrap().name, "Work");
-    assert_eq!(s.daemon_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(s.daemon_version, sshx_daemon::VERSION);
 
     Ok(())
 }

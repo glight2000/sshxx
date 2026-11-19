@@ -1609,6 +1609,56 @@ impl Session {
         Ok(())
     }
 
+    /// Apply only navigation fields. A background follow cannot clear a newer
+    /// shared editor, revert a resize, or raise the window for other viewers.
+    pub(crate) fn follow_file_directory(
+        &self,
+        id: Sid,
+        page: u32,
+        shell: Sid,
+        generation: u32,
+        path: String,
+        expanded: Vec<String>,
+    ) -> Result<()> {
+        if self.shell_generation(shell) != Some(generation) {
+            bail!("terminal generation changed");
+        }
+        let mut result = Ok(());
+        let changed = self.file_windows.send_if_modified(|windows| {
+            let Some((_, window)) = windows.iter_mut().find(|(wid, _)| *wid == id) else {
+                result = Err(anyhow::anyhow!("file browser no longer exists"));
+                return false;
+            };
+            if window.page_id != page || window.shell_id != shell || path.is_empty() {
+                result = Err(anyhow::anyhow!("invalid file browser directory target"));
+                return false;
+            }
+            if !window.editor_path.is_empty() || window.editor_dirty || window.current_path == path
+            {
+                return false;
+            }
+            let next = WsFileWindow {
+                current_path: path,
+                expanded_paths: expanded,
+                selected_path: String::new(),
+                selected_kind: String::new(),
+                tree_scroll_top: 0,
+                tree_revision: window.tree_revision.wrapping_add(1),
+                ..window.clone()
+            };
+            result = validate_file_window(&next);
+            if result.is_err() {
+                return false;
+            }
+            *window = next;
+            true
+        });
+        if changed {
+            self.workspace_changed();
+        }
+        result
+    }
+
     /// Update a filesystem browser layout, or bring it to the stacking front.
     pub fn update_file_window(
         &self,
@@ -2081,6 +2131,44 @@ mod tests {
             terminal_host_version: "test-host".into(),
             daemon_capabilities: Vec::new(),
         })
+    }
+
+    #[test]
+    fn followed_directories_preserve_shared_edits_and_window_order() -> Result<()> {
+        let session = session();
+        for id in [Sid(1), Sid(2)] {
+            session.add_shell(id, (0, 0), 1, (24, 80), (640, 480), Default::default())?;
+            session.open_file_window(id, id, 1, "/".into(), "Files".into(), 80, 10, 900, 480)?;
+        }
+        let apply = |page, generation, path: &str| {
+            session.follow_file_directory(
+                Sid(1),
+                page,
+                Sid(1),
+                generation,
+                path.into(),
+                vec!["/".into(), path.into()],
+            )
+        };
+        assert!(apply(2, 0, "/wrong-page").is_err());
+        assert!(apply(1, 1, "/stale").is_err());
+        assert!(apply(1, 0, "bad\0path").is_err());
+        apply(1, 0, "/first")?;
+        {
+            let windows = session.file_windows.borrow();
+            assert_eq!(windows[0].0, Sid(1));
+            assert_eq!(windows[0].1.current_path, "/first");
+            assert_eq!(windows[0].1.x, 80);
+        }
+        session.file_windows.send_modify(|windows| {
+            windows[0].1.editor_path = "/first/draft".into();
+            windows[0].1.editor_dirty = true;
+        });
+        apply(1, 0, "/next")?;
+        let windows = session.file_windows.borrow();
+        assert_eq!(windows[0].1.current_path, "/first");
+        assert!(windows[0].1.editor_dirty);
+        Ok(())
     }
 
     #[test]

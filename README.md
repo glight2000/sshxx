@@ -44,15 +44,20 @@ The README intentionally stays at project level. See the
 for the full capability set and screenshots, or start from the
 **[sshxx Wiki](https://github.com/glight2000/sshxx/wiki)**.
 
-**v0.13.4** preserves each page's own camera during crossfades, repaints
-terminals when pages become visible, routes trackpad gestures by their starting
-window, and reserves **Shift+Esc** for clearing focus while plain Esc reaches
-the terminal. It also restores bracketed-paste mode across retained-output
-replay and explains blocked HTTP previews in HTTPS workspaces. See
-[module versions and upgrade notes](https://github.com/glight2000/sshxx/wiki/Installation-and-Releases#v0134-upgrade-notes).
-Update server and daemon together. Full paste-state recovery includes a host
-update; schedule its restart after saving tasks because it disconnects all
-hosted processes. A compatible older host can stay running meanwhile.
+**What's new in v0.13.6**
+
+- Drag the bottom page tabs to reorder the shared canvas.
+- Open the folder on a terminal, then enable **Follow terminal directory** in
+  its file browser to follow `cd`. The matching terminal number in each window's
+  association strip lets you jump between them.
+- Restarting the daemon reconnects to the original hosted terminals. Saved SSH
+  windows can also keep separate remote Bash histories and recover their last
+  directory when a new login is needed.
+  [Remote Bash setup](ENGINEERING.md#keeping-terminal-state-through-a-daemon-restart).
+
+Update the server and daemon together. A deployment already running the v0.13.5
+terminal host can leave it running during this upgrade.
+[Module versions and upgrade notes](docs/wiki/Installation-and-Releases.md#v0136-upgrade-notes).
 
 ## Architecture
 
@@ -213,7 +218,7 @@ details are in
 | ---------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Pages, canvas items, notes/links, file-window/editor state | Daemon `.sshx-workspace`                                                 | Shared within the session; includes the non-secret SSH profile ID used by each remote terminal                                                     |
 | Shell and SSH processes                                    | `sshxx-terminal-host` memory                                             | Shared stream/input; survives viewer and daemon restarts; host/OS loss ends the process, then saved SSH-profile windows relaunch a new SSH process |
-| Per-terminal shell history                                 | Daemon launch policy and owner-only local history data                   | One history namespace/file per local terminal; nested remote shells follow remote configuration                                                    |
+| Per-terminal shell history                                 | Local shell history and opt-in remote Bash state                         | Independent per-window histories; [remote setup and restart behavior](ENGINEERING.md#keeping-terminal-state-through-a-daemon-restart)              |
 | Reusable SSH profiles                                      | Authenticated-encrypted `.sshx-connections` with an owner-only local key | Session-visible metadata; writer-only mutation; passwords are never stored                                                                         |
 | Active page, per-page pan/zoom, user settings              | Browser `localStorage`                                                   | Local to one browser profile and never synchronized                                                                                                |
 | Focus, menus, drag state, full-screen, undo/redo           | Browser memory                                                           | Local and temporary                                                                                                                                |
@@ -247,6 +252,13 @@ mode. Process output is visible in its terminal interface and saved under
 the manager and stop its managed server, daemon and Web processes. The
 independent terminal host and its PTYs remain alive. Project-pinned tools also
 run through `mise exec -- <command>` outside an activated mise shell.
+
+To test this checkout with an existing Linux systemd installation, stage its Web
+client, server and daemon with
+`./start.sh build-runtime /absolute/path/to/new-build`. This includes
+uncommitted edits. See
+[source deployment](ENGINEERING.md#source-deployment-on-linux) for activation
+and rollback.
 
 Normal development and single-server deployments do not use Redis. The
 repository keeps an opt-in service only for multi-server coordination tests:

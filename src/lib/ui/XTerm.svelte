@@ -59,7 +59,10 @@
     pasteTerminalText,
     pasteText,
   } from "#lib/terminalClipboard.ts";
-  import { parseOsc7Location } from "#lib/terminalLocation.ts";
+  import {
+    parseOsc7Location,
+    type TerminalLocation,
+  } from "#lib/terminalLocation.ts";
   import { splitTerminalTitle } from "#lib/terminalTitle.ts";
   import { TypeAheadAddon } from "#lib/typeahead.ts";
   import { installXtermMouseCoordinateAdapter } from "#lib/xtermMouseCoordinates.ts";
@@ -80,6 +83,7 @@
     toggleFullscreen: void;
     minimized: boolean;
     openFiles: string;
+    directoryReport: TerminalLocation | null;
     appearance: {
       title: string;
       background: string;
@@ -91,7 +95,7 @@
     startMove: MouseEvent;
     focus: void;
     blur: void;
-    navigateNote: CanvasRelationItem;
+    navigateRelation: CanvasRelationItem;
     unlinkNote: CanvasRelationItem;
     floatingChange: boolean;
     rendererFailure: string;
@@ -158,8 +162,9 @@
   }
   export let inputAvailable = true;
   export let minimized = false;
-  export let linkedNotes: CanvasRelationItem[] = [];
+  export let linkedItems: CanvasRelationItem[] = [];
   export let linkedHighlight = false;
+  export let bindingHighlighted = false;
   export let paragraphDropActive = false;
   export let write: (
     data: string,
@@ -278,6 +283,30 @@
   let workingDirectory = ".";
   let workingDirectoryHost = "";
   let initialWorkingDirectoryHost = "";
+
+  function setLocation(location: ReturnType<typeof parseOsc7Location>) {
+    workingDirectory = location?.workingDirectory ?? ".";
+    workingDirectoryHost = location?.workingDirectoryHost ?? "";
+    if (!initialWorkingDirectoryHost && workingDirectoryHost)
+      initialWorkingDirectoryHost = workingDirectoryHost;
+  }
+
+  function browseFiles() {
+    if (!hasWriteAccess) return;
+    if (
+      initialWorkingDirectoryHost &&
+      initialWorkingDirectoryHost !== workingDirectoryHost
+    ) {
+      makeToast({
+        kind: "error",
+        message:
+          "The directory report no longer identifies the original host. Open the saved SSH connection for the host you want to browse.",
+      });
+      return;
+    }
+    dispatch("openFiles", workingDirectory);
+  }
+
   const pendingExecuteTimers = new Set<number>();
 
   function notifyReplayInputBlocked() {
@@ -501,6 +530,7 @@
       return replay ? data : typeahead.onBeforeProcessData(data);
     },
     onReplayStart() {
+      dispatch("directoryReport", null);
       suppressAttention += 1;
       suppressInput += 1;
       if (term) term.options.disableStdin = true;
@@ -552,9 +582,12 @@
       ]);
     if (!(await rendererReady) || !term || destroyed)
       throw new Error("Terminal renderer unavailable");
+    dispatch("directoryReport", null);
     if (state === null) {
       historyWindow?.dispose();
       historyWindow = null;
+      initialWorkingDirectoryHost = "";
+      setLocation(null);
       term.reset();
       typeahead.reset();
       historyScroll.reset(term.buffer.active.viewportY);
@@ -580,12 +613,7 @@
       titleActivity = next.activity;
       dispatch("title", currentTitle);
       const location = parseOsc7Location(state.location ?? "");
-      if (location) {
-        workingDirectory = location.workingDirectory;
-        workingDirectoryHost = location.workingDirectoryHost;
-        if (!initialWorkingDirectoryHost && workingDirectoryHost)
-          initialWorkingDirectoryHost = workingDirectoryHost;
-      }
+      setLocation(location);
       zoomRefresh.update(canvasZoom, pageVisible, loaded);
     } finally {
       suppressInput = Math.max(0, suppressInput - 1);
@@ -762,12 +790,8 @@
     term.parser.registerOscHandler(777, requestAttention);
     term.parser.registerOscHandler(7, (value) => {
       const location = parseOsc7Location(value);
-      if (location) {
-        workingDirectory = location.workingDirectory;
-        workingDirectoryHost = location.workingDirectoryHost;
-        if (!initialWorkingDirectoryHost && workingDirectoryHost)
-          initialWorkingDirectoryHost = workingDirectoryHost;
-      }
+      setLocation(location);
+      if (!suppressInput) dispatch("directoryReport", location);
       return true;
     });
     term.onBell(requestAttention);
@@ -908,7 +932,10 @@
   class:fullscreen
   class:mobile-reader={mobileDetail}
   class:minimized
-  class:linked-highlight={linkedHighlight}
+  class:linked-highlight={linkedHighlight || bindingHighlighted}
+  style:--canvas-state-color={bindingHighlighted
+    ? "var(--canvas-focus)"
+    : undefined}
   class:paragraph-drop-active={paragraphDropActive}
   style:background={terminalTheme.background}
   style:opacity={opacity / 100}
@@ -1058,11 +1085,9 @@
         class:opacity-40={!hasWriteAccess}
         disabled={!hasWriteAccess}
         aria-label="Browse files"
-        title="Browse files"
-        on:mousedown|stopPropagation={(event) => {
-          if (event.button === 0 && hasWriteAccess)
-            dispatch("openFiles", workingDirectory);
-        }}
+        title="Browse terminal directory"
+        on:mousedown|stopPropagation
+        on:click|stopPropagation={browseFiles}
       >
         <FolderIcon class="h-4 w-4" />
       </button>
@@ -1200,12 +1225,12 @@
       }}
     />
   {/if}
-  {#if linkedNotes.length}
+  {#if linkedItems.length}
     <div class="terminal-relations">
       <CanvasRelations
-        items={linkedNotes}
+        items={linkedItems}
         disabled={!hasWriteAccess}
-        on:navigate={(event) => dispatch("navigateNote", event.detail)}
+        on:navigate={(event) => dispatch("navigateRelation", event.detail)}
         on:remove={(event) => dispatch("unlinkNote", event.detail)}
       />
     </div>

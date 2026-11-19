@@ -335,7 +335,7 @@ async fn hosted_shell_task(
     host: &TerminalHostConfig,
     mut shell_rx: mpsc::Receiver<ShellData>,
     output_tx: mpsc::Sender<ClientMessage>,
-    options: ShellOptions,
+    mut options: ShellOptions,
 ) -> Result<()> {
     let terminal_id = host.terminal_id(id.0);
     let mut environment = terminal_environment();
@@ -347,6 +347,16 @@ async fn hosted_shell_task(
             &mut args,
             options.working_directory.as_deref(),
         ));
+    } else {
+        // Keep the original SSH login command, PTY and startup files. Hosts
+        // can opt in with AcceptEnv without changing SFTP or nested SSH.
+        match host.remote_history_id(id.0, options.reattach_existing) {
+            Ok(namespace) => {
+                args.splice(0..0, ["-o".into(), "SendEnv=SSHXX_HISTORY_ID".into()]);
+                environment.insert("SSHXX_HISTORY_ID".into(), namespace);
+            }
+            Err(error) => warn!(%id, %error, "remote shell history namespace unavailable"),
+        }
     }
     let durable_ssh_preset = !options.ssh_profile_id.is_empty();
     let mut recovering = false;
@@ -359,7 +369,7 @@ async fn hosted_shell_task(
         .await
         {
             Ok(client) => client,
-            Err(error) if recovering => {
+            Err(error) if recovering && durable_ssh_preset => {
                 warn!(%id, ?error, "waiting for terminal host to recover SSH preset");
                 time::sleep(Duration::from_millis(500)).await;
                 continue;
@@ -374,16 +384,21 @@ async fn hosted_shell_task(
             args.clone(),
             Some(environment.clone()),
             &options,
+            !recovering || durable_ssh_preset,
         )
         .await
         {
-            if recovering {
+            if recovering && durable_ssh_preset {
                 warn!(%id, ?error, "retrying SSH preset after terminal host restart");
                 time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
             return Err(error);
         }
+
+        // A source-derived creation may replace an orphan on its first launch.
+        // From now on this exact PTY is ours, even if the host socket drops.
+        options.reattach_existing = true;
 
         match forward_hosted_terminal(
             id,
@@ -401,16 +416,15 @@ async fn hosted_shell_task(
                 host.remove_history(id.0).await?;
                 return Ok(());
             }
-            Err(error) if durable_ssh_preset => {
-                warn!(%id, ?error, "terminal host state was lost; recreating SSH preset");
+            Err(error) => {
+                warn!(%id, ?error, "lost terminal subscription; reconnecting to terminal host");
                 output_tx
                     .send(ClientMessage::RestartedShell(id.0))
                     .await
-                    .context("failed to reset recovered SSH terminal output")?;
+                    .context("failed to reset recovered terminal output")?;
                 recovering = true;
                 time::sleep(Duration::from_millis(500)).await;
             }
-            Err(error) => return Err(error),
         }
     }
 }
@@ -546,12 +560,13 @@ async fn attach_or_create_hosted_terminal(
     args: Vec<String>,
     environment: Option<HashMap<String, String>>,
     options: &ShellOptions,
+    allow_create: bool,
 ) -> Result<()> {
     if options.reattach_existing {
         let attach_id = client.attach_terminal(terminal_id, 0).await?;
         match receive_host_response(client, attach_id).await? {
             HostMessage::Ack(_) => return Ok(()),
-            HostMessage::Error(error) if error.code == "NOT_FOUND" => {}
+            HostMessage::Error(error) if error.code == "NOT_FOUND" && allow_create => {}
             HostMessage::Error(error) => {
                 bail!("terminal host {}: {}", error.code, error.message)
             }
@@ -886,6 +901,64 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn remote_bash_state_recovers_only_the_same_windows_history_and_directory() -> anyhow::Result<()>
+    {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let home = tempfile::tempdir()?;
+        let home = home.path().canonicalize()?.join("home");
+        std::fs::create_dir_all(home.join("work space"))?;
+        let rc = home.join("bashrc");
+        std::fs::write(&rc, include_str!("../../../scripts/remote-bash-state.bash"))?;
+        let default_history = home.join(".bash_history");
+        std::fs::write(&default_history, "DEFAULT_HISTORY_FIXTURE\n")?;
+        let login = |id: &str, input: &str, explicit_directory: bool| -> anyhow::Result<()> {
+            let mut command = Command::new("/bin/bash");
+            command
+                .env_clear()
+                .env("HOME", &home)
+                .env("PATH", "/usr/bin:/bin")
+                .env("SSHXX_HISTORY_ID", id)
+                .current_dir(&home)
+                .args(["--noprofile", "--rcfile"])
+                .arg(&rc)
+                .arg("-i")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if explicit_directory {
+                command.env(INITIAL_DIRECTORY_ENV, &home);
+            }
+            let mut child = command.spawn()?;
+            child.stdin.take().unwrap().write_all(input.as_bytes())?;
+            assert!(child.wait()?.success());
+            Ok(())
+        };
+        let first = "sshxx-aaaaaaaaaaaaaaaaaaaa";
+        let second = "sshxx-bbbbbbbbbbbbbbbbbbbb";
+        login(first, "cd 'work space'\n: FIRST_FIXTURE\nexit\n", false)?;
+        login(second, ": SECOND_FIXTURE\nexit\n", false)?;
+        login(first, "history > recovered\nexit\n", false)?;
+        let history = std::fs::read_to_string(home.join("work space/recovered"))?;
+        assert!(history.contains("FIRST_FIXTURE"));
+        assert!(
+            !history.contains("SECOND_FIXTURE") && !history.contains("DEFAULT_HISTORY_FIXTURE")
+        );
+        assert_eq!(
+            std::fs::read_to_string(default_history)?,
+            "DEFAULT_HISTORY_FIXTURE\n"
+        );
+        login(first, "pwd > explicit\nexit\n", true)?;
+        assert_eq!(
+            std::fs::read_to_string(home.join("explicit"))?.trim_end(),
+            home.to_string_lossy()
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn builds_remote_working_directory_command_after_the_destination() -> anyhow::Result<()> {
         let profile = SshProfile {
             id: "prod".into(),
@@ -1024,6 +1097,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn hosted_shell_survives_runner_restart_until_explicit_close() -> anyhow::Result<()> {
+        verify_hosted_shell_continuity(false).await?;
+        verify_hosted_shell_continuity(true).await
+    }
+
+    #[cfg(unix)]
+    async fn verify_hosted_shell_continuity(saved_profile: bool) -> anyhow::Result<()> {
         // Derive once, as a real session does. Repeating Argon2 for each PTY
         // chunk blocks this single-thread runtime and consumes the I/O timeout.
         let encrypt = Encrypt::new("hosted-runner-test");
@@ -1056,23 +1135,70 @@ mod tests {
 
         let (first_tx, first_rx) = mpsc::channel(4);
         let (first_output_tx, _first_output_rx) = mpsc::channel(16);
-        let first_runner = runner.clone();
+        // Cut only the first IPC connection, keeping the real host and PTY alive.
+        let proxy = state.path().join("proxy.sock");
+        let listener = tokio::net::UnixListener::bind(&proxy)?;
+        let (cut, cut_rx) = tokio::sync::oneshot::channel::<()>();
+        let (reconnected, reconnected_rx) = tokio::sync::oneshot::channel::<()>();
+        let destination = endpoint.clone();
+        let bridge = tokio::spawn(async move {
+            {
+                let (mut peer, _) = listener.accept().await?;
+                let mut host = tokio::net::UnixStream::connect(&destination).await?;
+                tokio::select! {
+                    _ = cut_rx => {},
+                    result = tokio::io::copy_bidirectional(&mut peer, &mut host) => { result?; }
+                }
+            }
+            let (mut peer, _) = listener.accept().await?;
+            let mut host = tokio::net::UnixStream::connect(destination).await?;
+            reconnected.send(()).ok();
+            tokio::io::copy_bidirectional(&mut peer, &mut host).await
+        });
+        let first_runner = Runner::HostedShell {
+            shell: "/bin/bash".into(),
+            host: TerminalHostConfig {
+                endpoint: proxy.to_string_lossy().into_owned(),
+                ..host.clone()
+            },
+        };
         let first_encrypt = encrypt.clone();
         let first_task = tokio::spawn(async move {
+            let mut options = test_shell_options();
+            options.reattach_existing = false;
+            if saved_profile {
+                options.ssh_profile_id = "saved-profile-recovery".into();
+            }
             first_runner
-                .run(
-                    Sid(7),
-                    first_encrypt,
-                    first_rx,
-                    first_output_tx,
-                    test_shell_options(),
-                )
+                .run(Sid(7), first_encrypt, first_rx, first_output_tx, options)
                 .await
         });
         let first_pid = wait_for_terminal_pid(&endpoint, &token).await?;
+        let directory = state.path().canonicalize()?.join("project with spaces");
+        std::fs::create_dir(&directory)?;
+        // A foreground child blocks on its original PTY while the daemon detaches.
+        let command = format!(
+            "cd -- {} && bash -c 'echo $$ > before; read -r reply; printf \"%s\\n\" \"$$\" \"$PWD\" \"$reply\" > after'\r",
+            shell_quote(&directory.to_string_lossy())
+        );
+        first_tx.send(ShellData::Data(command.into_bytes())).await?;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !directory.join("before").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("foreground child did not start")?;
 
+        cut.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), reconnected_rx).await??;
+        let (cwd_tx, cwd_rx) = tokio::sync::oneshot::channel();
+        first_tx.send(ShellData::WorkingDirectory(cwd_tx)).await?;
+        let _cwd = tokio::time::timeout(Duration::from_secs(3), cwd_rx).await??;
+        assert_eq!(wait_for_terminal_pid(&endpoint, &token).await?, first_pid);
         drop(first_tx);
         tokio::time::timeout(Duration::from_secs(3), first_task).await???;
+        tokio::time::timeout(Duration::from_secs(3), bridge).await???;
         let detached_pid = wait_for_terminal_pid(&endpoint, &token).await?;
         assert_eq!(first_pid, detached_pid);
 
@@ -1090,6 +1216,9 @@ mod tests {
                 )
                 .await
         });
+        second_tx
+            .send(ShellData::Data(b"resumed\r".to_vec()))
+            .await?;
         second_tx
             .send(ShellData::Data(
                 b"printf 'RUNNER_REATTACHED TERM=%s COLORTERM=%s\\n' \"$TERM\" \"$COLORTERM\"\r"
@@ -1123,12 +1252,20 @@ mod tests {
         .await;
         output.context("reattached runner did not receive PTY output")??;
         assert_eq!(wait_for_terminal_pid(&endpoint, &token).await?, first_pid);
+        let child = std::fs::read_to_string(directory.join("before"))?;
+        assert_eq!(
+            std::fs::read_to_string(directory.join("after"))?,
+            format!("{}\n{}\nresumed\n", child.trim(), directory.display())
+        );
         let history_path = host.history_path(7);
         let saved = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 if tokio::fs::read_to_string(&history_path)
                     .await
-                    .is_ok_and(|history| history.contains("RUNNER_REATTACHED"))
+                    .is_ok_and(|history| {
+                        history.contains("RUNNER_REATTACHED")
+                            && history.contains("echo $$ > before")
+                    })
                 {
                     break;
                 }
@@ -1297,6 +1434,7 @@ mod tests {
             Vec::new(),
             None,
             &first,
+            true,
         )
         .await?;
         let first_pid = wait_for_terminal_pid(&endpoint, &token).await?;
@@ -1311,6 +1449,7 @@ mod tests {
             Vec::new(),
             None,
             &replacement,
+            true,
         )
         .await?;
         let replacement_pid = wait_for_terminal_pid(&endpoint, &token).await?;

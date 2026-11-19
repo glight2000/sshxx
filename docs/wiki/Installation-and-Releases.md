@@ -469,6 +469,28 @@ Windows x64.
 Release checksums and GitHub attestations provide build provenance and integrity
 checks, but do not replace trusted platform code signing.
 
+## v0.13.6 upgrade notes
+
+| Component               | Version | Changes                                                                                                           |
+| ----------------------- | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| Suite / Runtime archive | 0.13.6  | Includes the Web client, managed Runtime and optional remote Bash integration script                              |
+| Web / Tauri client      | 0.13.7  | Drag to reorder pages, follow a bound terminal's directory and locate its file browser from the association strip |
+| Server                  | 0.11.6  | Shared page ordering and atomic directory-follow updates                                                          |
+| Daemon                  | 0.11.7  | Directory probes, safer workspace saves and terminal reattachment, and per-window remote Bash history support     |
+| Terminal host           | 0.10.4  | Same host version as v0.13.5                                                                                      |
+| Internal core           | 0.11.5  | Same core version as v0.13.5                                                                                      |
+
+Upgrade server and daemon together and reload the Web client. For upgrades from
+v0.13.5 the running terminal host can stay in place, keeping its PTYs, SSH
+connections and foreground programs alive. Shared page ordering requires the
+updated server. Directory following is opt-in in each bound file browser.
+
+For saved SSH profiles, remote directory following needs shell directory
+reports. Per-window remote Bash history and last-directory recovery require the
+remote account setup described in
+[Engineering](../../ENGINEERING.md#keeping-terminal-state-through-a-daemon-restart).
+Source builds use the tool versions in `mise.toml` and the repository lockfiles.
+
 ## v0.13.5 upgrade notes
 
 | Component               | Version | Changes                                                                           |

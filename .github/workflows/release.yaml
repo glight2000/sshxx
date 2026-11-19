@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  RUST_VERSION: "1.99.1"
+  RUST_VERSION: "1.100.0"
 
 jobs:
   quality:
@@ -32,7 +32,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
+          node-version: "24.22.3"
           cache: npm
 
       - name: Validate release tag and module versions
@@ -111,7 +111,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
+          node-version: "24.22.3"
           cache: npm
 
       - uses: arduino/setup-protoc@v3
@@ -128,7 +128,7 @@ jobs:
       - name: Build Web client and runtime binaries
         shell: bash
         run: |
-          npm install --global npm@12.2.1
+          npm install --global npm@12.2.3
           npm ci
           npm run build
           cargo build --release \
@@ -156,7 +156,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/sshxx-daemon" "dist/$root/bin/"
           cp "target/${{ matrix.target }}/release/sshxx-server" "dist/$root/bin/"
           cp "target/${{ matrix.target }}/release/sshxx-terminal-host" "dist/$root/bin/"
-          cp scripts/install.sh scripts/service.sh "dist/$root/scripts/"
+          cp scripts/install.sh scripts/service.sh scripts/remote-bash-state.bash "dist/$root/scripts/"
           chmod 755 "dist/$root/scripts/install.sh" "dist/$root/scripts/service.sh"
           cp -R build "dist/$root/build"
           cp LICENSE README.md README.zh-CN.md "dist/$root/"
@@ -173,7 +173,7 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/sshxx-daemon.exe" (Join-Path $rootPath "bin")
           Copy-Item "target/${{ matrix.target }}/release/sshxx-server.exe" (Join-Path $rootPath "bin")
           Copy-Item "target/${{ matrix.target }}/release/sshxx-terminal-host.exe" (Join-Path $rootPath "bin")
-          Copy-Item "scripts/install.ps1", "scripts/service.ps1" (Join-Path $rootPath "scripts")
+          Copy-Item "scripts/install.ps1", "scripts/service.ps1", "scripts/remote-bash-state.bash" (Join-Path $rootPath "scripts")
           Copy-Item -Recurse "build" (Join-Path $rootPath "build")
           Copy-Item "LICENSE", "README.md", "README.zh-CN.md" $rootPath
           Compress-Archive -Path $rootPath -DestinationPath "${{ steps.artifact.outputs.path }}"
@@ -234,7 +234,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
+          node-version: "24.22.3"
           cache: npm
 
       - name: Install Rust targets
@@ -248,7 +248,7 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          npm install --global npm@12.2.1
+          npm install --global npm@12.2.3
           npm ci
 
       - name: Build and upload desktop bundles

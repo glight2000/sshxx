@@ -1,6 +1,6 @@
 {
   "name": "sshxx-client",
-  "version": "0.13.4",
+  "version": "0.13.7",
   "private": true,
   "type": "module",
   "scripts": {
@@ -24,42 +24,42 @@
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "6.0.0",
-    "@zag-js/svelte": "^1.46.0",
-    "@zag-js/tree-view": "^1.46.0",
+    "@zag-js/svelte": "^1.48.0",
+    "@zag-js/tree-view": "^1.48.0",
     "argon2-browser": "^1.18.0",
-    "cbor-x": "^1.6.8",
+    "cbor-x": "^1.6.9",
     "codemirror": "^6.0.2",
     "firacode": "^6.2.0",
     "lodash-es": "^4.18.1",
-    "svelte": "^5.57.2",
+    "svelte": "^5.58.0",
     "svelte-feather-icons": "^4.2.0",
     "svelte-persisted-store": "^0.12.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@sveltejs/adapter-static": "^4.0.0",
-    "@sveltejs/kit": "^3.1.0",
+    "@sveltejs/adapter-static": "^4.0.1",
+    "@sveltejs/kit": "^3.4.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
-    "@tailwindcss/postcss": "^4.3.3",
-    "@tauri-apps/cli": "2.12.4",
+    "@tailwindcss/postcss": "^4.3.5",
+    "@tauri-apps/cli": "2.12.6",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "24.19.2",
-    "@typescript-eslint/eslint-plugin": "^8.72.0",
-    "@typescript-eslint/parser": "^8.72.0",
+    "@typescript-eslint/eslint-plugin": "^8.73.0",
+    "@typescript-eslint/parser": "^8.73.0",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@xterm/headless": "6.0.0",
-    "eslint": "^10.13.0",
+    "eslint": "^10.15.0",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-svelte": "^3.23.1",
-    "postcss": "^8.5.31",
+    "eslint-plugin-svelte": "^3.24.1",
+    "postcss": "^8.5.33",
     "postcss-load-config": "^6.0.1",
-    "prettier": "^3.9.10",
-    "prettier-plugin-svelte": "^4.1.1",
-    "svelte-check": "^4.7.7",
-    "tailwindcss": "^4.3.3",
-    "tslib": "^2.8.1",
+    "prettier": "^3.10.1",
+    "prettier-plugin-svelte": "4.1.1",
+    "svelte-check": "^4.7.8",
+    "tailwindcss": "^4.3.5",
+    "tslib": "^2.9.1",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vite": "^8.3.5"
+    "vite": "^8.3.8"
   },
   "overrides": {
     "svelte-feather-icons": {
@@ -69,8 +69,8 @@
   "imports": {
     "#lib/*": "./src/lib/*"
   },
-  "packageManager": "npm@12.2.1",
+  "packageManager": "npm@12.2.3",
   "allowScripts": {
-    "cbor-extract@2.2.2": true
+    "cbor-extract@2.2.3": true
   }
 }

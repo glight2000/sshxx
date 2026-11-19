@@ -3,6 +3,7 @@
   import {
     Edit3Icon,
     FileTextIcon,
+    FolderIcon,
     PlusIcon,
     TerminalIcon,
     XIcon,
@@ -55,6 +56,7 @@
   {/if}
   {#each [...items].reverse() as item (`${item.kind}:${item.id}`)}
     <button
+      class:binding={item.boundTerminalId !== undefined}
       aria-label={`Open ${item.label}; hold for actions`}
       aria-haspopup="dialog"
       use:mobileRelationPress={{
@@ -62,7 +64,15 @@
         hold: () => show(item),
       }}
     >
-      <svelte:component this={icons[item.kind]} size="19" />
+      <svelte:component
+        this={item.kind === "file" && item.boundTerminalId !== undefined
+          ? FolderIcon
+          : icons[item.kind]}
+        size="19"
+      />
+      {#if item.boundTerminalId !== undefined}<span
+          >#{item.boundTerminalId}</span
+        >{/if}
     </button>
   {/each}
 </div>
@@ -95,15 +105,15 @@
         dispatch("navigate", item);
       }}>Open component</button
     >
-    <button
-      class="action danger"
-      {disabled}
-      on:click={() => {
-        const item = selected!;
-        close();
-        dispatch("remove", item);
-      }}>Remove association</button
-    >
+    {#if selected.boundTerminalId === undefined}<button
+        class="action danger"
+        {disabled}
+        on:click={() => {
+          const item = selected!;
+          close();
+          dispatch("remove", item);
+        }}>Remove association</button
+      >{/if}
   {/if}
 </dialog>
 
@@ -131,6 +141,12 @@
     flex-shrink: 0;
     background: var(--surface-subtle);
     color: var(--surface-accent);
+  }
+  .mobile-relations .binding {
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
   button:focus-visible {
     outline: 2px solid var(--surface-accent);

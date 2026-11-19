@@ -511,6 +511,8 @@ pub enum WsClient {
     CreateFileWindow(Sid, u32, String, String, i32, i32, u16, u16),
     /// Close a shared filesystem browser.
     CloseFileWindow(Sid, u32),
+    /// Apply a bound terminal directory without changing editor or layout state.
+    FollowFileDirectory(Sid, u32, Sid, u32, String, Vec<String>),
     /// Update a filesystem browser, or bring it to the top when absent.
     UpdateFileWindow(Sid, u32, Option<WsFileWindow>),
     /// Create a shared custom HTML/JavaScript component.

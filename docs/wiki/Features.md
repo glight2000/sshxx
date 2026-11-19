@@ -71,13 +71,14 @@ client-only upgrade is insufficient.
 - Each terminal has its own title, opacity, color theme, and optional background
   override. New windows begin at 80% opacity and use the viewer's default theme.
 - The title-bar actions close, temporarily full-screen, duplicate, and open a
-  filesystem window at the current directory. Duplication reuses a saved SSH
-  profile (including OpenSSH-configured jump hosts) and, when OSC 7 shows the
-  terminal is still on its initially reported SSH host, starts in its current
-  remote directory. Local terminals use the terminal host's process working
-  directory. A manually entered nested `ssh A` → `ssh B` chain cannot be
-  reconstructed safely from the daemon, so a duplicate falls back to the saved
-  connection's default directory instead of applying B's path to A.
+  [filesystem window at the terminal directory](../../REQUIREMENTS.md#terminal-folder-button).
+  Duplication reuses a saved SSH profile (including OpenSSH-configured jump
+  hosts) and, when OSC 7 shows the terminal is still on its initially reported
+  SSH host, starts in its current remote directory. Local terminals use the
+  terminal host's process working directory. A manually entered nested `ssh A` →
+  `ssh B` chain cannot be reconstructed safely from the daemon, so a duplicate
+  falls back to the saved connection's default directory instead of applying B's
+  path to A.
 - A focused terminal remains at the top without discarding its configured
   transparency. Focus highlighting and terminal-attention animation are
   independent visual states; attention animates the title bar until focused.

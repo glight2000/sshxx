@@ -2,6 +2,8 @@
   export type CanvasRelationItem = {
     id: number;
     label: string;
+    /** A file browser's fixed source, displayed on both ends of the binding. */
+    boundTerminalId?: number;
     kind: "terminal" | "note" | "file";
   };
 </script>
@@ -13,6 +15,7 @@
   import {
     Edit3Icon,
     FileTextIcon,
+    FolderIcon,
     PlusIcon,
     TerminalIcon,
   } from "svelte-feather-icons";
@@ -78,19 +81,29 @@
         <button
           type="button"
           class="relation-button item-button"
+          class:binding={item.boundTerminalId !== undefined}
           aria-label={`Go to ${item.label}`}
-          title={`${item.label} · Left-click to locate · Right-click to unlink`}
+          title={item.boundTerminalId !== undefined
+            ? `${item.label} · Click to locate`
+            : `${item.label} · Left-click to locate · Right-click to unlink`}
           on:mousedown|stopPropagation={(event) => {
             if (event.button !== 0) return;
             event.preventDefault();
             dispatch("navigate", item);
           }}
+          on:click={(event) => event.detail === 0 && dispatch("navigate", item)}
           on:contextmenu|stopPropagation|preventDefault={() =>
-            !disabled && dispatch("remove", item)}
+            !disabled &&
+            item.boundTerminalId === undefined &&
+            dispatch("remove", item)}
         >
           {#if item.kind === "terminal"}<TerminalIcon
+            />{:else if item.kind === "file" && item.boundTerminalId !== undefined}<FolderIcon
             />{:else if item.kind === "file"}<Edit3Icon />{:else}<FileTextIcon
             />{/if}
+          {#if item.boundTerminalId !== undefined}<span
+              >#{item.boundTerminalId}</span
+            >{/if}
         </button>
       {/each}
     </div>
@@ -112,6 +125,9 @@
   }
   .relation-button :global(svg) {
     @apply h-3.5 w-3.5;
+  }
+  .item-button.binding {
+    @apply w-auto gap-1 px-1.5 text-xs tabular-nums;
   }
   .add-button.active {
     @apply bg-indigo-400/20 text-zinc-100 ring-1 ring-indigo-400/60;

@@ -6,6 +6,48 @@ input requirements. Existing requirements for unaffected features remain in the
 Implementation and validation procedures live in
 [ENGINEERING.md](ENGINEERING.md).
 
+## Daemon restart and shell state
+
+Restarting the daemon should preserve each live hosted terminal's directory,
+foreground process and shell history. When a saved SSH window needs a new SSH
+process, a configured remote Bash shell can recover its own history and last
+prompt directory. Other windows on the same host get separate histories. Remote
+setup and recovery boundaries are in
+[Engineering](ENGINEERING.md#keeping-terminal-state-through-a-daemon-restart).
+
+## Terminal folder button
+
+Opening the folder button uses the shell's most recent OSC 7 directory. Clicking
+again after `cd` reveals the new directory in the same file window, expands its
+ancestors and restores a minimized window. A dirty file stays open with a prompt
+to save it before navigating. The button also accepts Enter and Space. File
+operations continue to use the source terminal's connection.
+
+For a saved SSH connection the remote shell must publish its directory. Without
+a report, SFTP starts in its default directory. A detected change of reported
+host disables this shortcut until the original host reports again. Manually
+entering SSH inside a local terminal does not create a saved SSH connection. See
+[SSH directory reporting](ENGINEERING.md#ssh-directory-reporting).
+
+A terminal and its bound file browser show each other in the same association
+strip as linked notes. Both entries display the source terminal number. A click
+or tap locates the other component, and focusing either highlights its partner.
+The binding remains visible with directory following off and for read-only
+viewers. Only editable note associations offer an unlink action.
+
+A writer can turn on **Follow terminal directory** using the link button in the
+bound file browser. The switch starts off and belongs to that browser window in
+the current viewer. Successful navigation updates the shared directory.
+Following pauses while a file is open, a path is being edited or a file action
+is in progress. Once the window is free, it can catch up to the latest change.
+Following never sends input to the terminal.
+
+On Linux the local file browser follows the shell process directory. A saved SSH
+connection follows live OSC 7 reports from its own host. An SSH session started
+manually inside that terminal cannot switch the file browser to the next host.
+To browse a destination behind a jump host, open a saved connection to the final
+destination using its OpenSSH jump configuration.
+
 ## Canvas wheel and trackpad input
 
 - Mouse wheels scroll the focused component regardless of pointer position;
@@ -17,6 +59,9 @@ Implementation and validation procedures live in
   an identified pan into zoom or retarget it to a window moving under the
   pointer. A deliberate click or a new gesture can choose a new destination.
   Empty events must not move the camera, scroll content or choose a destination.
+- Canvas panning retains both axes throughout a gesture: horizontal or vertical
+  starts can turn, move diagonally and reverse without lifting the fingers.
+  Separate axis events with the same timestamp must each contribute movement.
 - Canvas events must cancel native outer-page scrolling. Menus and dialogs keep
   their own scrolling; embedded cross-origin pages handle input inside their
   frames. Fullscreen disables canvas pan/zoom.

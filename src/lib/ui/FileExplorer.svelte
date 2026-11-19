@@ -52,6 +52,11 @@
   import FileTree, { type FileNode } from "./FileTree.svelte";
   import FileUploadDialog, { type UploadItem } from "./FileUploadDialog.svelte";
 
+  import { TerminalDirectoryFollow } from "#lib/terminalDirectoryFollow.ts";
+  import type { TerminalLocation } from "#lib/terminalLocation.ts";
+
+  export let terminalReport: TerminalLocation | null = null;
+  export let followScope: string | null = null;
   export let title: string;
   export let background: string;
   export let initialPath: string;
@@ -69,8 +74,9 @@
   export let treeRevision: number;
   export let online: boolean;
   export let hasWriteAccess: boolean | undefined;
-  export let linkedNotes: CanvasRelationItem[] = [];
+  export let linkedItems: CanvasRelationItem[] = [];
   export let linkedHighlight = false;
+  export let bindingHighlighted = false;
   export let paragraphDropState: "none" | "ready" | "blocked" = "none";
   export let fullscreen = false;
   export let minimized = false;
@@ -105,9 +111,10 @@
     bringToFront: void;
     startMove: MouseEvent;
     openTerminal: string;
+    followDirectory: { path: string; expandedPaths: string[] };
     focus: void;
     blur: void;
-    navigateNote: CanvasRelationItem;
+    navigateRelation: CanvasRelationItem;
     unlinkNote: CanvasRelationItem;
     floatingChange: boolean;
   }>();
@@ -128,6 +135,7 @@
   let handledEditorPath = "";
   let editorSyncTimer: number | undefined;
   let previewLoadVersion = 0;
+  let treeLoadVersion = 0;
   let observedTreeRevision = treeRevision;
   let sidebarWidthValue = clampSidebarWidth(sidebarWidth);
   let resizingSidebar = false;
@@ -179,6 +187,30 @@
   let reportedFloating = false;
   let mounted = false;
   let observedOnline = online;
+  let following = false;
+  let followStatus = "";
+  const follow = new TerminalDirectoryFollow({
+    probe: () => request({ operation: "terminalDirectory", path: "." }),
+    reveal: async (path, current) => {
+      if (samePath(currentPath, path)) return true;
+      const listing = await listDirectory(path);
+      if (!current() || followPaused) return false;
+      const expandedPaths = ancestorPaths(
+        filesystemRoot(listing.path),
+        listing.path,
+      );
+      const encoder = new TextEncoder();
+      if (
+        expandedPaths.length > 512 ||
+        expandedPaths.reduce((sum, p) => sum + encoder.encode(p).length, 0) >
+          256 * 1024
+      )
+        throw new Error("The directory exceeds the shared file tree limits.");
+      dispatch("followDirectory", { path: listing.path, expandedPaths });
+      return true;
+    },
+    status: (message) => (followStatus = message),
+  });
   let openingGridEntry = "";
   const directoryListings = new Map<
     string,
@@ -217,6 +249,20 @@
     createKind !== null ||
     renameTarget !== null ||
     moveTarget !== null;
+  $: followPaused = Boolean(
+    editorPath ||
+    dirty ||
+    sharedEditorDirty ||
+    pathEditing ||
+    fileOverlayOpen ||
+    mutationBusy ||
+    loading,
+  );
+  $: follow.update(
+    mounted && online && hasWriteAccess && following ? followScope : null,
+    followPaused,
+    terminalReport,
+  );
   $: if (fileOverlayOpen !== reportedFloating) {
     reportedFloating = fileOverlayOpen;
     dispatch("floatingChange", fileOverlayOpen);
@@ -274,6 +320,8 @@
     return value !== null && value !== "base64";
   }
   onDestroy(() => {
+    mounted = false;
+    follow.dispose();
     clearPreviewUrl();
     window.clearTimeout(editorSyncTimer);
     window.clearTimeout(pathEditTimer);
@@ -322,7 +370,7 @@
     );
     const requestedPaths = Array.from(
       new Set([
-        ...chain,
+        initial.path,
         ...requestedExpandedPaths.filter((path) =>
           isPathInside(rootPath, path),
         ),
@@ -369,17 +417,20 @@
         children: [filesystem],
       },
       resolvedPath: initial.path,
+      listing: initial,
       chain,
       unavailableExpandedPaths,
     };
   }
 
   async function loadRoot() {
+    const version = ++treeLoadVersion;
     loading = true;
     error = "";
     clearPreviewUrl();
     try {
       const built = await buildTree(currentPath || ".", expandedPaths);
+      if (!mounted || version !== treeLoadVersion) return;
       root = built.root;
       if (!samePath(currentPath, built.resolvedPath)) {
         currentPath = built.resolvedPath;
@@ -408,8 +459,8 @@
       };
       const openedEditorPath = editorPath;
       const openedEditorKind = selectedKind;
-      await selectDirectory(directory, false, false);
-      if (openedEditorPath) {
+      await selectDirectory(directory, false, false, built.listing);
+      if (mounted && version === treeLoadVersion && openedEditorPath) {
         await selectFile(
           {
             name: pathName(openedEditorPath),
@@ -424,9 +475,10 @@
         );
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      if (mounted && version === treeLoadVersion)
+        error = cause instanceof Error ? cause.message : String(cause);
     } finally {
-      loading = false;
+      if (mounted && version === treeLoadVersion) loading = false;
     }
   }
 
@@ -469,11 +521,58 @@
     }, 220);
   }
 
+  export async function revealTerminalDirectory(path: string) {
+    const selection = previewLoadVersion;
+    const canNavigate = () => {
+      if (!dirty && !sharedEditorDirty) return true;
+      makeToast({
+        kind: "info",
+        message: "Save your file before opening the terminal directory.",
+      });
+      return false;
+    };
+    if (!canNavigate()) return;
+    const navigation = ++treeLoadVersion;
+    try {
+      const built = await buildTree(path, []);
+      if (
+        !mounted ||
+        navigation !== treeLoadVersion ||
+        selection !== previewLoadVersion ||
+        !canNavigate()
+      )
+        return;
+      ++pathPreviewVersion;
+      root = built.root;
+      treeVersion++;
+      showDirectory(built.resolvedPath, built.chain, built.listing);
+    } catch (cause) {
+      if (mounted && navigation === treeLoadVersion) {
+        loading = false;
+        makeToast({
+          kind: "error",
+          message:
+            cause instanceof Error
+              ? cause.message
+              : "Could not open the terminal directory.",
+        });
+      }
+    }
+  }
+
   function commitPathEdit() {
     if (!pathEditing || !pathPreviewValid || !pathPreviewPath) return;
+    showDirectory(pathPreviewPath, previewExpandedPaths);
+  }
+
+  function showDirectory(
+    path: string,
+    expanded: string[],
+    listing?: Awaited<ReturnType<typeof listDirectory>>,
+  ) {
     pathEditing = false;
-    currentPath = pathPreviewPath;
-    expandedPaths = previewExpandedPaths;
+    currentPath = path;
+    expandedPaths = expanded;
     selectedPath = "";
     selectedKind = "";
     selected = null;
@@ -491,6 +590,7 @@
       editorContent: "",
       editorDirty: false,
     });
+    void selectDirectory(directoryEntry(path), false, true, listing);
   }
 
   function cancelPathEdit() {
@@ -560,6 +660,7 @@
     directory: FileTreeEntry,
     publish = true,
     clearRightSelection = true,
+    knownListing?: Awaited<ReturnType<typeof listDirectory>>,
   ) {
     const loadVersion = ++previewLoadVersion;
     handledDirectoryPath = normalizedPath(directory.path);
@@ -591,7 +692,7 @@
       });
     }
     try {
-      const listing = await listDirectory(directory.path);
+      const listing = knownListing ?? (await listDirectory(directory.path));
       if (loadVersion !== previewLoadVersion) return;
       selected = { ...directory, path: listing.path };
       currentPath = listing.path;
@@ -1221,7 +1322,10 @@
   bind:this={sectionElement}
   class="file-window theme-surface relative flex flex-col overflow-hidden rounded-xl border"
   data-surface-tone={surfaceTone(surfaceBackground(background, "#111113"))}
-  class:linked-highlight={linkedHighlight}
+  class:linked-highlight={linkedHighlight || bindingHighlighted}
+  style:--canvas-state-color={bindingHighlighted
+    ? "var(--canvas-focus)"
+    : undefined}
   class:fullscreen
   class:minimized
   style:--file-window-background={surfaceBackground(background, "#111113") ||
@@ -1256,6 +1360,9 @@
     )}
 >
   <FileExplorerHeader
+    followAvailable={!!followScope && online}
+    {following}
+    on:toggleFollow={() => (following = !following)}
     {title}
     {background}
     {fullscreen}
@@ -1317,6 +1424,11 @@
           </button>
         {/if}
       </div>
+      {#if following && followStatus}
+        <p role="status" class="px-2 py-1 text-xs text-zinc-400">
+          {followStatus}
+        </p>
+      {/if}
       {#if root}
         <div class="min-h-0 flex-1" class:pointer-events-none={pathEditing}>
           {#key treeVersion}
@@ -1352,6 +1464,7 @@
     <main
       class="file-content-pane relative flex min-h-0 min-w-0 flex-col"
       data-canvas-file-editor
+      tabindex="-1"
     >
       <FileExplorerActions
         target={actionTarget}
@@ -1425,11 +1538,11 @@
         </div>{/if}
     </main>
   </div>
-  {#if linkedNotes.length}<div class="file-relations">
+  {#if linkedItems.length}<div class="file-relations">
       <CanvasRelations
-        items={linkedNotes}
+        items={linkedItems}
         disabled={!hasWriteAccess}
-        on:navigate={(event) => dispatch("navigateNote", event.detail)}
+        on:navigate={(event) => dispatch("navigateRelation", event.detail)}
         on:remove={(event) => dispatch("unlinkNote", event.detail)}
       />
     </div>{/if}

@@ -89,7 +89,7 @@ pub struct Controller {
 
     workspace_path: Option<std::path::PathBuf>,
     workspace_tx: Option<watch::Sender<WorkspaceState>>,
-    workspace_writer: Option<task::JoinHandle<()>>,
+    workspace_flush: Option<mpsc::Sender<workspace::FlushRequest>>,
     ssh_profiles_path: Option<std::path::PathBuf>,
     ssh_profiles_encrypt: Option<Encrypt>,
     uploads: Option<crate::uploads::UploadManager>,
@@ -287,7 +287,7 @@ impl Controller {
             encrypted_zeros: encrypt.zeros().into(),
             name: name.into(),
             write_password_hash: write_password_hash.clone(),
-            daemon_version: env!("CARGO_PKG_VERSION").into(),
+            daemon_version: crate::VERSION.into(),
             workspace: workspace_state.clone(),
             ssh_profiles: ssh_profile_state,
             capabilities: vec![
@@ -296,6 +296,7 @@ impl Controller {
                 CUSTOM_COMPONENT_CAPABILITY.into(),
                 "workspace-media-v1".into(),
                 "terminal-checkpoint-v1".into(),
+                "file-directory-follow-v1".into(),
                 "terminal-output-epoch-v1".into(),
             ],
             terminal_host_version,
@@ -332,7 +333,7 @@ impl Controller {
             .map(|write_password| resp.url.clone() + "," + write_password);
 
         let (output_tx, output_rx) = mpsc::channel(64);
-        let mut workspace_writer = None;
+        let mut workspace_flush = None;
         let workspace_tx = workspace_path.as_ref().map(|path| {
             let initial = workspace_state.unwrap_or(WorkspaceState {
                 chat_history: Vec::new(),
@@ -347,7 +348,9 @@ impl Controller {
                 }],
             });
             let (tx, rx) = watch::channel(initial);
-            workspace_writer = Some(tokio::spawn(workspace::writer(path.clone(), rx)));
+            let (flush_tx, flush_rx) = mpsc::channel(1);
+            tokio::spawn(workspace::writer(path.clone(), rx, flush_rx));
+            workspace_flush = Some(flush_tx);
             tx
         });
         Ok(Self {
@@ -367,7 +370,7 @@ impl Controller {
             output_rx,
             workspace_path,
             workspace_tx,
-            workspace_writer,
+            workspace_flush,
             ssh_profiles_path,
             ssh_profiles_encrypt,
             uploads,
@@ -469,7 +472,7 @@ impl Controller {
             encrypted_zeros: self.encrypt.zeros().into(),
             name: self.display_name.clone(),
             write_password_hash: self.write_password_hash.clone(),
-            daemon_version: env!("CARGO_PKG_VERSION").into(),
+            daemon_version: crate::VERSION.into(),
             workspace,
             ssh_profiles,
             capabilities: vec![
@@ -478,6 +481,7 @@ impl Controller {
                 CUSTOM_COMPONENT_CAPABILITY.into(),
                 "workspace-media-v1".into(),
                 "terminal-checkpoint-v1".into(),
+                "file-directory-follow-v1".into(),
                 "terminal-output-epoch-v1".into(),
             ],
             terminal_host_version: self.runner.terminal_host_version().await,
@@ -1107,10 +1111,7 @@ impl Controller {
     /// Terminate this session gracefully.
     pub async fn close(&self) -> Result<()> {
         debug!("closing session");
-        if let (Some(path), Some(tx)) = (&self.workspace_path, &self.workspace_tx) {
-            let workspace = tx.borrow().clone();
-            workspace::save(path, &workspace).await?;
-        }
+        self.flush_workspace().await?;
         let req = CloseRequest {
             name: self.name.clone(),
             token: self.token.clone(),
@@ -1120,22 +1121,17 @@ impl Controller {
         Ok(())
     }
 
-    /// Drain the debounced writer before a final save so two writes cannot
-    /// race on the same staging file during process replacement.
-    async fn flush_workspace(&mut self) -> Result<()> {
-        if let (Some(path), Some(tx)) = (&self.workspace_path, self.workspace_tx.take()) {
-            let state = tx.borrow().clone();
-            drop(tx);
-            let writer_result = match self.workspace_writer.take() {
-                Some(writer) => writer.await.context("workspace writer failed"),
-                None => Ok(()),
-            };
-            let result = workspace::save(path, &state).await;
-            let (tx, rx) = watch::channel(state);
-            self.workspace_tx = Some(tx);
-            self.workspace_writer = Some(tokio::spawn(workspace::writer(path.clone(), rx)));
-            writer_result?;
-            result?;
+    /// Wait for the sole writer to durably save the latest workspace.
+    async fn flush_workspace(&self) -> Result<()> {
+        if let Some(flush) = &self.workspace_flush {
+            let (reply, saved) = oneshot::channel();
+            flush
+                .send(reply)
+                .await
+                .context("workspace writer stopped")?;
+            saved
+                .await
+                .context("workspace writer stopped before saving")??;
         }
         Ok(())
     }

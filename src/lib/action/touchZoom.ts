@@ -81,7 +81,7 @@ export class TouchZoom {
   #originPoint: number[] | undefined = undefined;
   #delta: number[] = [0, 0];
   #lastMovement = 1;
-  #wheelLastTimeStamp = 0;
+  #handledWheels = new WeakSet<WheelEvent>();
   #middlePointerId: number | null = null;
   #middleLastPoint: number[] = [0, 0];
   #secondaryPointerId: number | null = null;
@@ -414,9 +414,10 @@ export class TouchZoom {
     }
     e.preventDefault();
     if (e.ctrlKey) e.stopPropagation();
-    if (this.isPinching || e.timeStamp <= this.#wheelLastTimeStamp) return;
-
-    this.#wheelLastTimeStamp = e.timeStamp;
+    if (this.isPinching || this.#handledWheels.has(e)) return;
+    // A trackpad can emit its axes as separate events with the same timestamp.
+    // Only deduplicate the actual event shared by capture/routing listeners.
+    this.#handledWheels.add(e);
 
     const [x, y, z] = normalizeWheel(e);
 

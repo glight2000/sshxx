@@ -1,6 +1,6 @@
 [tools]
 godot = "4.7.2-stable"
-node = "24.22.1"
-rust = "1.99.1"
-npm = "12.2.1"
-"github:pvolok/dekit" = "0.10.2"
+node = "24.22.3"
+rust = "1.100.0"
+npm = "12.2.3"
+"github:pvolok/dekit" = "0.10.3"

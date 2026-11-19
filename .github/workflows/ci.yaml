@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  RUST_VERSION: "1.99.1"
+  RUST_VERSION: "1.100.0"
 
 jobs:
   rustfmt:
@@ -42,8 +42,8 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
-      - run: npm install --global npm@12.2.1
+          node-version: "24.22.3"
+      - run: npm install --global npm@12.2.3
 
       - run: npm ci
 
@@ -71,8 +71,8 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
-      - run: npm install --global npm@12.2.1
+          node-version: "24.22.3"
+      - run: npm install --global npm@12.2.3
 
       - run: npm ci
 
@@ -108,9 +108,9 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
+          node-version: "24.22.3"
 
-      - run: npm install --global npm@12.2.1
+      - run: npm install --global npm@12.2.3
 
       - run: npm ci
 
@@ -150,7 +150,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
+          node-version: "24.22.3"
 
       - name: Install pinned Rust toolchain
         run: |
@@ -164,7 +164,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: npm install --global npm@12.2.1
+      - run: npm install --global npm@12.2.3
 
       - run: npm ci
 

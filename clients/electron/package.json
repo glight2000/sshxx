@@ -1,6 +1,6 @@
 {
   "name": "sshxx-electron-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Portable Electron shell for the sshxx client",
   "author": "sshxx contributors",
   "private": true,
@@ -12,8 +12,11 @@
     "pack:win": "npm run build:web && electron-builder --win portable --x64"
   },
   "devDependencies": {
-    "electron": "44.1.1",
-    "electron-builder": "26.15.3"
+    "electron": "44.11.5",
+    "electron-builder": "26.18.0"
+  },
+  "allowScripts": {
+    "electron-winstaller@5.4.0": true
   },
   "build": {
     "appId": "io.sshxx.electron-client",

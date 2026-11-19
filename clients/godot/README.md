@@ -13,11 +13,21 @@ must not be redistributed with this repository or exported application.
 mise exec -- godot --editor --path clients/godot
 ```
 
-After configuring Godot's Android SDK path, build the ARM64 debug APK with:
+After configuring Godot's Android SDK path, build the ARM64/x86_64 debug APK
+with:
 
 ```sh
 mise exec -- godot --headless --path clients/godot \
-  --export-debug Android build/sshxx-client-godot-0.1.0-android-arm64.apk
+  --export-debug Android build/sshxx-client-godot-0.1.0-android-arm64-x64.apk
+```
+
+The x86_64 architecture supports PC Android emulators without ARM translation.
+With the matching Linux export template installed, build a self-contained Linux
+x86_64 executable (embedded PCK) with:
+
+```sh
+mise exec -- godot --headless --path clients/godot \
+  --export-release Linux build/sshxx-client-godot-0.1.0-linux-x86_64
 ```
 
 This prototype does not yet connect to the sshxx protocol. GDExtension is a

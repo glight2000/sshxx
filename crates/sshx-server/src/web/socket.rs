@@ -514,6 +514,13 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     {
         capabilities.push("terminal-checkpoint-v1".into());
     }
+    if metadata
+        .daemon_capabilities
+        .iter()
+        .any(|c| c == "file-directory-follow-v1")
+    {
+        capabilities.push("file-directory-follow-v1".into());
+    }
     send(socket, WsServer::Capabilities(capabilities)).await?;
     if let Some(info) = session.runtime_info() {
         send(socket, WsServer::RuntimeInfo(info)).await?;
@@ -1645,6 +1652,13 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     continue;
                 }
                 if let Err(error) = session.close_file_window(id, page_id) {
+                    send(socket, WsServer::Error(error.to_string())).await?;
+                }
+            }
+            WsClient::FollowFileDirectory(id, page, shell, generation, path, expanded) => {
+                if let Err(error) = session.check_write_permission(user_id).and_then(|_| {
+                    session.follow_file_directory(id, page, shell, generation, path, expanded)
+                }) {
                     send(socket, WsServer::Error(error.to_string())).await?;
                 }
             }

@@ -8,7 +8,7 @@ use prost::Message;
 use sshx_core::proto::WorkspaceState;
 use sshx_core::{rand_alphanumeric, WORKSPACE_FORMAT_VERSION};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep, Duration};
 use tracing::warn;
 
@@ -74,14 +74,32 @@ pub async fn quarantine(path: &Path) -> Result<PathBuf> {
     Ok(destination)
 }
 
-pub async fn writer(path: PathBuf, mut receiver: watch::Receiver<WorkspaceState>) {
-    while receiver.changed().await.is_ok() {
-        sleep(SAVE_DEBOUNCE).await;
-        while receiver.has_changed().unwrap_or(false) {
-            receiver.borrow_and_update();
-        }
-        let workspace = receiver.borrow().clone();
-        if let Err(err) = save(&path, &workspace).await {
+pub type FlushRequest = oneshot::Sender<Result<()>>;
+
+pub async fn writer(
+    path: PathBuf,
+    mut receiver: watch::Receiver<WorkspaceState>,
+    mut flush: mpsc::Receiver<FlushRequest>,
+) {
+    loop {
+        let reply = tokio::select! {
+            request = flush.recv() => match request {
+                Some(request) => Some(request),
+                None => return,
+            },
+            changed = receiver.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                sleep(SAVE_DEBOUNCE).await;
+                None
+            }
+        };
+        let workspace = receiver.borrow_and_update().clone();
+        let result = save(&path, &workspace).await;
+        if let Some(reply) = reply {
+            let _ = reply.send(result);
+        } else if let Err(err) = result {
             warn!(?err, path = %path.display(), "failed to persist workspace");
         }
     }
@@ -92,6 +110,38 @@ mod tests {
     use sshx_core::proto::{WorkspaceFileWindow, WorkspaceNote, WorkspacePage, WorkspaceShell};
 
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_flush_saves_latest_state_and_reports_write_errors() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(FILE_NAME);
+        let mut state = WorkspaceState {
+            format_version: WORKSPACE_FORMAT_VERSION,
+            ..WorkspaceState::default()
+        };
+        let (updates, changes) = watch::channel(state.clone());
+        let (requests, flush) = mpsc::channel(1);
+        let task = tokio::spawn(writer(path.clone(), changes, flush));
+        for id in 1..=2 {
+            state.pages.push(WorkspacePage {
+                id,
+                ..WorkspacePage::default()
+            });
+            updates.send_replace(state.clone());
+            let (reply, saved) = oneshot::channel();
+            requests.send(reply).await.unwrap();
+            saved.await??;
+            assert_eq!(load(&path).await?, Some(state.clone()));
+        }
+        tokio::fs::remove_file(&path).await?;
+        tokio::fs::create_dir(&path).await?;
+        let (reply, saved) = oneshot::channel();
+        requests.send(reply).await.unwrap();
+        assert!(saved.await?.is_err());
+        drop(requests);
+        task.await?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn roundtrips_workspace_file() -> Result<()> {

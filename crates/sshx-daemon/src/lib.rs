@@ -6,6 +6,9 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Daemon component version advertised in the connection handshake.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod controller;
 pub mod encrypt;
 mod file_browser;

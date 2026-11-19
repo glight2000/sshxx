@@ -39,7 +39,7 @@ impl TerminalHostConfig {
         }
 
         set_private_directory_permissions(&state_directory)?;
-        let instance_id = load_or_create_instance_id(&state_directory)?;
+        let instance_id = load_or_create_id(&state_directory.join(INSTANCE_FILE))?;
         let history_directory = state_directory.join("history");
         std::fs::create_dir_all(&history_directory)
             .context("failed to create terminal history directory")?;
@@ -62,6 +62,22 @@ impl TerminalHostConfig {
     pub fn history_path(&self, shell_id: u32) -> PathBuf {
         self.history_directory
             .join(format!("{}.history", self.terminal_id(shell_id)))
+    }
+
+    /// Remote shells may use this opaque namespace for their own history.
+    /// The numeric shell ID alone can be reused after a workspace restore.
+    pub fn remote_history_id(&self, shell_id: u32, reuse: bool) -> Result<String> {
+        let path = self.history_path(shell_id).with_extension("remote-id");
+        if !reuse {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).context("failed to replace remote history namespace")
+                }
+            }
+        }
+        load_or_create_id(&path)
     }
 
     /// Copy the persisted command-history snapshot used by a duplicated terminal.
@@ -87,6 +103,11 @@ impl TerminalHostConfig {
     /// Delete command history after a terminal is explicitly or naturally closed.
     pub async fn remove_history(&self, shell_id: u32) -> Result<bool> {
         let path = self.history_path(shell_id);
+        match tokio::fs::remove_file(path.with_extension("remote-id")).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("failed to retire remote history namespace"),
+        }
         for attempt in 0..20 {
             match tokio::fs::remove_file(&path).await {
                 Ok(()) => return Ok(true),
@@ -105,29 +126,28 @@ impl TerminalHostConfig {
     }
 }
 
-fn load_or_create_instance_id(state_directory: &Path) -> Result<String> {
-    let path = state_directory.join(INSTANCE_FILE);
-    match std::fs::read_to_string(&path) {
+fn load_or_create_id(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
         Ok(instance_id) => validate_instance_id(instance_id.trim()),
         Err(error) if error.kind() == ErrorKind::NotFound => {
             let instance_id = format!("sshxx-{}", rand_alphanumeric(20));
-            match private_new_file(&path) {
+            match private_new_file(path) {
                 Ok(mut file) => {
                     file.write_all(instance_id.as_bytes())
-                        .context("failed to write terminal-host instance ID")?;
+                        .context("failed to write terminal state ID")?;
                     file.sync_all()
-                        .context("failed to persist terminal-host instance ID")?;
+                        .context("failed to persist terminal state ID")?;
                     Ok(instance_id)
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    let value = std::fs::read_to_string(&path)
-                        .context("failed to read terminal-host instance ID")?;
+                    let value = std::fs::read_to_string(path)
+                        .context("failed to read terminal state ID")?;
                     validate_instance_id(value.trim())
                 }
-                Err(error) => Err(error).context("failed to create terminal-host instance ID"),
+                Err(error) => Err(error).context("failed to create terminal state ID"),
             }
         }
-        Err(error) => Err(error).context("failed to read terminal-host instance ID"),
+        Err(error) => Err(error).context("failed to read terminal state ID"),
     }
 }
 
@@ -138,7 +158,7 @@ fn validate_instance_id(value: &str) -> Result<String> {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '-')
     {
-        bail!("terminal-host instance ID is invalid");
+        bail!("terminal state ID is invalid");
     }
     Ok(value.to_owned())
 }
@@ -183,6 +203,26 @@ async fn set_private_file_permissions(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn remote_history_namespaces_survive_reattach_but_not_close_or_duplicate() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join(TOKEN_FILE), [7; 32])?;
+        let host = TerminalHostConfig::load(directory.path())?;
+        let first = host.remote_history_id(4, true)?;
+        assert_eq!(
+            TerminalHostConfig::load(directory.path())?.remote_history_id(4, true)?,
+            first
+        );
+        std::fs::write(host.history_path(4), "echo synthetic-fixture\n")?;
+        assert!(host.clone_history(4, 9).await?);
+        let duplicate = host.remote_history_id(9, false)?;
+        assert_ne!(duplicate, first);
+        assert_ne!(host.remote_history_id(9, false)?, duplicate);
+        host.remove_history(4).await?;
+        assert_ne!(host.remote_history_id(4, true)?, first);
+        Ok(())
+    }
 
     #[test]
     fn terminal_ids_are_stable_per_instance() -> Result<()> {

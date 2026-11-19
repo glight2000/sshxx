@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
-  import { RefreshCwIcon, SettingsIcon } from "svelte-feather-icons";
+  import { LinkIcon, RefreshCwIcon, SettingsIcon } from "svelte-feather-icons";
 
   import BackgroundPicker from "./BackgroundPicker.svelte";
   import { surfaceBackground } from "./surfaceTheme";
@@ -8,6 +8,8 @@
   import CircleButtons from "./CircleButtons.svelte";
   import InlineTitle from "./InlineTitle.svelte";
 
+  export let following = false;
+  export let followAvailable = false;
   export let title: string;
   export let background: string;
   export let fullscreen: boolean;
@@ -21,6 +23,7 @@
     bringToFront: void;
     startMove: MouseEvent;
     reload: void;
+    toggleFollow: void;
     resetSplit: void;
     title: string;
     background: string;
@@ -108,6 +111,21 @@
     class="relative flex h-full flex-1 items-center justify-end gap-0.5 pr-2"
   >
     <button
+      type="button"
+      class="header-button ui-icon-button"
+      class:follow-active={following}
+      aria-label="Follow terminal directory"
+      aria-pressed={following}
+      disabled={!hasWriteAccess || !followAvailable}
+      title={!followAvailable
+        ? "Directory following requires a connected, updated server and daemon"
+        : following
+          ? "Stop following terminal directory"
+          : "Follow terminal directory"}
+      on:mousedown|stopPropagation
+      on:click={() => dispatch("toggleFollow")}><LinkIcon /></button
+    >
+    <button
       class="header-button ui-icon-button"
       title="Reload filesystem"
       aria-label="Reload filesystem"
@@ -152,6 +170,9 @@
   @reference "../../app.css";
   .header-button :global(svg) {
     @apply h-4 w-4;
+  }
+  .follow-active {
+    @apply bg-indigo-700 text-white;
   }
   .settings-row {
     @apply block w-full rounded-md border-t border-zinc-700/70 px-2 py-2 text-left text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100;
